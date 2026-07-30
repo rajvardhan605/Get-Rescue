@@ -1,0 +1,11 @@
+node_modules/
+dist/
+cert.pem
+key.pem
+ZET-debug.log
+chrome_cdp.log
+chrome_dom.html
+chrome_err.log
+.claude/
+.DS_Store
+Thumbs.db

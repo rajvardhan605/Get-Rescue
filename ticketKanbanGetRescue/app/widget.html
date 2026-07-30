@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Kanban Board</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA; --purple:#7A5AF8; --purple-soft:#ECE7FE;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:16px}
+img,svg{max-width:100%}
+
+/* ---------- top bar ---------- */
+.topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--ink);
+  border-radius:16px;padding:14px 18px;box-shadow:var(--sh-1);position:sticky;top:8px;z-index:30}
+.brand{display:flex;align-items:center;gap:11px;flex:none}
+.brand .mk{width:38px;height:38px;border-radius:10px;background:var(--signal);display:grid;place-items:center;box-shadow:0 4px 12px rgba(241,90,34,.45)}
+.brand .mk svg{width:22px;height:22px}
+.brand b{font-family:var(--f-disp);font-weight:900;font-size:19px;color:#fff;letter-spacing:.3px;line-height:1}
+.search{position:relative;flex:1;min-width:200px;display:flex;align-items:center;gap:9px;background:#fff;border:1.5px solid transparent;border-radius:11px;padding:0 12px;transition:.15s}
+.search:focus-within{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.25)}
+.search svg{width:18px;height:18px;color:var(--muted-2);flex:none}
+.search input{flex:1;border:0;outline:0;background:transparent;font-size:15px;color:var(--text);padding:12px 0;font-family:var(--f-body)}
+.search .x{border:0;background:transparent;color:var(--muted-2);cursor:pointer;padding:6px;display:none;line-height:0;border-radius:7px}
+.search .x svg{width:15px;height:15px}
+.search-ic{border:0;background:transparent;padding:0;margin:0;line-height:0;color:var(--muted-2);cursor:pointer;flex:none;border-radius:7px}
+.search-ic:hover{color:var(--signal)}
+.search-dropdown{position:absolute;left:0;right:0;top:calc(100% + 8px);background:#fff;border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--sh-2);z-index:45;max-height:min(360px,70vh);overflow-y:auto;-webkit-overflow-scrolling:touch;display:none}
+.search-dropdown.on{display:block}
+.search-dropdown .rrow{border-top:1px solid var(--line)}
+.search-dropdown .rrow:first-child{border-top:0}
+.search-dropdown .sd-msg{padding:18px;text-align:center;color:var(--muted-2);font-size:13px;font-family:var(--f-mono)}
+.btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:14.5px;letter-spacing:.02em;
+  padding:12px 18px;border-radius:11px;display:inline-flex;align-items:center;gap:8px;transition:.15s;white-space:nowrap}
+.btn svg{width:17px;height:17px}
+.btn.primary{background:var(--signal);color:#fff;box-shadow:0 4px 12px rgba(241,90,34,.34)}
+.btn.primary:hover{background:var(--signal-deep)}
+.btn.ghost{background:transparent;color:var(--text);border:1.5px solid var(--line-strong)}
+.btn.ghost:hover{background:var(--worktop)}
+.btn.danger{background:#fff;color:var(--stop);border:1.5px solid var(--stop)}
+.btn.danger:hover{background:var(--stop-soft)}
+.btn.ok{background:var(--ok);color:#fff;box-shadow:0 4px 12px rgba(18,161,80,.3)}
+.btn.ok:hover{filter:brightness(.95)}
+.btn:disabled{opacity:.55;cursor:default;box-shadow:none}
+.btn.sm{padding:9px 13px;font-size:13px}
+
+/* ---------- section headings ---------- */
+.sec-head{display:flex;align-items:center;gap:10px;margin:22px 2px 12px}
+.sec-head h2{font-family:var(--f-disp);font-size:20px;font-weight:800}
+.sec-head .sub{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.sec-head .spacer{flex:1}
+
+/* ---------- kanban board ---------- */
+.board-scroll{overflow-x:auto;overflow-y:hidden;padding-bottom:10px;-webkit-overflow-scrolling:touch}
+.kanban-board{display:flex;gap:16px;align-items:flex-start}
+.kcol{flex:0 0 270px;width:270px;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--sh-1);
+  display:flex;flex-direction:column;max-height:calc(100vh - 230px);min-height:220px}
+.kcol-head{display:flex;align-items:center;gap:11px;padding:14px 16px;position:relative;flex:none;
+  background:linear-gradient(180deg,#fff,var(--worktop) 260%);border-radius:18px 18px 0 0}
+.kcol-head::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent,var(--signal));border-radius:18px 0 0 18px}
+.kcol-head .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none;
+  color:#fff;background:var(--accent,var(--signal));box-shadow:0 4px 12px rgba(20,22,28,.28)}
+.kcol-head .ic svg{width:17px;height:17px}
+.kcol-head .tt{min-width:0;flex:1}
+.kcol-head .tt b{font-family:var(--f-disp);font-size:14.5px;font-weight:800;display:block;letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kcol-head .tt span{font-family:var(--f-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.kcol-head .cnt{flex:none;font-family:var(--f-disp);font-size:15px;font-weight:900;color:var(--text);
+  background:#fff;border:1.5px solid var(--line);min-width:30px;text-align:center;padding:3px 8px;border-radius:10px}
+.kcol-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}
+.kcol-empty{color:var(--muted-2);font-size:12.5px;text-align:center;padding:26px 8px;font-family:var(--f-mono)}
+
+.kcard{display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid var(--line);border-radius:13px;padding:12px 13px;
+  cursor:pointer;text-align:left;font:inherit;color:inherit;width:100%;transition:.12s;box-shadow:var(--sh-1)}
+.kcard:hover{border-color:var(--line-strong);box-shadow:var(--sh-2);transform:translateY(-1px)}
+.kcard .kc-top{display:flex;align-items:center;gap:8px}
+.kcard .avatar{width:32px;height:32px;border-radius:9px;background:var(--worktop);display:grid;place-items:center;
+  font-family:var(--f-disp);font-weight:800;font-size:12px;color:var(--muted);flex:none;border:1px solid var(--line)}
+.kcard .kc-id{flex:1;min-width:0;font-family:var(--f-mono);font-size:10.5px;color:var(--muted-2);font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kcard .chev{color:var(--line-strong);flex:none}
+.kcard .nm{font-weight:700;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kcard .meta{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kcard .svc{display:inline-flex;font-family:var(--f-mono);font-size:9px;font-weight:700;padding:2px 7px;border-radius:5px;flex:none;margin-right:6px}
+.svc.rsr{background:var(--signal-soft);color:var(--signal-deep)} .svc.tow{background:var(--info-soft);color:var(--info)}
+.kcard .flags{display:flex;gap:6px;flex-wrap:wrap}
+.kcard .flag{display:inline-flex;align-items:center;gap:4px;font-family:var(--f-mono);font-size:9px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.03em;padding:3px 8px 3px 5px;border-radius:999px;background:var(--worktop);color:var(--muted-2)}
+.kcard .flag svg{width:11px;height:11px;flex:none}
+.kcard .flag.on{background:var(--ok-soft);color:var(--ok)}
+.kcard .kc-pill{align-self:flex-start;font-family:var(--f-mono);font-size:9px;font-weight:700;text-transform:uppercase;padding:4px 9px;border-radius:999px}
+
+/* pill status colours (shared by kanban cards + search dropdown rows) */
+.pill.b-new{background:var(--info-soft);color:var(--info)}
+.pill.b-asg{background:var(--wait-soft);color:var(--wait)}
+.pill.b-wip{background:var(--signal-soft);color:var(--signal-deep)}
+.pill.b-pay{background:var(--ok-soft);color:var(--ok)}
+.pill.b-closed{background:var(--worktop);color:var(--muted)}
+
+/* ---------- search dropdown rows (shared row-style renderer) ---------- */
+.results{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--sh-1);overflow:hidden}
+.results .rrow:first-child{border-top:0}
+.rrow{display:flex;align-items:center;gap:14px;padding:13px 20px;border-top:1px solid var(--line);cursor:pointer;
+  transition:background .12s;text-align:left;font:inherit;color:inherit;width:100%;background:#fff}
+.rrow:hover{background:var(--worktop)}
+.rrow .avatar{width:38px;height:38px;border-radius:11px;background:var(--worktop);display:grid;place-items:center;
+  font-family:var(--f-disp);font-weight:800;font-size:13.5px;color:var(--muted);flex:none;border:1px solid var(--line)}
+.rrow .main{flex:1;min-width:0}
+.rrow .top-line{display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap}
+.rrow .cid{font-family:var(--f-mono);font-size:11px;color:var(--muted-2);font-weight:600;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rrow .nm{font-weight:700;font-size:14.5px;color:var(--text);flex:1;min-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rrow .meta{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rrow .svc{display:inline-flex;font-family:var(--f-mono);font-size:9px;font-weight:700;padding:2px 7px;border-radius:5px;flex:none}
+.rrow .pill{flex:none;max-width:140px;font-family:var(--f-mono);font-size:9.5px;font-weight:700;text-transform:uppercase;
+  padding:5px 10px;border-radius:999px;white-space:normal;text-align:center;line-height:1.3}
+.rrow .chev{color:var(--line-strong);flex:none}
+.rrow .flags{display:flex;gap:6px;margin-top:5px}
+.rrow .flag{display:inline-flex;align-items:center;gap:4px;font-family:var(--f-mono);font-size:9.5px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.03em;padding:3px 8px 3px 5px;border-radius:999px;background:var(--worktop);color:var(--muted-2)}
+.rrow .flag svg{width:12px;height:12px;flex:none}
+.rrow .flag.on{background:var(--ok-soft);color:var(--ok)}
+
+/* ---------- wizard ---------- */
+.wizard{display:none}
+.wizard.on{display:block}
+.dashboard.off{display:none}
+.wiz-top{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-1);padding:16px 18px;margin-bottom:16px}
+.wiz-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.wiz-title h2{font-family:var(--f-disp);font-size:24px;font-weight:900;line-height:1}
+.wiz-title .cid{font-family:var(--f-mono);font-size:12px;color:var(--muted);background:var(--worktop);padding:5px 10px;border-radius:999px}
+.wiz-title .close-x{margin-left:auto;border:0;background:var(--worktop);width:34px;height:34px;border-radius:9px;cursor:pointer;color:var(--muted);display:grid;place-items:center}
+.wiz-title .close-x:hover{background:var(--line);color:var(--text)}
+.wiz-title .close-x svg{width:18px;height:18px}
+
+/* progress stepper */
+.progress{margin-top:16px}
+.pbar{height:7px;border-radius:999px;background:var(--worktop);overflow:hidden;margin-bottom:14px}
+.pbar > i{display:block;height:100%;background:linear-gradient(90deg,var(--signal),var(--signal-bright));border-radius:999px;transition:width .35s ease}
+.steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
+.step{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:7px 12px 7px 8px;border-radius:999px;border:1px solid var(--line);
+  background:#fff;cursor:pointer;transition:.15s;white-space:nowrap}
+.step .n{width:22px;height:22px;border-radius:50%;background:var(--worktop);color:var(--muted);display:grid;place-items:center;
+  font-family:var(--f-mono);font-size:11px;font-weight:600;flex:none}
+.step .lb{font-family:var(--f-disp);font-weight:700;font-size:12.5px;color:var(--muted)}
+.step.done .n{background:var(--ok);color:#fff}
+.step.done .lb{color:var(--text)}
+.step.active{border-color:var(--signal);background:var(--signal-soft)}
+.step.active .n{background:var(--signal);color:#fff}
+.step.active .lb{color:var(--signal-deep)}
+.step.locked{cursor:not-allowed;opacity:.5}
+.step.locked .n{color:var(--muted-2)}
+
+/* form */
+.form-card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-1);padding:22px;margin-bottom:100px}
+.form-card h3{font-family:var(--f-disp);font-size:19px;margin-bottom:4px}
+.form-card .fdesc{font-size:13px;color:var(--muted);margin-bottom:18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld.full{grid-column:1 / -1}
+.fld label{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.fld label .req{color:var(--stop);margin-left:2px}
+.fld input,.fld select,.fld textarea{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;
+  font-family:var(--f-body);color:var(--text);background:#fff;outline:0;transition:.15s;width:100%}
+.fld textarea{resize:vertical;min-height:74px}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+.fld input[type=file]{padding:9px;background:var(--worktop);border-style:dashed;cursor:pointer;font-family:var(--f-mono);font-size:12px}
+.radio-set{display:flex;flex-wrap:wrap;gap:8px}
+.radio-set .opt{border:1.5px solid var(--line-strong);border-radius:9px;padding:9px 14px;font-size:13.5px;font-weight:600;
+  color:var(--muted);cursor:pointer;background:#fff;transition:.12s;user-select:none}
+.radio-set .opt.sel{border-color:var(--signal);background:var(--signal-soft);color:var(--signal-deep)}
+.check{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding:8px 0}
+.check input{width:20px;height:20px;accent-color:var(--signal)}
+.check span{font-size:14px;color:var(--text)}
+.hint{font-size:11px;color:var(--muted-2);font-family:var(--f-mono)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--signal-soft);color:var(--signal-deep);
+  border-radius:999px;padding:7px 8px 7px 13px;font-size:13px;font-weight:600}
+.chip button{border:0;background:rgba(0,0,0,.08);color:inherit;width:18px;height:18px;border-radius:50%;
+  cursor:pointer;display:grid;place-items:center;font-size:11px;line-height:1;padding:0;flex:none}
+.chip button:hover{background:rgba(0,0,0,.18)}
+.chip-empty{font-size:12.5px;color:var(--muted-2);font-family:var(--f-mono)}
+.add-select{border:1.5px dashed var(--line-strong);border-radius:10px;padding:10px 12px;font-size:13.5px;
+  color:var(--muted);background:#fff;width:100%}
+
+/* summary (final) */
+.summary{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px}
+.summary .srow{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.summary .srow .k{color:var(--muted);font-weight:600}
+.summary .srow .v{text-align:right;font-weight:500}
+
+/* button bar (sticky) */
+.bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);backdrop-filter:blur(8px);border-top:1px solid var(--line);
+  padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:40;box-shadow:0 -6px 20px rgba(20,22,28,.06)}
+.bar .inner{max-width:1180px;margin:0 auto;width:100%;display:flex;align-items:center;gap:10px}
+.bar .spacer{flex:1}
+
+/* toast + modal */
+.toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
+  background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:60;
+  transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
+.modal{position:fixed;inset:0;background:rgba(20,22,28,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:20px}
+.modal.on{display:flex}
+.modal .box{background:#fff;border-radius:16px;padding:24px;max-width:380px;width:100%;box-shadow:var(--sh-2);text-align:center}
+.modal .box h4{font-family:var(--f-disp);font-size:21px;margin-bottom:8px}
+.modal .box p{color:var(--muted);font-size:14px;margin-bottom:20px}
+.modal .box .row{display:flex;gap:10px}
+.modal .box .row .btn{flex:1;justify-content:center}
+
+/* loader / states */
+.spin{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);animation:spin .7s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.center-state{text-align:center;padding:50px 16px;color:var(--muted)}
+.center-state h3{font-family:var(--f-disp);font-size:18px;color:var(--text);margin:14px 0 6px}
+.center-state p{font-size:14px}
+.demo-note{margin:10px 2px 0;font-family:var(--f-mono);font-size:11px;color:var(--wait);background:var(--wait-soft);border-radius:9px;padding:9px 12px;display:none}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---- tablets / small laptops: tighten outer spacing only, 2-col form grid still fits ---- */
+@media(max-width:900px){
+  .wrap{padding:14px}
+  .form-card{padding:18px}
+}
+
+/* ---- phones (portrait) ---- */
+@media(max-width:680px){
+  .wrap{padding:12px}
+  .topbar{position:static}
+  .search{order:3;flex-basis:100%;min-width:0}
+  .grid,.summary{grid-template-columns:1fr}
+  .bar{padding:10px 12px}
+  .bar .inner{flex-wrap:wrap}
+  .bar .btn{flex:1 1 auto;justify-content:center}
+  .form-card{margin-bottom:150px;padding:18px}
+  .rrow .meta{white-space:normal}
+  .kcol{flex:0 0 82vw;width:82vw;max-height:calc(100vh - 260px)}
+  .kcol-head{padding:12px 14px}
+  .sec-head{flex-wrap:wrap}
+  .wiz-title h2{font-size:20px}
+}
+
+/* ---- small phones ---- */
+@media(max-width:420px){
+  .wrap{padding:10px}
+  .brand b{font-size:16px}
+  .brand .mk{width:32px;height:32px}
+  .brand .mk svg{width:18px;height:18px}
+  .btn{padding:10px 14px;font-size:13.5px}
+  .kcol{flex:0 0 86vw;width:86vw}
+  .kcol-head{padding:11px 12px;gap:9px}
+  .kcol-head .ic{width:30px;height:30px}
+  .kcol-head .ic svg{width:15px;height:15px}
+  .kcol-head .tt b{font-size:13.5px}
+  .kcard{padding:11px 12px}
+  .form-card{padding:14px}
+  .wiz-top{padding:14px}
+}
+
+/* ---- landscape phones: short viewport height, keep the bottom bar from crowding the form ---- */
+@media(max-height:420px) and (orientation:landscape){
+  .topbar{position:static}
+  .form-card{margin-bottom:90px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="mk"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z" fill="#fff"/></svg></span>
+      <b>GET-RESCUE</b>
+    </div>
+    <label class="search">
+      <button class="search-ic" id="searchBtn" type="button" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+      <input id="q" type="text" inputmode="search" autocomplete="off" placeholder="Search by phone, Case ID, vehicle reg. no. or client tracking ID…" aria-label="Search">
+      <button class="x" id="clearSearch" type="button" aria-label="Clear"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+      <div class="search-dropdown" id="searchDropdown"></div>
+    </label>
+  </div>
+
+  <div class="demo-note" id="demoNote">Preview mode — Creator SDK not detected, showing sample data. Inside Creator this reads from <b>Agent_Ticket_Report</b> and updates <b>Create_Case</b>.</div>
+
+  <!-- DASHBOARD -->
+  <div class="dashboard" id="dashboard">
+    <div class="sec-head"><h2>Ticket Board</h2><span class="sub" id="dashSub">one column per status</span><span class="spacer"></span>
+      <button class="btn ghost sm" id="refreshBtn" type="button">Refresh</button></div>
+    <div class="board-scroll"><div class="kanban-board" id="columns"></div></div>
+  </div>
+
+  <!-- WIZARD -->
+  <div class="wizard" id="wizard">
+    <div class="wiz-top">
+      <div class="wiz-title">
+        <h2 id="wizStageTitle">Edit Ticket</h2>
+        <span class="cid" id="wizCaseId">unsaved</span>
+        <button class="close-x" id="wizClose" type="button" aria-label="Back to board"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="progress">
+        <div class="pbar"><i id="pbarFill" style="width:0%"></i></div>
+        <div class="steps" id="steps"></div>
+      </div>
+    </div>
+    <div class="form-card">
+      <h3 id="stepTitle"></h3>
+      <div class="fdesc" id="stepDesc"></div>
+      <div class="grid" id="fields"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- sticky action bar -->
+<div class="bar" id="bar" style="display:none"><div class="inner">
+  <button class="btn ghost" id="prevBtn" type="button">
+    <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Previous</button>
+  <button class="btn ghost" id="cancelBtn" type="button">Cancel</button>
+  <span class="spacer"></span>
+  <button class="btn danger" id="closeBtn" type="button">Close Ticket</button>
+  <button class="btn primary" id="saveBtn" type="button">Save &amp; Continue</button>
+</div></div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal" id="modal"><div class="box">
+  <h4 id="mTitle">Are you sure?</h4>
+  <p id="mMsg"></p>
+  <div class="row"><button class="btn ghost" id="mNo" type="button">No</button><button class="btn danger" id="mYes" type="button">Yes</button></div>
+</div></div>
+
+<script>
+/* =====================================================================
+   GET-RESCUE · KANBAN BOARD
+   Read-only board over the same Create_Case data the ticket-flow widget
+   writes to. One column per Status picklist value (all 20, in field order —
+   see BUCKETS below); clicking a card opens the exact same multi-step edit
+   wizard as the ticket page — there is no "create" entry point here,
+   tickets are created elsewhere.
+   Adjust CONFIG + the SCHEMA field link names to match your app.
+   ===================================================================== */
+const CONFIG = {
+  appName:      "get-rescue",
+  formName:     "Create_Case",          // add records here (only used if a ticket is somehow opened before it has an ID)
+  reportName:   "Agent_Ticket_Report",  // read / update / search here — user-confirmed 2026-07-28 (was Create_Case_Report)
+  phoneField:   "Phone_Number",         // primary global search field — real Create_Case field name (confirmed live); the form shows "Phone_Number1" but mirrors into this one via the create stage's extra() hook, and that's the field Agent_Ticket_Report actually searches on
+  searchTextFields: ["Case_ID","Vehicle_Registration_Number","Client_Tracking_Id"], // additional fields the topbar search box also matches against (OR'd with phoneField)
+  stageField:   "Status",               // text field on Create_Case that holds the current stage
+  caseIdField:  "Case_ID",
+  serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
+  nameField:    "Customer_Name",         // composite name field
+  vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
+  vehicleCategoryField: "Category",     // 2W/4W field on vehicle_master_Report, matched against Vehicle_Issue_Report's VEHICLE_TYPE
+  rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
+  // option sources (best-effort; degrade to text/empty if unavailable) — report names are the MASTER tables we pull picker options from, unrelated to the Create_Case field names above
+  optionReports: {
+    vehicles:    { report:"vehicle_master_Report", label:["Name"], max:1000 },
+    issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
+    vendors:     { report:"vendors_Report",        label:["Vendor_Name","Name","vendor_name"] },
+    technicians: { report:"technicians_Report",    label:["technician_name","Name"], emailField:"Email" },
+    clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
+  },
+  fetchLatest: 1000   // how many recent tickets to pull for the board — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
+};
+
+/* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
+let SDK_READY = false;
+function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+
+/* ---------- Creator data layer ---------- */
+async function apiGet(criteria){
+  const fn = resolve("getRecords"); if(!fn) throw new Error("getRecords unavailable");
+  const cfg = { app_name:CONFIG.appName, report_name:CONFIG.reportName, field_config:"all", max_records:CONFIG.fetchLatest };
+  if(criteria) cfg.criteria = criteria;
+  console.log("[Get-Rescue] apiGet -> report:", cfg.report_name, "| criteria:", cfg.criteria||"(none)", "| full request:", cfg);
+  try{
+    const r = await fn(cfg);
+    console.log("[Get-Rescue] apiGet <- code:", r&&r.code, "| records:", r&&r.data&&r.data.length, "| raw response:", r);
+    return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  }
+  catch(e){ const c=e&&e.code; console.warn("[Get-Rescue] apiGet threw:", e); if(c===3100||c==="3100") return []; return []; }
+}
+async function apiGetReport(report, criteria, max){
+  const fn = resolve("getRecords"); if(!fn) return [];
+  const cfg = { app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||200 };
+  if(criteria) cfg.criteria = criteria;
+  try{ const r = await fn(cfg); return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : []; } catch(e){ return []; }
+}
+async function apiAdd(data){
+  const fn = resolve("addRecords") || resolve("addRecord"); if(!fn) throw new Error("addRecords unavailable");
+  const r = await fn({ app_name:CONFIG.appName, form_name:CONFIG.formName, payload:{ data:data } });
+  if(r && r.code===3000){ const d=r.data; return Array.isArray(d) ? (d[0]&&(d[0].ID||d[0].id)) : (d&&(d.ID||d.id)); }
+  throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Add failed");
+}
+async function apiUpdate(id, data){
+  const fn = resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
+  const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, payload:{ data:data } });
+  if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
+  return true;
+}
+/* best-effort file upload — signatures vary by SDK build; never blocks a save */
+async function apiUpload(id, fieldName, file){
+  const fn = resolve("uploadFile"); if(!fn || !file) return false;
+  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
+  catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
+}
+
+/* ---------- reusable option lists ---------- */
+const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+/* half-hour slots, 9:00 AM through 5:00 PM */
+const SERVICE_TIMES = (function(){
+  function fmt(mins){ const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
+  const out=[];
+  for(let mins=9*60; mins<17*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
+  return out;
+})();
+
+/* dynamic options filled at boot from reports (best-effort) */
+const OPTIONS = { vehicles:[], issues:[], vendors:[], technicians:[], clients:[] };
+
+/* Quote & Booking Fee's Status is fully derived from what's actually been done
+   on it — no manual override. No payment/location integration exists yet, so
+   "sent"/"PAID" are both set by the agent by hand, not by any webhook. Exact
+   flow as specified by the user (2026-07-28):
+     Booking_Fee not > 0 (nothing to collect):
+       Request Location clicked -> LOCATION PENDING (can advance)
+       not clicked (Cancel, or Save without clicking) -> LOCATION REQUEST (blocked)
+     Booking_Fee > 0:
+       Payment_Status === "PAID" -> LOCATION PENDING (can advance)
+       else Send_Payment_Link clicked -> BOOKING FEE PENDING (blocked)
+       else -> SERVICE FEE QUOTE, unchanged (blocked) */
+function quoteStatus(r){
+  const feeZero = !(Number(r.Booking_Fee)>0);
+  if(feeZero) return r.Send_Link_For_The_Breakdown_Location ? "LOCATION PENDING" : "LOCATION REQUEST";
+  if(r.Payment_Status==="PAID") return "LOCATION PENDING";
+  if(r.Send_Payment_Link) return "BOOKING FEE PENDING";
+  return "SERVICE FEE QUOTE";
+}
+
+/* =====================================================================
+   STAGE SCHEMA  —  each field's "n" is the Create_Case field link name.
+   branch: all | rsr | tow | pay | final   (path = all + rsr|tow + pay + final)
+   bucket: dashboard column index (0..3)
+   ===================================================================== */
+const STAGES = [
+  /* ---- COMMON ---- */
+  { key:"create", branch:"all", bucket:0, short:"Create", title:"Create Service Ticket",
+    desc:"Basic customer, vehicle and issue details.", save:"Save & Continue",
+    statuses:["NEW"], status:"NEW",
+    /* Create_Case has a required "Phone_Number" field separate from the one
+       shown in this form ("Phone_Number1"). Mirror the value the agent types
+       rather than showing a duplicate box. Confirmed via a live "Enter a value
+       for Phone Number" error on save. "Client" used to need the same
+       treatment but is now its own real Lookup field below (see Client).
+       Computed_Service_Time: NOW -> +30 min from save time; LATER -> the picked
+       Schedule_Date + Service_Time slot's start (see computeServiceTime()). */
+    extra:(r)=>({ Phone_Number:r.Phone_Number1||"", Computed_Service_Time:computeServiceTime(r) }),
+    fields:[
+    { n:"Lead_Source", l:"Lead Source", t:"select", o:["Call","Website","WhatsApp","App"], default:"Call", disabled:true },
+    { n:"Customer_Name", l:"Customer Name", t:"name2", req:true },
+    { n:"Phone_Number1", l:"Phone Number", t:"tel", req:true },
+    { n:"Email", l:"Email", t:"email" },
+    { n:"Client", l:"Client", t:"select", o:"@clients", req:true, useId:true },
+    { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text" },
+    { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true },
+    { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text" },
+    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true },
+    { n:"Service_Type", l:"Service Type", t:"badge", full:true },
+    { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"] },
+    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"] },
+    { n:"Schedule_Date", l:"Schedule Date", t:"date", when:(s)=>s.Time_of_service==="LATER" },
+    { n:"Service_Time", l:"Service Time", t:"select", o:SERVICE_TIMES, when:(s)=>s.Time_of_service==="LATER" }
+  ]},
+  /* Quote + Booking Fee merged into one step (was two) — matches the native
+     form, which shows them as a single section ("Service_Fee_Quote_Booking_fee_Collection"
+     in its own Deluge). step.key stays "quote" so the renderWizard() calcQuote()
+     hook (keyed on that string) keeps working unchanged. */
+  { key:"quote", branch:"all", bucket:0, short:"Quote", title:"Service Fee Quote & Booking Fee",
+    desc:"Distance, rate breakup, the fee to quote, and the upfront booking fee.", save:"Save & Continue",
+    statuses:["SERVICE FEE QUOTE","LOCATION REQUEST","BOOKING FEE PENDING"], status:quoteStatus,
+    // can't advance to Capture Locations until the required action for this
+    // ticket's fee situation has actually been done (see quoteStatus above)
+    // not a hard block anymore — Save & Continue always saves. If the required
+    // action (location requested / payment confirmed) isn't done yet, saving
+    // just closes the wizard back to the board instead of advancing; the
+    // ticket shows up under its current status and reopens on this same step
+    // to pick up where it left off (see stageIndexForStatus). Once Payment_Status
+    // is PAID (quoteStatus -> "LOCATION PENDING"), Save & Continue advances normally.
+    canAdvance:(r)=>quoteStatus(r)==="LOCATION PENDING",
+    blockedMessage:"Saved. This ticket will wait here until the location is requested (or the payment is confirmed) — reopen it from the board to continue.",
+    fields:[
+    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>s.Service_Type==="TOW" },
+    { n:"Suggested_Rate", l:"Suggested Rate", t:"number" },
+    { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", recompute:true },
+    { n:"Booking_Fee", l:"Booking Fee", t:"number", recompute:true },
+    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true },
+    { n:"Rate_Breakup", l:"Rate Breakup", t:"textarea", full:true },
+    /* Exactly one button here, never two. Booking_Fee>0 -> a single button
+       that sends the payment link AND requests the location together in one
+       click (its action hook flips Send_Link_For_The_Breakdown_Location too)
+       — once a real payment gateway is wired up, that integration is expected
+       to trigger the location request itself, so this bundles the same
+       behavior by hand for now. Fee not >0 -> just the location request. */
+    { n:"Send_Payment_Link", l:"Send Payment Link", t:"button", full:true, when:(s)=>Number(s.Booking_Fee)>0,
+      buttonLabel:"Send Payment Link & Request Location", doneLabel:"Payment Link & Location Sent",
+      action:(r)=>{ r.Send_Link_For_The_Breakdown_Location=true; } },
+    { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", full:true, when:(s)=>!(Number(s.Booking_Fee)>0),
+      buttonLabel:"Request Location", doneLabel:"Location Requested" },
+    { n:"Payment_Method", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"] },
+    { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"] },
+    { n:"Total_Service_Fee1", l:"Total Service Fee (Payment Record)", t:"number" },
+    { n:"Image_Upload", l:"Receipt Photo", t:"file" },
+    { n:"Remarks", l:"Remarks", t:"textarea", full:true }
+  ]},
+  { key:"locations", branch:"all", bucket:0, short:"Location", title:"Capture Locations",
+    desc:"Breakdown location (and drop location for tows).", save:"Save Locations",
+    // "LOCATION PENDING" (set by the quote stage once fee/location has been
+    // requested) resumes here — this is the next real step for that ticket,
+    // not back at the quote page. Saving this step still writes "READY" as before.
+    statuses:["READY","LOCATION PENDING"], status:"READY",
+    fields:[
+    { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true,
+      buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent" },
+    { n:"LatLongPaste", l:"Paste Breakdown Lat,Long", t:"text", full:true, hint:"e.g. 28.6139, 77.2090", parseTarget:["Latitude","Longitude"] },
+    { n:"Latitude", l:"Breakdown Latitude", t:"decimal" },
+    { n:"Longitude", l:"Breakdown Longitude", t:"decimal" },
+    { n:"Send_Link_For_The_Drop_Location", l:"Send drop-location link", t:"check", full:true, when:(s)=>s.Service_Type==="TOW" },
+    { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
+    { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
+    { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
+    /* Round-trip distance calc is TOW-only (RSR's distances live on the wip
+       stage's own fields instead). Clicking recalculates from the static
+       office location -> breakdown -> drop -> office each time; repeatable
+       since coordinates might get corrected after a first calculation. */
+    { n:"Calculate_Distance", l:"Calculate Round-Trip Distance", t:"button", full:true, repeatable:true, when:(s)=>s.Service_Type==="TOW",
+      buttonLabel:"Calculate Round-Trip Distance", action:(r)=>{ r.RT_KM=calcRoundTripKm(r); } },
+    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW" }
+  ]},
+  { key:"assignment", branch:"all", bucket:1, short:"Assign", title:"Vendor Assignment",
+    desc:"Assign to vendor(s) and (optionally) a technician.", save:"Assign & Continue",
+    statuses:["RSP IRA (INVITE RESPONSE AWAITED)"], status:"RSP IRA (INVITE RESPONSE AWAITED)",
+    fields:[
+    { n:"Preferred_Vendor", l:"Preferred Vendor?", t:"radio", o:["Yes","No"] },
+    { n:"Vendors", l:"Vendors", t:"multiselect", o:"@vendors", full:true },
+    { n:"Vendor_Email", l:"Vendor Email", t:"text" },
+    { n:"Assignment_Sent", l:"Assignment Sent?", t:"radio", o:["Yes","No"] },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    { n:"Assigned_Technician_Email", l:"Technician Email", t:"text" }
+  ]},
+
+  /* ---- RSR branch (reordered: accept -> reach -> WIP, was accept -> WIP -> reach) ---- */
+  { key:"acceptance", branch:"rsr", bucket:1, short:"Accept", title:"Service Acceptance",
+    desc:"Vendor/technician response to the assignment.", save:"Save Acceptance",
+    statuses:["RSP ON THE WAY","RSP REJECT"],
+    status:(r)=> r.Service_Request==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    fields:[
+    { n:"Service_Request", l:"Response", t:"radio", o:["Accepted","Rejected"] },
+    { n:"Assign_Technican", l:"Assign Technician?", t:"radio", o:["Yes","No"] },
+    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request==="Rejected", full:true },
+    { n:"Vendor_Email1", l:"Vendor Email", t:"text" },
+    { n:"Technician_Email", l:"Technician Email", t:"text" }
+  ]},
+  { key:"reach", branch:"rsr", bucket:2, short:"Reach", title:"Reach Breakdown Location",
+    desc:"Arrival, ETA and navigation.", save:"Save",
+    statuses:["RSP ON THE WAY","RSP CANCELLED"],
+    status:(r)=> r.Action_field==="Cancel" ? "RSP CANCELLED" : "RSP ON THE WAY",
+    fields:[
+    { n:"Action_field", l:"Action", t:"radio", o:["Reached","Cancel"] },
+    { n:"ETA", l:"ETA (mins)", t:"number" },
+    { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", t:"number" },
+    { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
+    { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
+    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field==="Cancel", full:true }
+  ]},
+  { key:"wip", branch:"rsr", bucket:2, short:"WIP", title:"Work In Progress",
+    desc:"On-site repair — photos, expense and resolution.", save:"Save Progress",
+    statuses:["WORK IN PROGRESS"], status:"WORK IN PROGRESS",
+    fields:[
+    { n:"Issue_Resolved", l:"Issue Resolved?", t:"radio", o:["Yes","No"] },
+    { n:"Image_Upload3", l:"Pre-service Photo", t:"file" },
+    { n:"Image_Upload4", l:"Post-service Photo", t:"file" },
+    { n:"Expense_Amount", l:"Expense Amount", t:"number" },
+    { n:"Expense_Photo", l:"Expense Photo", t:"file" },
+    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number" },
+    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number" },
+    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number" },
+    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number" }
+  ]},
+
+  /* ---- TOW branch (reordered: accept -> reach -> load -> reached drop -> unload,
+     was accept -> reach -> reached drop -> load -> unload) ---- */
+  { key:"acceptanceTow", branch:"tow", bucket:1, short:"Accept", title:"Service Acceptance (Tow)",
+    desc:"Driver response to the tow assignment.", save:"Save Acceptance",
+    statuses:["RSP ON THE WAY","RSP REJECT"],
+    status:(r)=> r.Service_Request1==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    fields:[
+    { n:"Service_Request1", l:"Response", t:"radio", o:["Accepted","Rejected"] },
+    { n:"Assign_Technican1", l:"Assign Driver?", t:"radio", o:["Yes","No"] },
+    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request1==="Rejected", full:true },
+    { n:"Image_Upload1", l:"Photo", t:"file" },
+    { n:"Vendor_Email2", l:"Vendor Email", t:"text" },
+    { n:"Technician_Email1", l:"Driver Email", t:"text" }
+  ]},
+  { key:"reachTow", branch:"tow", bucket:2, short:"Reach", title:"Reach Breakdown (Tow)",
+    desc:"Arrival, odometer and toll.", save:"Save",
+    statuses:["RSP ON THE WAY"], status:"RSP ON THE WAY",
+    fields:[
+    { n:"Odometer_reading_at_Reached_Location", l:"Odometer at Reached", t:"number" },
+    { n:"Toll_Charges", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
+    { n:"Navigate_To_Breakdown_Link", l:"Navigate to Breakdown Link", t:"textarea", full:true },
+    { n:"Image_Upload5", l:"Arrival Photo", t:"file" },
+    { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, full:true }
+  ]},
+  { key:"wipLoadingTow", branch:"tow", bucket:2, short:"Loading", title:"Loading",
+    desc:"On-truck loading photos and VCRF.", save:"Save Loading",
+    statuses:["LOADING","RSP CANCELLED"],
+    status:(r)=> r.Action_field2==="Cancel" ? "RSP CANCELLED" : "LOADING",
+    fields:[
+    { n:"Pre_service_Photo", l:"Pre-service Photo", t:"file" },
+    { n:"Image_Upload_On_truck", l:"On-truck Photo", t:"file" },
+    { n:"VCRF", l:"VCRF", t:"file" },
+    { n:"Image_Upload6", l:"Additional Photo", t:"file" },
+    { n:"Action_field2", l:"Action", t:"radio", o:["Loaded","Cancel"] },
+    { n:"Rejection_Reason1", l:"Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field2==="Cancel", full:true }
+  ]},
+  { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
+    desc:"Odometer and drop-location proof.", save:"Save",
+    statuses:["TO DROP LOCATION"], status:"TO DROP LOCATION",
+    fields:[
+    { n:"Odometer_Reading", l:"Odometer Reading Photo", t:"file" },
+    { n:"Drop_Location_Photo", l:"Drop Location Photo", t:"file" },
+    { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"] }
+  ]},
+  { key:"wipUnloadingTow", branch:"tow", bucket:2, short:"Unload", title:"Unloading & Handover",
+    desc:"Unload, handover details and return journey.", save:"Save Handover",
+    statuses:["UNLOADING"], status:"UNLOADING",
+    fields:[
+    { n:"Unloaded_Images", l:"Unloaded Photo", t:"file" },
+    { n:"VCRF_Image", l:"VCRF Image", t:"file" },
+    { n:"Handover_Image", l:"Handover Photo", t:"file" },
+    { n:"Handover_to_Name", l:"Handover to (Name)", t:"text" },
+    { n:"Handover_to_Number", l:"Handover Number", t:"tel" },
+    { n:"Handover_to_Designation", l:"Handover Location", t:"select", o:["Home","Office","Work Shop"] },
+    { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true },
+    { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km)", t:"number" },
+    { n:"Drop_To_Office_Distance", l:"Drop → Office (km)", t:"number" },
+    { n:"Return_Journey_ETA", l:"Return ETA (mins)", t:"number" }
+  ]},
+
+  /* ---- shared late stages ---- */
+  { key:"payment", branch:"pay", bucket:3, short:"Payment", title:"Final Payment Collection",
+    desc:"Collect the remaining balance.", save:"Save Payment",
+    statuses:["RSP COMPLETE"], status:"RSP COMPLETE", // best guess — confirm vs RSP CLOSED
+    fields:[
+    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
+    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Payment Gateway","Cash","Card"] },
+    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
+    { n:"QR_Code", l:"QR / Reference", t:"text" },
+    { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },
+    { n:"Upload_Photo_of_receipt", l:"Receipt Photo", t:"file" }
+  ]},
+  { key:"closure", branch:"final", bucket:3, short:"Close", title:"Final Closure",
+    desc:"Review the ticket and close it out.", save:"Finish & Close",
+    statuses:["CLOSED"], status:"CLOSED",
+    fields:[
+    { n:"__summary", l:"", t:"summary", full:true },
+    { n:"Remarks", l:"Closing Notes", t:"textarea", full:true }
+  ]}
+];
+
+/* build the active stage path from Service_Type */
+function buildPath(serviceType){
+  const all   = STAGES.filter(s=>s.branch==="all");
+  const branch= STAGES.filter(s=>s.branch===(serviceType==="TOW"?"tow":"rsr"));
+  const pay   = STAGES.filter(s=>s.branch==="pay");
+  const fin   = STAGES.filter(s=>s.branch==="final");
+  return all.concat(branch, pay, fin);
+}
+/* Create_Case.Status is a real fixed picklist (confirmed 2026-07-28) — every
+   save must write one of these exact values, never the human-readable stage
+   title. computeStatus() resolves a stage's static status or (for stages that
+   branch on Accept/Reject/Cancel) calls its status(record) function. */
+function computeStatus(step, record){
+  return typeof step.status==="function" ? step.status(record) : step.status;
+}
+/* Board shows one column per real Status picklist value (all 20, in the exact
+   order the field lists them) — nothing gets bucketed away this time. Each
+   column still borrows its accent colour/icon/pill from the same 4 semantic
+   groups the old 4-bucket dashboard used, so the visual language (blue =
+   just-in, amber = ready/awaiting a response, orange = active job, grey =
+   done) carries over unchanged; only the grouping granularity changed. */
+const GROUPS = {
+  new:    { accent:"var(--info)",   pill:"b-new",
+    icon:'<svg viewBox="0 0 24 24" fill="none"><path d="M4 12h4l2 3h4l2-3h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 5h13l1.5 7v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6l1.5-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>' },
+  ready:  { accent:"var(--wait)",   pill:"b-asg",
+    icon:'<svg viewBox="0 0 24 24" fill="none"><rect x="6" y="4" width="12" height="17" rx="2" stroke="currentColor" stroke-width="2"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2"/><path d="m9 13 2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
+  wip:    { accent:"var(--signal)", pill:"b-wip",
+    icon:'<svg viewBox="0 0 24 24" fill="none"><path d="M14.7 6.3a4 4 0 0 0-5.4 4.9L4 16.5V20h3.5l5.3-5.3a4 4 0 0 0 4.9-5.4l-2.6 2.6-2-2 2.6-2.6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>' },
+  closed: { accent:"var(--muted)",  pill:"b-closed",
+    icon:'<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="m8.5 12.5 2.5 2.5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' }
+};
+const BUCKETS = [
+  { status:"NEW", name:"New", sub:"Just came in", group:"new" },
+  { status:"OPEN", name:"Open", sub:"Just came in", group:"new" },
+  { status:"SCHEDULED", name:"Scheduled", sub:"Scheduled for later", group:"ready" },
+  { status:"READY", name:"Ready", sub:"Ready for a provider", group:"ready" },
+  { status:"SERVICE FEE QUOTE", name:"Service Fee Quote", sub:"Quote in progress", group:"new" },
+  { status:"BOOKING FEE PENDING", name:"Booking Fee Pending", sub:"Awaiting payment", group:"new" },
+  { status:"LOCATION REQUEST", name:"Location Request", sub:"Awaiting location", group:"new" },
+  { status:"LOCATION PENDING", name:"Location Pending", sub:"Location requested", group:"new" },
+  { status:"RSP IRA (INVITE RESPONSE AWAITED)", name:"RSP IRA", sub:"Invite response awaited", group:"ready" },
+  { status:"RSP REJECT", name:"RSP Reject", sub:"Needs reassignment", group:"ready" },
+  { status:"RSP ON THE WAY", name:"RSP On The Way", sub:"En route", group:"wip" },
+  { status:"WORK IN PROGRESS", name:"Work In Progress", sub:"On-site repair", group:"wip" },
+  { status:"LOADING", name:"Loading", sub:"Tow — loading", group:"wip" },
+  { status:"TO DROP LOCATION", name:"To Drop Location", sub:"Tow — in transit", group:"wip" },
+  { status:"UNLOADING", name:"Unloading", sub:"Tow — unloading", group:"wip" },
+  { status:"RSP COMPLETE", name:"RSP Complete", sub:"Awaiting final payment", group:"ready" },
+  { status:"RSP CANCELLED", name:"RSP Cancelled", sub:"Cancelled", group:"closed" },
+  { status:"CX REJECT", name:"CX Reject", sub:"Customer rejected", group:"closed" },
+  { status:"CLOSED", name:"Closed", sub:"Closed out", group:"closed" },
+  { status:"RSP CLOSED", name:"RSP Closed", sub:"Closed out", group:"closed" }
+];
+function bucketOfStatus(status){
+  if(!status) return -1;
+  const key = String(status).trim().toUpperCase();
+  return BUCKETS.findIndex(b=>b.status===key);
+}
+/* find where in a resolved RSR/TOW path a given saved Status value belongs —
+   some statuses (e.g. "RSP ON THE WAY") are valid for more than one stage, so
+   this is a best fit, not a guarantee; the stepper lets the agent jump anyway. */
+function stageIndexForStatus(path, status){
+  if(!status) return 0;
+  const key = String(status).trim().toUpperCase();
+  const idx = path.findIndex(s => (s.statuses||[]).some(v=>v.toUpperCase()===key));
+  return idx>=0 ? idx : 0;
+}
+
+/* ---------- load dropdown options (best-effort) ---------- */
+async function loadOptions(){
+  const O = CONFIG.optionReports;
+  async function pull(spec){
+    const recs = await apiGetReport(spec.report, null, spec.max); // Creator only accepts 200, 500 or 1000 (apiGetReport defaults to 200)
+    return recs.map(function(r){
+      let label="";
+      for(const f of spec.label){ if(r[f]){ label = (typeof r[f]==="object")?(r[f].display_value||r[f].zc_display_value||""):String(r[f]); if(label) break; } }
+      if(!label) label = r.ID;
+      return { v:label, label:label, id:r.ID, raw:r };
+    });
+  }
+  try{ OPTIONS.vehicles    = await pull(O.vehicles); }catch(e){}
+  try{ OPTIONS.issues      = await pull(O.issues); }catch(e){}
+  try{ OPTIONS.vendors     = await pull(O.vendors); }catch(e){}
+  try{ OPTIONS.technicians = await pull(O.technicians); }catch(e){}
+  try{ OPTIONS.clients     = await pull(O.clients); }catch(e){}
+  try{ RATE_MASTER = await apiGetReport(CONFIG.rateMasterReport, null, 1000); }catch(e){}
+}
+/* option lists for a field — "@vehicleIssues" is computed on the fly (vehicle-
+   dependent), everything else is a static pull from OPTIONS. Shared by
+   resolveOptions (render) and idsFor (payload) so both always agree. */
+function optionsListFor(field){
+  if(Array.isArray(field.o)) return field.o.map(function(v){ return {v:v,label:v}; });
+  if(field.o==="@vehicleIssues") return vehicleIssuesFor(state.record[CONFIG.vehicleField]);
+  if(typeof field.o==="string" && field.o[0]==="@"){ return OPTIONS[field.o.slice(1)] || []; }
+  return [];
+}
+function resolveOptions(field){ return optionsListFor(field); }
+
+/* ---------- vehicle_master + Vehicle_Issue_Report → issue derivation ----------
+   Vehicle_Issue_Report holds every issue with a VEHICLE_TYPE (2W/4W, multiselect)
+   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose VEHICLE_TYPE
+   includes the selected vehicle's own Category (2W/4W, from vehicle_master_Report).
+   The chosen issue's Issue_Type then drives Service_Type: TOW -> "TOW", anything
+   else -> "RSR". */
+function valuesOf(v){
+  if(v==null) return [];
+  if(Array.isArray(v)) return v.map(String);
+  if(typeof v==="object") return [String(v.display_value||v.zc_display_value||v.value||"")];
+  return String(v).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+}
+function vehicleIssuesFor(vehicleLabel){
+  if(!vehicleLabel) return [];
+  const veh = OPTIONS.vehicles.find(function(v){ return v.v===vehicleLabel; });
+  if(!veh || !veh.raw) return [];
+  const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
+  if(!category) return [];
+  return OPTIONS.issues.filter(function(issue){
+    const types = valuesOf(issue.raw && issue.raw.VEHICLE_TYPE);
+    return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
+  });
+}
+function isTowIssue(issueLabel){
+  const m = OPTIONS.issues.find(function(o){ return String(o.v)===String(issueLabel); });
+  const type = m && m.raw ? valuesOf(m.raw.Issue_Type).join(" ") : "";
+  return /tow/i.test(type);
+}
+
+/* ---------- round-trip distance (TOW only, "locations" step) ----------
+   Static office location; round trip = office -> breakdown -> drop -> office.
+   Falls back to office -> breakdown -> office if the drop pin isn't set yet. */
+const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228;
+function haversineKm(lat1,lon1,lat2,lon2){
+  const toRad=function(d){ return d*Math.PI/180; };
+  const R=6371;
+  const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function calcRoundTripKm(r){
+  const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+  if(isNaN(bLat)||isNaN(bLon)) return 0;
+  let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
+  const dLat=Number(r.DropLocationLat), dLon=Number(r.DropLocationLong);
+  if(!isNaN(dLat) && !isNaN(dLon)){
+    total+=haversineKm(bLat,bLon,dLat,dLon);
+    total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON);
+  } else {
+    total+=haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON);
+  }
+  return Math.round(total*10)/10;
+}
+
+/* ---------- Rate_Master → Suggested_Rate / Rate_Breakup ----------
+   Ported from the native Create_Case form's Deluge (runs on Create -> Quote
+   section transition there; here it runs whenever the "quote" step renders or
+   the distance field changes). For every selected Vehicle_Issue, finds the
+   Rate_Master row matching the vehicle's Vehicle_Type(=Category) + Vehicle_Segment
+   + Issue.Issue_Name: FIXED rows use Fixed_Rate as-is; FORMULA rows need
+   Distance_For_Quote_RT_KM ("RT_KM" on the native form) and compute
+   Formula_Base_Amount + (RT_KM + Formula_KM_Buffer) * Formula_Per_KM_Rate,
+   floored at Formula_Min_Amount. NOTE: "Rate_Master_Report" is a best-guess
+   report name (see CONFIG.rateMasterReport) — not yet confirmed live. */
+let RATE_MASTER = [];
+function calcQuote(){
+  const r = state.record;
+  const veh = OPTIONS.vehicles.find(function(v){ return v.v===r[CONFIG.vehicleField]; });
+  const issues = Array.isArray(r.Vehicle_Issue) ? r.Vehicle_Issue : [];
+  const out = { total:0, breakup:"", needsDistance:false };
+  if(!veh || !veh.raw || !issues.length) return out;
+  const vType = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0] || "";
+  const vSegment = valuesOf(veh.raw.Segment)[0] || "";
+  const rtKm = Number(r.Distance_For_Quote_RT_KM) || 0;
+  issues.forEach(function(issueName){
+    const rate = RATE_MASTER.find(function(row){
+      const rowType = valuesOf(row.Vehicle_Type)[0] || "";
+      const rowSeg = valuesOf(row.Vehicle_Segment)[0] || "";
+      const rowIssue = valuesOf(row.Issue)[0] || "";
+      return rowType.toUpperCase()===vType.toUpperCase() && rowSeg.toUpperCase()===vSegment.toUpperCase() && rowIssue.toUpperCase()===String(issueName).toUpperCase();
+    });
+    if(!rate){ out.breakup += issueName+": Rs. -- (no rate rule found)\n"; return; }
+    if(String(valuesOf(rate.Rate_Type)[0]||"").toUpperCase()==="FIXED"){
+      const amt = Number(rate.Fixed_Rate)||0;
+      out.total += amt;
+      out.breakup += issueName+": Rs. "+amt+"\n";
+    } else {
+      out.needsDistance = true;
+      if(rtKm>0){
+        const formulaAmount = (Number(rate.Formula_Base_Amount)||0) + (rtKm + (Number(rate.Formula_KM_Buffer)||0)) * (Number(rate.Formula_Per_KM_Rate)||0);
+        const minAmt = Number(rate.Formula_Min_Amount)||0;
+        const amt = formulaAmount > minAmt ? formulaAmount : minAmt;
+        out.total += amt;
+        out.breakup += issueName+": Rs. "+amt+" (RT_KM: "+rtKm+" km)\n";
+      } else {
+        out.breakup += issueName+": Rs. -- (enter distance — distance needed for this issue)\n";
+      }
+    }
+  });
+  return out;
+}
+
+/* ---------- demo data (preview only) ---------- */
+const DEMO_VEHICLES = [
+  { ID:"V1", Name:"Maruti Swift", Category:"4W", Segment:"B" },
+  { ID:"V2", Name:"Honda Activa", Category:"2W", Segment:"A" },
+  { ID:"V3", Name:"BMW 3 Series", Category:"4W", Segment:"D" }
+];
+const DEMO_ISSUES = [
+  { ID:"I1", Issue_Name:"Battery Jumpstart", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", VEHICLE_TYPE:["4W"], Issue_Type:"REPAIR" },
+  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", VEHICLE_TYPE:["2W"], Issue_Type:"REPAIR" },
+  { ID:"I4", Issue_Name:"Key Lockout", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I5", Issue_Name:"Flatbed Tow", VEHICLE_TYPE:["4W"], Issue_Type:"TOW" },
+  { ID:"I6", Issue_Name:"Mobile Tow", VEHICLE_TYPE:["2W"], Issue_Type:"TOW" }
+];
+const DEMO_CLIENTS = [
+  { ID:"C1", Client_Name:"Ondemand" },
+  { ID:"C2", Client_Name:"Roadzen" },
+  { ID:"C3", Client_Name:"Allianz" }
+];
+const DEMO_RATE_MASTER = [
+  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:500 },
+  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:300 },
+  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Puncture (Tubeless Tyre)", Rate_Type:"FIXED", Fixed_Rate:650 },
+  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Puncture (Tube Tyre)", Rate_Type:"FIXED", Fixed_Rate:350 },
+  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Key Lockout", Rate_Type:"FIXED", Fixed_Rate:550 },
+  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Flatbed Tow", Rate_Type:"FORMULA", Formula_Base_Amount:800, Formula_KM_Buffer:2, Formula_Per_KM_Rate:25, Formula_Min_Amount:1000 },
+  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Mobile Tow", Rate_Type:"FORMULA", Formula_Base_Amount:400, Formula_KM_Buffer:1, Formula_Per_KM_Rate:15, Formula_Min_Amount:500 }
+];
+const DEMO = [
+  { ID:"9001", Case_ID:"CSID9001", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:{display_value:"Prasanna S."}, Service_Type:"RSR", Vehicle:"Maruti Swift", Vehicle_Issue:"Battery Jumpstart", Status:"Vendor Assignment" },
+  { ID:"9002", Case_ID:"CSID9002", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:{display_value:"Prasanna S."}, Service_Type:"TOW", Vehicle:"Maruti Brezza", Vehicle_Issue:"Flatbed Tow", Status:"Loading" },
+  { ID:"9003", Case_ID:"CSID9003", Phone_Number1:"+91 90123 70036", Phone_Number:"+91 90123 70036", Customer_Name:{display_value:"Imran S."}, Service_Type:"RSR", Vehicle:"Hyundai i20", Vehicle_Issue:"Engine Overheating", Status:"Create Service Ticket" },
+  { ID:"9004", Case_ID:"CSID9004", Phone_Number1:"+91 98765 40011", Phone_Number:"+91 98765 40011", Customer_Name:{display_value:"Ravi Kumar"}, Service_Type:"RSR", Vehicle:"Tata Nexon", Vehicle_Issue:"Key Lockout", Status:"Work In Progress" },
+  { ID:"9005", Case_ID:"CSID9005", Phone_Number1:"+91 98700 22110", Phone_Number:"+91 98700 22110", Customer_Name:{display_value:"Sathish M."}, Service_Type:"TOW", Vehicle:"Honda City", Vehicle_Issue:"Accident Tow", Status:"Final Payment Collection" },
+  { ID:"9006", Case_ID:"CSID9006", Phone_Number1:"+91 98700 55221", Phone_Number:"+91 98700 55221", Customer_Name:{display_value:"Neha R."}, Service_Type:"RSR", Vehicle:"Honda Activa", Vehicle_Issue:"Puncture", Status:"CLOSED" }
+];
+
+/* =====================================================================
+   STATE + DATA WRAPPERS (with demo fallback)
+   ===================================================================== */
+const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0 };
+
+async function getTickets(criteria){ if(SDK_READY) return apiGet(criteria); return demoQuery(criteria); }
+async function addTicket(data){ if(SDK_READY) return apiAdd(data); const id="D"+(Date.now()%100000); DEMO.unshift(Object.assign({ID:id},data)); return id; }
+async function updateTicket(id,data){ if(SDK_READY) return apiUpdate(id,data); const r=DEMO.find(x=>String(x.ID)===String(id)); if(r) Object.assign(r,data); return true; }
+/* best-effort demo-mode stand-in for a real criteria() query — pulls every
+   quoted search term back out of the built criteria string (one per OR'd
+   .contains() clause) and checks each DEMO record's phone digits + the
+   configured text fields against them. */
+function demoQuery(criteria){
+  if(!criteria) return DEMO.slice();
+  const terms = (criteria.match(/contains\("([^"]*)"/g)||[]).map(m=>m.slice(10,-1)).filter(Boolean);
+  if(!terms.length) return DEMO.slice();
+  return DEMO.filter(r=> terms.some(t=>{
+    const tDigits = t.replace(/\D/g,"");
+    if(tDigits && (r[CONFIG.phoneField]||"").replace(/\D/g,"").indexOf(tDigits)!==-1) return true;
+    const tLower = t.toLowerCase();
+    return CONFIG.searchTextFields.some(f=> String(r[f]||"").toLowerCase().indexOf(tLower)!==-1);
+  }));
+}
+
+/* =====================================================================
+   HELPERS
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+function pad(n){ return n<10?"0"+n:""+n; }
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDate(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear(); }
+function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":00"; }
+/* Computed_Service_Time is stored 12-hour with AM/PM + seconds (confirmed live,
+   e.g. "26-Jul-2026 11:25:18 PM") — different shape from fmtDateTime() above,
+   which is 24-hour with no AM/PM. Kept separate rather than changing the
+   generic one, since other datetime fields haven't shown this format live. */
+function fmtDateTime12(d){
+  const h24=d.getHours(); const ampm=h24<12?"AM":"PM"; const h12=(h24%12)||12;
+  return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(h12)+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())+" "+ampm;
+}
+function parseSlotStart(slot){
+  if(!slot) return null;
+  const m=String(slot).split(" - ")[0].trim().match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if(!m) return null;
+  let h=parseInt(m[1],10); const min=parseInt(m[2],10); const ap=m[3].toUpperCase();
+  if(ap==="PM" && h!==12) h+=12;
+  if(ap==="AM" && h===12) h=0;
+  return {h:h, m:min};
+}
+/* Computed_Service_Time: NOW -> 30 minutes from the moment of saving; LATER ->
+   the picked Schedule_Date combined with the picked Service_Time slot's start. */
+function computeServiceTime(r){
+  if(r.Time_of_service==="LATER"){
+    if(!r.Schedule_Date || !r.Service_Time) return "";
+    const dp=String(r.Schedule_Date).split("-"); // <input type=date> gives "YYYY-MM-DD"
+    if(dp.length!==3) return "";
+    const slot=parseSlotStart(r.Service_Time);
+    if(!slot) return "";
+    return fmtDateTime12(new Date(Number(dp[0]), Number(dp[1])-1, Number(dp[2]), slot.h, slot.m, 0));
+  }
+  return fmtDateTime12(new Date(Date.now()+30*60*1000));
+}
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+/* every phone number in this app is an Indian number — if the agent didn't
+   type a country code, assume +91 rather than leaving it bare. Matches the
+   "+919696406443" shape Create_Case expects (no spaces/dashes). */
+function formatIndianPhone(v){
+  if(!v) return "";
+  const s=String(v).trim();
+  if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
+  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  return "+91"+digits;
+}
+function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.first_name&&((v.first_name||"")+" "+(v.last_name||"")).trim()||v.value||""; return String(v); }
+function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
+let toastT;
+function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
+
+/* confirm modal -> promise */
+let modalResolve=null;
+function confirmBox(title,msg,yesLabel){
+  $("mTitle").textContent=title; $("mMsg").textContent=msg; $("mYes").textContent=yesLabel||"Yes";
+  $("modal").classList.add("on");
+  return new Promise(res=>{ modalResolve=res; });
+}
+$("mNo").onclick=()=>{ $("modal").classList.remove("on"); if(modalResolve) modalResolve(false); };
+$("mYes").onclick=()=>{ $("modal").classList.remove("on"); if(modalResolve) modalResolve(true); };
+
+/* =====================================================================
+   KANBAN BOARD
+   ===================================================================== */
+async function loadDashboard(){
+  showView("dashboard");
+  $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
+  let recs = await getTickets(null);
+  recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
+  renderBoard(recs);
+}
+function renderBoard(recs){
+  const cols = BUCKETS.map(()=>[]);
+  recs.forEach(r=>{ const b=bucketOfStatus(readVal(r,CONFIG.stageField)); if(b>=0) cols[b].push(r); });
+  $("columns").innerHTML = BUCKETS.map((bk,i)=>{
+    const g = GROUPS[bk.group];
+    const items = cols[i]; // show every matching ticket, not just the first few
+    const cards = items.length ? items.map(cardHtml).join("") : `<div class="kcol-empty">No tickets right now</div>`;
+    return `<div class="kcol" style="--accent:${g.accent}">
+      <div class="kcol-head"><span class="ic">${g.icon}</span><span class="tt"><b>${esc(bk.name)}</b><span>${esc(bk.sub)}</span></span><span class="cnt">${items.length}</span></div>
+      <div class="kcol-body">${cards}</div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#columns .kcard").forEach(el=>{
+    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); if(rec) openTicket(rec); };
+  });
+}
+function initials(name){
+  const parts=String(name||"").trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return "?";
+  return (parts[0][0]+(parts[1]?parts[1][0]:"")).toUpperCase();
+}
+/* checked = green filled box + white tick; unchecked = plain outline box */
+const FLAG_ON='<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/><path d="m7 12.3 3.2 3.2 6.6-6.6" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const FLAG_OFF='<svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="3.5" width="17" height="17" rx="5" stroke="currentColor" stroke-width="2"/></svg>';
+/* "Paid" also counts as ticked when there's no booking fee to collect at all
+   (Booking_Fee not >0) — matches quoteStatus()'s own feeZero test, same rule. */
+function isPaidFlag(r){ return r.Payment_Status==="PAID" || !(Number(r.Booking_Fee)>0); }
+/* "Loc" ticked only once both Latitude and Longitude actually hold a value —
+   empty-string/null must not read as valid 0,0 (Number("") is 0, not NaN). */
+function hasLocFlag(r){
+  const lat=r.Latitude, lon=r.Longitude;
+  if(lat==null||lat===""||lon==null||lon==="") return false;
+  return !isNaN(Number(lat)) && !isNaN(Number(lon));
+}
+/* Vendors' saved shape is a composite "[priority] Name | Phone | Status"
+   string (see §3 in README) — cards should show just the name, not the
+   priority/phone/status riding along with it. */
+function vendorDisplayName(v){
+  return String(v||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
+}
+function vendorNamesFor(r){
+  const v=r.Vendors; const arr=Array.isArray(v)?v:(v?[v]:[]);
+  return arr.map(vendorDisplayName).filter(Boolean).join(", ");
+}
+/* one Kanban card per ticket — same fields the old row-style dashboard showed,
+   just stacked vertically to fit a column instead of a full-width row. */
+function cardHtml(r){
+  const svc=(readVal(r,CONFIG.serviceTypeField)||"").toUpperCase();
+  const stage=readVal(r,CONFIG.stageField)||"—";
+  const b=bucketOfStatus(stage);
+  const bucket=b>=0 ? BUCKETS[b] : null;
+  const pill = bucket ? GROUPS[bucket.group].pill : "b-closed";
+  const name = readVal(r,CONFIG.nameField)||"—";
+  // Paid/Loc flags: "new" group cards only. Vendor line: "wip" group cards only.
+  const showFlags = !!bucket && bucket.group==="new";
+  const showVendor = !!bucket && bucket.group==="wip";
+  const paid=isPaidFlag(r), loc=hasLocFlag(r);
+  const vendor = vendorNamesFor(r)||r.Vendor_Email||"";
+  const serviceTime = readVal(r,"Computed_Service_Time");
+  return `<button class="kcard" data-id="${esc(r.ID)}" type="button">
+    <span class="kc-top">
+      <span class="avatar">${esc(initials(name))}</span>
+      <span class="kc-id">${esc(caseLabel(r))}</span>
+      <svg class="chev" viewBox="0 0 24 24" width="16" height="16"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="nm">${esc(name)}</span>
+    <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span>`:""}${esc(readVal(r,CONFIG.vehicleField)||"")} · ${esc(readVal(r,"Vehicle_Issue")||"")}</span>
+    ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
+    ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
+    ${showFlags ? `<span class="flags">
+      <span class="flag ${paid?"on":""}">${paid?FLAG_ON:FLAG_OFF}Paid</span>
+      <span class="flag ${loc?"on":""}">${loc?FLAG_ON:FLAG_OFF}Loc</span>
+    </span>` : ""}
+    <span class="kc-pill pill ${pill}">${esc(stage)}</span>
+  </button>`;
+}
+/* row-style renderer kept only for the search dropdown (a plain list reads
+   better than cards in that narrow, temporary overlay). */
+function rowHtml(r){
+  const svc=(readVal(r,CONFIG.serviceTypeField)||"").toUpperCase();
+  const stage=readVal(r,CONFIG.stageField)||"—";
+  const b=bucketOfStatus(stage);
+  const bucket=b>=0 ? BUCKETS[b] : null;
+  const pill = bucket ? GROUPS[bucket.group].pill : "b-closed";
+  const name = readVal(r,CONFIG.nameField)||"—";
+  const showFlags = !!bucket && bucket.group==="new";
+  const showVendor = !!bucket && bucket.group==="wip";
+  const paid=isPaidFlag(r), loc=hasLocFlag(r);
+  const vendor = vendorNamesFor(r)||r.Vendor_Email||"";
+  const serviceTime = readVal(r,"Computed_Service_Time");
+  return `<button class="rrow" data-id="${esc(r.ID)}" type="button">
+    <span class="avatar">${esc(initials(name))}</span>
+    <span class="main">
+      <span class="top-line"><span class="cid">${esc(caseLabel(r))}</span><span class="nm">${esc(name)}</span></span>
+      <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(readVal(r,CONFIG.vehicleField)||"")} · ${esc(readVal(r,"Vehicle_Issue")||"")}</span>
+      ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
+      ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
+      ${showFlags ? `<span class="flags">
+        <span class="flag ${paid?"on":""}">${paid?FLAG_ON:FLAG_OFF}Paid</span>
+        <span class="flag ${loc?"on":""}">${loc?FLAG_ON:FLAG_OFF}Loc</span>
+      </span>` : ""}
+    </span>
+    <span class="pill ${pill}">${esc(stage)}</span>
+    <svg class="chev" viewBox="0 0 24 24" width="18" height="18"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>`;
+}
+
+/* search — a dropdown under the search bar, driven by the search button/Enter
+   (not live-as-you-type, to avoid firing a query on every keystroke). Reads
+   from CONFIG.reportName (Agent_Ticket_Report) via the same getTickets() every
+   other list uses. Clicking a result opens it exactly like a board card. */
+function closeSearchDropdown(){ const dd=$("searchDropdown"); dd.classList.remove("on"); dd.innerHTML=""; }
+function onSearchInput(){
+  const raw=$("q").value.trim(); $("clearSearch").style.display = raw?"flex":"none";
+  if(raw.length<3) closeSearchDropdown();
+}
+/* Search box matches on CONFIG.phoneField (digits-only, needs >=3 digits typed)
+   OR'd with every field in CONFIG.searchTextFields (Case_ID, Vehicle_Registration_Number,
+   Client_Tracking_Id) matched as typed. Quotes are stripped from the typed text
+   so it can't break the criteria string. */
+async function runSearch(){
+  const raw=$("q").value.trim();
+  if(raw.length<3){ toast("Type at least 3 characters — phone number, Case ID, vehicle reg. no., or client tracking ID","err"); return; }
+  const digits=raw.replace(/\D/g,"");
+  const safe=raw.replace(/"/g,"");
+  const dd=$("searchDropdown");
+  dd.classList.add("on");
+  dd.innerHTML='<div class="sd-msg"><div class="spin" style="width:22px;height:22px;margin-bottom:8px"></div>Searching…</div>';
+  const clauses=[];
+  if(digits.length>=3) clauses.push("("+CONFIG.phoneField+'.contains("'+digits+'"))');
+  CONFIG.searchTextFields.forEach(f=>{ clauses.push("("+f+'.contains("'+safe+'"))'); });
+  const crit=clauses.join(" || ");
+  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit, "| SDK_READY:", SDK_READY);
+  const recs=await getTickets(crit);
+  console.log("[Get-Rescue] search matched", recs.length, "record(s):", recs);
+  if(!recs.length){ dd.innerHTML=`<div class="sd-msg">No ticket found for "${esc(raw)}"</div>`; return; }
+  dd.innerHTML=recs.map(rowHtml).join("");
+  dd.querySelectorAll(".rrow").forEach(el=>{
+    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); closeSearchDropdown(); if(rec) openTicket(rec); };
+  });
+}
+document.addEventListener("click",e=>{
+  const box=document.querySelector(".search");
+  if(box && !box.contains(e.target)) closeSearchDropdown();
+});
+
+/* =====================================================================
+   VIEWS
+   ===================================================================== */
+function showView(v){
+  state.view=v;
+  $("dashboard").classList.toggle("off", v!=="dashboard");
+  $("wizard").classList.toggle("on", v==="wizard");
+  $("bar").style.display = v==="wizard" ? "block" : "none";
+  if(v==="dashboard") window.scrollTo(0,0);
+}
+
+/* =====================================================================
+   WIZARD (edit-only — every ticket here already exists; there is no
+   "new ticket" entry point on the board)
+   ===================================================================== */
+/* Lookup fields (useId:true) come back from Creator as objects (or arrays of
+   objects) with a display_value, not the plain label the rest of the UI works
+   with. Unwrap them once on load so the select/chip UI, and vehicleIssuesFor's
+   label match, see the same plain strings they'd see on a freshly-built ticket. */
+function unwrapLookup(v){
+  if(v==null) return v;
+  if(Array.isArray(v)) return v.map(unwrapLookup);
+  if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||"";
+  return v;
+}
+function openTicket(rec){
+  state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID;
+  STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  setPath();
+  const st=readVal(rec,CONFIG.stageField);
+  state.stepIndex = stageIndexForStatus(state.path, st);
+  state.maxStepIndex = state.stepIndex; // can revisit anything already reached, not skip ahead of it
+  showView("wizard"); renderWizard();
+}
+function setPath(){
+  const t=(state.record[CONFIG.serviceTypeField]||"").toUpperCase();
+  state.path=buildPath(t==="TOW"?"TOW":"RSR");
+  if(state.stepIndex>state.path.length-1) state.stepIndex=state.path.length-1;
+}
+/* shown on stepper steps beyond state.maxStepIndex — mandatory fields on an
+   earlier step haven't been saved yet, so the agent can't skip ahead to them */
+const LOCK_ICON='<svg viewBox="0 0 24 24" width="11" height="11"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+function renderWizard(){
+  const step=state.path[state.stepIndex];
+  $("wizStageTitle").textContent = "Edit Ticket";
+  $("wizCaseId").textContent = state.recordId ? caseLabel(state.record) : "unsaved";
+  // Service_Type drives the branch below but is never shown — it's derived from Vehicle_Issue and saved silently.
+  // stepper
+  $("steps").innerHTML = state.path.map((s,i)=>{
+    const locked = i>state.maxStepIndex;
+    const cls = (i===state.stepIndex?"active":(i<state.stepIndex?"done":""))+(locked?" locked":"");
+    const num = locked ? LOCK_ICON : (i<state.stepIndex?"✓":(i+1));
+    return `<div class="step ${cls}" data-i="${i}"><span class="n">${num}</span><span class="lb">${s.short}</span></div>`;
+  }).join("");
+  document.querySelectorAll("#steps .step").forEach(el=>{
+    const i=+el.dataset.i;
+    if(i>state.maxStepIndex) return; // locked — mandatory fields on an earlier step haven't been saved yet
+    el.onclick=()=>jumpTo(i);
+  });
+  const pct = state.path.length>1 ? (state.stepIndex/(state.path.length-1))*100 : 100;
+  $("pbarFill").style.width = pct+"%";
+  // buttons
+  $("prevBtn").disabled = state.stepIndex===0;
+  $("saveBtn").textContent = step.save;
+  $("closeBtn").style.display = step.key==="create" ? "none" : ""; // no ticket to close yet on the first step
+  if(step.key==="quote"){
+    const q=calcQuote();
+    state.record.Suggested_Rate=q.total;
+    state.record.Rate_Breakup=q.breakup;
+    if(state.record.Total_Service_Fee==null || state.record.Total_Service_Fee==="") state.record.Total_Service_Fee=q.total;
+    state.record.Remaining_Fee=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Booking_Fee)||0);
+  }
+  // fields
+  $("stepTitle").textContent = step.title;
+  $("stepDesc").textContent = step.desc||"";
+  renderFields(step);
+}
+function renderFields(step){
+  const box=$("fields"); box.innerHTML="";
+  step.fields.forEach(f=>{
+    if(f.when && !f.when(state.record)) return;
+    if(f.t==="badge") return; // computed + saved silently, never shown
+    box.appendChild(buildField(f));
+  });
+}
+function buildField(f){
+  const wrap=document.createElement("div");
+  wrap.className="fld"+(f.full?" full":"");
+  if(f.t==="summary"){ wrap.innerHTML=summaryHtml(); return wrap; }
+  const id="f_"+f.n;
+  const lab=`<label>${esc(f.l)}${f.req?'<span class="req">*</span>':""}</label>`;
+  const cur=state.record[f.n];
+  if(f.t==="textarea"){
+    wrap.innerHTML=lab+`<textarea id="${id}">${esc(cur||"")}</textarea>`;
+  } else if(f.t==="select"){
+    const baseOpts=resolveOptions(f);
+    const knownVals=baseOpts.map(o=>String(o.v));
+    const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
+    const isCustom = !!(f.other && effectiveCur!=="" && knownVals.indexOf(String(effectiveCur))===-1);
+    const selVal = isCustom ? "Other" : effectiveCur;
+    const opts=baseOpts.map(o=>`<option value="${esc(o.v)}" ${String(selVal)===String(o.v)?"selected":""}>${esc(o.label)}</option>`).join("");
+    const showOther = f.other && selVal==="Other";
+    wrap.innerHTML=lab+`<select id="${id}"${f.disabled?" disabled":""}><option value="">— select —</option>${opts}</select>`
+      + (f.other ? `<input type="text" id="${id}_other" placeholder="Please specify ${esc(f.l)}" value="${esc(isCustom?effectiveCur:"")}" style="margin-top:8px${showOther?"":";display:none"}">` : "");
+  } else if(f.t==="radio"){
+    const sel = cur!=null?String(cur):"";
+    const opts=resolveOptions(f).map(o=>`<div class="opt ${sel===String(o.v)?"sel":""}" data-value="${esc(o.v)}">${esc(o.label)}</div>`).join("");
+    wrap.innerHTML=lab+`<div class="radio-set" id="${id}">${opts}</div>`;
+  } else if(f.t==="check"){
+    const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
+    wrap.innerHTML=`<label class="check"><input type="checkbox" id="${id}" ${on?"checked":""}><span>${esc(f.l)}</span></label>`;
+  } else if(f.t==="button"){
+    const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
+    const locked = on && !f.repeatable; // repeatable buttons (e.g. recalculate) never lock into a permanent "done" state
+    const doneIcon='<svg viewBox="0 0 24 24" width="17" height="17"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    wrap.innerHTML=`<button type="button" id="${id}" class="btn ${locked?"ok":"primary"}" style="width:100%;justify-content:center"${locked?" disabled":""}>${locked?doneIcon+" "+esc(f.doneLabel||"Done"):esc(f.buttonLabel||f.l)}</button>`;
+  } else if(f.t==="multiselect"){
+    if(f.needsVehicle && !state.record[CONFIG.vehicleField]){
+      wrap.innerHTML=lab+`<div class="hint" style="padding:4px 0">Select a vehicle first</div>`;
+    } else {
+      const arr = Array.isArray(cur)?cur:(cur?String(cur).split(",").map(s=>s.trim()):[]);
+      const allOpts = resolveOptions(f);
+      const selectedOpts = arr.map(v=>allOpts.find(o=>String(o.v)===String(v))||{v:v,label:v});
+      const remaining = allOpts.filter(o=>arr.indexOf(o.v)===-1);
+      const chips = selectedOpts.length
+        ? selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("")
+        : `<span class="chip-empty">None selected</span>`;
+      const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
+      const addBox = remaining.length
+        ? `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`
+        : (allOpts.length ? "" : `<span class="hint">This vehicle has no issues configured</span>`);
+      wrap.innerHTML=lab+`<div class="chips" id="${id}_chips">${chips}</div>`+addBox;
+    }
+  } else if(f.t==="name2"){
+    // Customer_Name is saved as a single plain-text string ("First Last") — split
+    // on the first space so a reopened ticket still populates both boxes.
+    let nm = {};
+    if(cur && typeof cur==="object") nm = cur;
+    else if(typeof cur==="string" && cur){ const parts=cur.split(" "); nm={first_name:parts[0]||"", last_name:parts.slice(1).join(" ")}; }
+    wrap.innerHTML=lab+`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <input id="f_firstName" placeholder="First name" value="${esc(nm.first_name||"")}">
+      <input id="f_lastName" placeholder="Last name" value="${esc(nm.last_name||"")}"></div>`;
+  } else if(f.t==="file"){
+    const has = state.files[f.n];
+    wrap.innerHTML=lab+`<input type="file" id="${id}" accept="image/*">`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(cur?`<span class="hint">Already uploaded</span>`:""));
+  } else {
+    const map={tel:"tel",email:"email",number:"number",decimal:"number",date:"date",datetime:"datetime-local",time:"time",text:"text"};
+    const step2 = (f.t==="decimal")?' step="any"':"";
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${f.readonly?" readonly":""} value="${esc(cur||"")}">`+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+  }
+  // interactions
+  setTimeout(()=>wireField(f,id),0);
+  return wrap;
+}
+const RERENDER=["Time_of_service","Action_field","Action_field2","Service_Request","Service_Request1","Vehicle"];
+/* any field change that forces a full re-render must snapshot the DOM into
+   state.record FIRST (via collectStep(false)) — otherwise every other field
+   on the step (plain text inputs have no live listener of their own) reverts
+   to its last-saved value and looks like it "went blank". */
+function wireField(f,id){
+  if(f.t==="multiselect"){ wireMultiselect(f,id); return; }
+  const el=$(id); if(!el) return;
+  if(f.t==="radio"){
+    el.querySelectorAll(".opt").forEach(o=>o.onclick=()=>{
+      el.querySelectorAll(".opt").forEach(x=>x.classList.remove("sel")); o.classList.add("sel");
+      state.record[f.n]=o.dataset.value;
+      if(RERENDER.indexOf(f.n)>=0){ collectStep(false); renderWizard(); }
+    });
+  } else if(f.t==="check"){
+    el.onchange=()=>{ state.record[f.n]=el.checked; };
+  } else if(f.t==="button"){
+    el.onclick=()=>{
+      state.record[f.n]=true;
+      if(typeof f.action==="function") f.action(state.record); // e.g. Calculate_Distance sets RT_KM
+      collectStep(false); renderWizard();
+    };
+  } else if(f.t==="file"){
+    el.onchange=()=>{ if(el.files&&el.files[0]) state.files[f.n]=el.files[0]; };
+  } else if(f.t==="select"){
+    el.onchange=()=>{
+      state.record[f.n]=el.value;
+      if(f.other){ const oEl=$(id+"_other"); if(oEl) oEl.style.display = el.value==="Other" ? "block":"none"; if(el.value==="Other" && oEl) oEl.focus(); }
+      if(RERENDER.indexOf(f.n)>=0){
+        collectStep(false); // snapshot everything else on screen before we rebuild it
+        if(f.n===CONFIG.vehicleField){ state.record.Vehicle_Issue=[]; state.record[CONFIG.serviceTypeField]=""; }
+        setPath(); renderWizard();
+      }
+    };
+    if(f.other){ const oEl=$(id+"_other"); if(oEl) oEl.onchange=()=>{ if(el.value==="Other") state.record[f.n]=oEl.value; }; }
+  } else if(f.recompute || f.parseTarget){
+    el.onchange=()=>{
+      collectStep(false);
+      if(f.parseTarget){
+        // e.g. "28.647, 65.546" -> Latitude/Longitude (or the drop-location pair)
+        const parts=String(state.record[f.n]||"").split(",").map(s=>s.trim()).filter(Boolean);
+        if(parts.length>=2){
+          const lat=Number(parts[0]), lon=Number(parts[1]);
+          if(!isNaN(lat)) state.record[f.parseTarget[0]]=lat;
+          if(!isNaN(lon)) state.record[f.parseTarget[1]]=lon;
+        }
+      }
+      renderWizard();
+    };
+  }
+}
+/* Zoho-style multiselect: selected values show as removable chips, plus an
+   "+ Add…" dropdown of what's left. state.record is the single source of
+   truth (no DOM scraping at collect time — see collectStep). */
+function wireMultiselect(f,id){
+  const chipsBox=$(id+"_chips");
+  if(chipsBox){
+    chipsBox.querySelectorAll("button[data-remove]").forEach(btn=>{
+      btn.onclick=()=>{
+        const val=btn.getAttribute("data-remove");
+        const cur=Array.isArray(state.record[f.n])?state.record[f.n]:[];
+        state.record[f.n]=cur.filter(x=>x!==val);
+        afterMultiselectChange(f);
+      };
+    });
+  }
+  const addEl=$(id);
+  if(addEl && addEl.tagName==="SELECT"){
+    addEl.onchange=()=>{
+      if(!addEl.value) return;
+      const cur=Array.isArray(state.record[f.n])?state.record[f.n].slice():[];
+      if(cur.indexOf(addEl.value)===-1) cur.push(addEl.value);
+      state.record[f.n]=cur;
+      afterMultiselectChange(f);
+    };
+  }
+}
+function afterMultiselectChange(f){
+  if(f.n==="Vehicle_Issue"){
+    const vals=Array.isArray(state.record.Vehicle_Issue)?state.record.Vehicle_Issue:[];
+    state.record[CONFIG.serviceTypeField] = vals.length ? (vals.some(isTowIssue)?"TOW":"RSR") : "";
+  }
+  collectStep(false); // snapshot everything else on screen before we rebuild it
+  setPath();
+  renderWizard();
+}
+function summaryHtml(){
+  const r=state.record;
+  const rows=[
+    ["Case ID", state.recordId?caseLabel(r):"(unsaved)"],
+    ["Customer", readVal(r,CONFIG.nameField)],
+    ["Phone", r[CONFIG.phoneField]||""],
+    ["Service Type", r[CONFIG.serviceTypeField]||""],
+    ["Vehicle", r[CONFIG.vehicleField]||""],
+    ["Issue", readVal(r,"Vehicle_Issue")],
+    ["Total Fee", r.Total_Service_Fee||r.Total_Service_Fee1||""],
+    ["Booking Fee", r.Booking_Fee||""],
+    ["Remaining Fee", r.Remaining_Fee||""],
+    ["Vendor", readVal(r,"Vendors")||r.Vendor_Email||""],
+    ["Technician", r.Assigned_Technician||r.Assigned_Technician_Email||""]
+  ].filter(x=>x[1]!=="" && x[1]!=null);
+  return `<div class="summary">`+rows.map(x=>`<div class="srow"><span class="k">${esc(x[0])}</span><span class="v">${esc(x[1])}</span></div>`).join("")+`</div>`;
+}
+
+/* ---- collect current step DOM -> state.record ---- */
+function collectStep(validate){
+  const step=state.path[state.stepIndex]; let ok=true; let missing="";
+  step.fields.forEach(f=>{
+    if(f.when && !f.when(state.record)) return;
+    if(f.t==="summary") return;
+    if(f.t==="file") return; // handled via state.files
+    if(f.t==="badge") return; // read-only, value already set by Vehicle_Issue handler
+    if(f.t==="button") return; // no DOM value to read — its own onclick sets state.record directly
+    let v;
+    if(f.t==="name2"){
+      const fn=($("f_firstName")||{}).value||""; const ln=($("f_lastName")||{}).value||"";
+      v={first_name:fn,last_name:ln}; state.record[f.n]=v;
+      if(validate&&f.req&&!fn&&!ln){ ok=false; missing=missing||f.l; }
+      return;
+    }
+    if(f.t==="multiselect"){
+      // chip UI keeps state.record as the only source of truth — nothing to scrape from the DOM
+      v=Array.isArray(state.record[f.n])?state.record[f.n]:[];
+      if(validate&&f.req && !v.length){ ok=false; missing=missing||f.l; }
+      return;
+    }
+    const el=$("f_"+f.n); if(!el) return;
+    if(f.t==="radio"){ const s=el.querySelector(".opt.sel"); v=s?s.dataset.value:""; }
+    else if(f.t==="check"){ v=el.checked; }
+    else if(f.t==="select" && f.other){
+      v=el.value;
+      if(v==="Other"){ const oEl=$("f_"+f.n+"_other"); const ov=((oEl&&oEl.value)||"").trim(); if(ov) v=ov; }
+    }
+    else if(f.t==="tel"){ v=formatIndianPhone(el.value); }
+    else { v=el.value; }
+    state.record[f.n]=v;
+    if(validate&&f.req){ const empty=(v===""||v==null||(Array.isArray(v)&&!v.length)); if(empty){ ok=false; missing=missing||f.l; } }
+  });
+  return {ok,missing};
+}
+/* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a live
+   record) — Creator's API rejects display text for those and wants the linked
+   record's ID instead. Vehicle_Issue/Vendors/Assigned_Technician are confirmed
+   plain multiselect/text, NOT lookups — don't re-add useId to those without new
+   evidence. Falls back to the raw value if no matching option is loaded yet
+   (better a failed save you can see than a silent drop). */
+function idsFor(field, value){
+  const list = optionsListFor(field);
+  const findId = (val)=>{ const m=list.find(o=>String(o.v)===String(val)); return (m && m.id!=null) ? m.id : val; };
+  return Array.isArray(value) ? value.map(findId) : findId(value);
+}
+function buildPayload(step){
+  const p={}; const r=state.record;
+  step.fields.forEach(f=>{
+    if(f.t==="summary"||f.t==="file") return;
+    if(f.when && !f.when(r)) return;
+    let v=r[f.n];
+    if(f.t==="name2"){
+      // Customer_Name on Create_Case is a plain single-line text field, not a
+      // composite Name field — confirmed live (it was saving as a literal
+      // stringified {"first_name":...} object before this fix).
+      const fn=(v&&v.first_name)||""; const ln=(v&&v.last_name)||"";
+      p[f.n]=(fn+" "+ln).replace(/\s+/g," ").trim();
+      return;
+    }
+    if(f.t==="check"||f.t==="button"){ p[f.n]= (v===true||v==="Yes")?["Yes"]:[]; return; }
+    if(f.t==="multiselect"){ let arr=Array.isArray(v)?v:(v?[v]:[]); if(f.useId) arr=idsFor(f,arr); p[f.n]=arr; return; }
+    if(v===""||v==null) return;
+    if(f.useId) v=idsFor(f,v);
+    if(f.t==="date") v=fmtDate(v);
+    else if(f.t==="datetime") v=fmtDateTime(v);
+    else if(f.t==="number"||f.t==="decimal") v=Number(v);
+    p[f.n]=v;
+  });
+  p[CONFIG.stageField]=computeStatus(step, r) || step.title; // title fallback should never actually fire — every stage has a status
+  if(!state.recordId && r[CONFIG.caseIdField]) p[CONFIG.caseIdField]=r[CONFIG.caseIdField];
+  if(typeof step.extra==="function") Object.assign(p, step.extra(r)); // mirror values into required fields the UI doesn't show separately
+  return p;
+}
+
+/* ---- actions ---- */
+async function saveStep(advance){
+  const step=state.path[state.stepIndex];
+  const chk=collectStep(true);
+  if(!chk.ok){ toast("Please fill: "+chk.missing,"err"); return; }
+  setPath();
+  const payload=buildPayload(step);
+  console.log("[Get-Rescue] saving step:", step.title, "| Status ->", payload[CONFIG.stageField], "| full payload:", payload, "| Vehicle_Issue:", payload.Vehicle_Issue);
+  $("saveBtn").disabled=true;
+  try{
+    if(!state.recordId){
+      const id=await addTicket(payload); state.recordId=id;
+      // Case_ID depends on the record's own ID, so it can only be set after creation —
+      // short, unique-enough tag: "RSID" + the last 6 digits of the new record's ID.
+      // Best-effort: if Create_Case already auto-stamps its own Case_ID on create
+      // (e.g. a formula/autonumber field the API won't let us override), this
+      // update may be rejected — don't let that fail the whole ticket creation,
+      // just log it so a still-CSID-looking Case_ID can be diagnosed from console.
+      const caseId="RSID"+String(id).slice(-6);
+      state.record[CONFIG.caseIdField]=caseId;
+      try{ await updateTicket(id,{[CONFIG.caseIdField]:caseId}); }
+      catch(e){ console.warn("[Get-Rescue] could not set Case_ID to", caseId, "on record", id, "— ticket was still created; Case_ID may be left at Zoho's own default:", e); }
+    }
+    else { await updateTicket(state.recordId,payload); }
+    // best-effort file uploads (won't block)
+    for(const k in state.files){ if(state.files[k]) apiUpload(state.recordId,k,state.files[k]); }
+    $("wizCaseId").textContent=caseLabel(state.record)||("#"+state.recordId);
+    toast("Saved","ok");
+    if(step.branch==="final"){ // closing step
+      await updateTicket(state.recordId,{[CONFIG.stageField]:"CLOSED"});
+      toast("Ticket closed","ok"); return backToDash();
+    }
+    // required action not done yet (e.g. location/payment) -> save as-is and
+    // close the wizard back to the board, same as Cancel, rather than
+    // blocking the agent on this page. Reopening the ticket from the board
+    // resumes on this same step (stageIndexForStatus).
+    const blocked = typeof step.canAdvance==="function" && !step.canAdvance(state.record);
+    if(blocked){
+      toast(step.blockedMessage||"Saved — required action still pending","ok");
+      return backToDash();
+    } else if(advance && state.stepIndex<state.path.length-1){
+      state.stepIndex++;
+      if(state.stepIndex>state.maxStepIndex) state.maxStepIndex=state.stepIndex; // unlocks the next step now that this one's required fields are saved
+      renderWizard(); window.scrollTo(0,0);
+    }
+    else renderWizard();
+  }catch(e){ console.error(e); toast((e&&e.message)||"Save failed","err"); }
+  finally{ $("saveBtn").disabled=false; }
+}
+function prevStep(){ if(state.stepIndex===0) return; collectStep(false); state.stepIndex--; renderWizard(); window.scrollTo(0,0); }
+function jumpTo(i){ if(i===state.stepIndex || i>state.maxStepIndex) return; collectStep(false); setPath(); state.stepIndex=Math.min(i,state.path.length-1); renderWizard(); window.scrollTo(0,0); }
+async function cancelWizard(){
+  const yes=await confirmBox("Stop filling?","Your current progress on this step will be saved as-is before you leave.","Yes, stop");
+  if(!yes) return;
+  // best-effort: persist whatever's on screen (incl. its computed Status, e.g.
+  // "LOCATION REQUEST"/"SERVICE FEE QUOTE" if a required action wasn't done)
+  // so cancelling isn't silently different from saving without completing it.
+  if(state.recordId){
+    try{ collectStep(false); setPath(); await updateTicket(state.recordId, buildPayload(state.path[state.stepIndex])); }
+    catch(e){ console.warn("cancel: best-effort save failed", e); }
+  }
+  backToDash();
+}
+async function closeTicketAction(){
+  const yes=await confirmBox("Close this ticket?","It will be marked CLOSED and removed from the active stages.","Close ticket");
+  if(!yes) return;
+  try{
+    collectStep(false); setPath();
+    const payload=Object.assign(buildPayload(state.path[state.stepIndex]),{[CONFIG.stageField]:"CLOSED"});
+    if(!state.recordId){ state.recordId=await addTicket(payload); } else { await updateTicket(state.recordId,payload); }
+    toast("Ticket closed","ok"); backToDash();
+  }catch(e){ toast((e&&e.message)||"Could not close","err"); }
+}
+function backToDash(){ showView("dashboard"); loadDashboard(); }
+
+/* =====================================================================
+   WIRING + BOOT
+   ===================================================================== */
+$("refreshBtn").onclick=loadDashboard;
+$("wizClose").onclick=cancelWizard;
+$("prevBtn").onclick=prevStep;
+$("saveBtn").onclick=()=>saveStep(true);
+$("cancelBtn").onclick=cancelWizard;
+$("closeBtn").onclick=closeTicketAction;
+$("searchBtn").onclick=runSearch;
+$("q").addEventListener("input",onSearchInput);
+$("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
+$("clearSearch").onclick=()=>{ $("q").value=""; $("clearSearch").style.display="none"; closeSearchDropdown(); };
+
+async function boot(){
+  SDK_READY=true;
+  try{ await ZOHO.CREATOR.UTIL.getInitParams(); }catch(e){}
+  await loadOptions();
+  loadDashboard();
+}
+function enterDemo(){
+  SDK_READY=false; $("demoNote").style.display="block";
+  OPTIONS.vehicles = DEMO_VEHICLES.map(function(r){ return { v:r.Name, label:r.Name, id:r.ID, raw:r }; });
+  OPTIONS.issues   = DEMO_ISSUES.map(function(r){ return { v:r.Issue_Name, label:r.Issue_Name, id:r.ID, raw:r }; });
+  OPTIONS.clients  = DEMO_CLIENTS.map(function(r){ return { v:r.Client_Name, label:r.Client_Name, id:r.ID, raw:r }; });
+  RATE_MASTER = DEMO_RATE_MASTER;
+  loadDashboard();
+}
+function waitForSDK(a){
+  a=a||0;
+  if(sdkReady()){ boot(); return; }
+  if(a>40){ enterDemo(); return; }
+  setTimeout(()=>waitForSDK(a+1),200);
+}
+waitForSDK();
+</script>
+</body>
+</html>

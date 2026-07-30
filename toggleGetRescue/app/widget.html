@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Availability</title>
+  <script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+    :root{
+      --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+      --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+      --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+      --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+      --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA; --purple:#7A5AF8; --purple-soft:#ECE7FE;
+      --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+      --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+      --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+      --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+    }
+
+    * , *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+
+    body {
+      font-family: var(--f-body);
+      background: transparent;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0; padding: 0; margin: -1px;
+    }
+
+    /* toggle — compact, labels baked into the track */
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      cursor: pointer;
+    }
+    .switch-input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .track {
+      position: relative;
+      width: 118px; height: 38px;
+      border-radius: 999px;
+      background: var(--stop);
+      box-shadow: inset 0 1px 3px rgba(20,22,28,.2);
+      transition: background .25s ease;
+    }
+    .switch-input:checked ~ .track { background: var(--ok); }
+    .label {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      display: none;
+      font-family: var(--f-disp);
+      font-weight: 700;
+      font-size: 14px;
+      color: #fff;
+      pointer-events: none;
+    }
+    .label-off { right: 14px; }
+    .label-on  { left: 14px; }
+    .switch-input:checked       ~ .track .label-on  { display: block; }
+    .switch-input:not(:checked) ~ .track .label-off { display: block; }
+    .knob {
+      position: absolute; top: 3px; left: 3px;
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(20,22,28,.3);
+      transition: transform .28s cubic-bezier(.34, 1.56, .64, 1);
+    }
+    .switch-input:checked ~ .track .knob { transform: translateX(80px); }
+    .switch-input:focus-visible ~ .track { outline: 3px solid var(--signal); outline-offset: 2px; }
+    .card.is-loading .switch,
+    .card.is-locked  .switch { pointer-events: none; }
+    .card.is-loading .track,
+    .card.is-locked  .track { opacity: .55; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .track, .knob { transition: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card is-loading" id="card">
+    <label class="switch">
+      <input type="checkbox" class="switch-input" id="toggle"
+             role="switch" aria-label="Toggle availability" onchange="onToggle()">
+      <span class="track">
+        <span class="knob"></span>
+        <span class="label label-on">Online</span>
+        <span class="label label-off">Offline</span>
+      </span>
+    </label>
+    <!-- kept off-screen so the existing JS (greeting/status/helper text) keeps working -->
+    <div class="sr-only" id="greeting">Hello</div>
+    <div class="sr-only" id="status">&nbsp;</div>
+    <div class="sr-only" id="helper">Checking your status…</div>
+  </div>
+
+<script>
+/* =====================================================================
+   CONFIGURATION  --  matches your "get-rescue" Creator app
+   A login user is EITHER a technician OR a vendor. We check
+   technicians_Report first, then My_Availability_Vendor, by login email, and
+   toggle that record's availability field between "Online"/"Offline".
+   (The record still stores "Online"/"Offline"; the UI just SHOWS
+   "Available"/"Unavailable".)
+   ===================================================================== */
+const CONFIG = {
+  appName:      "get-rescue",
+  techReport:   "technicians_Report",
+  vendorReport: "My_Availability_Vendor",
+  statusField:  "Availability_Status",   // <-- your availability field link name
+  emailField:   "Email",                 // <-- change if the email field is named differently
+  nameFields:   { technicians_Report: "technician_name", My_Availability_Vendor: "vendor_name" },
+};
+
+/* Located record for the current user: { report, id, data } */
+let currentRecord = null;
+
+/* -- UI helpers ------------------------------------------------------ */
+const card     = function () { return document.getElementById("card"); };
+const toggleEl = function () { return document.getElementById("toggle"); };
+
+function setCardState(state) {
+  // "loading" | "online" | "offline" | "locked-online" | "locked-offline"
+  const c = card();
+  c.classList.remove("is-loading", "is-online", "is-offline", "is-locked");
+  if (state === "loading") { c.classList.add("is-loading"); return; }
+  const online = state.indexOf("online") !== -1;
+  c.classList.add(online ? "is-online" : "is-offline");
+  if (state.indexOf("locked") !== -1) c.classList.add("is-locked");
+}
+
+function render(isOnline) {
+  toggleEl().checked = isOnline;
+  toggleEl().setAttribute("aria-checked", String(isOnline));
+  document.getElementById("status").textContent = isOnline ? "Available" : "Unavailable";
+  setCardState(isOnline ? "online" : "offline");
+}
+
+function setHelper(text) {
+  document.getElementById("helper").textContent = text;
+}
+
+function showError(text) {
+  setCardState("loading");
+  document.getElementById("status").innerHTML = "&nbsp;";
+  setHelper(text);
+}
+
+/* -- Resolve API methods from whichever namespace actually has them -- */
+function resolve(method) {
+  const C = window.ZOHO && ZOHO.CREATOR;
+  if (!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL];
+  for (var i = 0; i < spaces.length; i++) {
+    var ns = spaces[i];
+    if (ns && typeof ns[method] === "function") return ns[method].bind(ns);
+  }
+  return null;
+}
+
+/* -- Data layer (Creator v2 DATA/PUBLISH APIs) ---------------------- */
+async function getRecords(report, criteria) {
+  const fn = resolve("getRecords");
+  if (!fn) throw new Error("getRecords not available on this SDK");
+  const cfg = {
+    app_name: CONFIG.appName,
+    report_name: report,
+    field_config: "all",
+    max_records: 200,
+  };
+  if (criteria) cfg.criteria = criteria;
+  try {
+    const resp = await fn(cfg);
+    if (resp && resp.code === 3000 && Array.isArray(resp.data)) return resp.data;
+    // code 3100 = no records matched — normal, not an error
+  } catch (e) {
+    console.warn("getRecords error for " + report + ":", e);
+  }
+  return [];
+}
+
+async function findUserRecord(email) {
+  const criteria = "(" + CONFIG.emailField + ' == "' + email + '")';
+  let recs = await getRecords(CONFIG.techReport, criteria);
+  if (recs.length) return { report: CONFIG.techReport, id: recs[0].ID, data: recs[0] };
+  recs = await getRecords(CONFIG.vendorReport, criteria);
+  if (recs.length) return { report: CONFIG.vendorReport, id: recs[0].ID, data: recs[0] };
+  return null;
+}
+
+async function writeStatus(newStatus) {
+  const fn = resolve("updateRecordById");
+  if (!fn) throw new Error("updateRecordById not available on this SDK");
+  const payloadData = {};
+  payloadData[CONFIG.statusField] = newStatus;
+  const resp = await fn({
+    app_name: CONFIG.appName,
+    report_name: currentRecord.report,
+    id: currentRecord.id,
+    payload: { data: payloadData },
+  });
+  if (!resp || resp.code !== 3000) {
+    throw new Error((resp && (resp.message || JSON.stringify(resp.error))) || "Update failed");
+  }
+}
+
+/* -- Startup: identify user -> find record -> show status ----------- */
+async function boot() {
+  try {
+    const params = await ZOHO.CREATOR.UTIL.getInitParams();
+    const email = params && params.loginUser;
+    if (!email) { showError("Couldn't read your login email."); return; }
+
+    const rec = await findUserRecord(email);
+    if (!rec) {
+      showError("No Technician or Vendor record is linked to your login.");
+      return;
+    }
+    currentRecord = rec;
+
+    const nameField = CONFIG.nameFields[rec.report];
+    const name = rec.data[nameField] || "there";
+    document.getElementById("greeting").textContent = "Hello " + name;
+
+    const isOnline = String(rec.data[CONFIG.statusField]) === "Online";
+    render(isOnline);
+    setHelper(isOnline ? "You are visible for new jobs" : "You won't receive new jobs");
+  } catch (e) {
+    console.error("Boot failed:", e);
+    showError("Couldn't load your availability. Please try again.");
+  }
+}
+
+/* -- Toggle handler: optimistic update, revert on failure ----------- */
+async function onToggle() {
+  if (!currentRecord) return;
+
+  const wantOnline = toggleEl().checked;
+  const newStatus  = wantOnline ? "Online" : "Offline";
+
+  render(wantOnline);
+  setCardState(wantOnline ? "locked-online" : "locked-offline");
+  setHelper("Saving…");
+
+  try {
+    await writeStatus(newStatus);
+    currentRecord.data[CONFIG.statusField] = newStatus;
+    render(wantOnline);
+    setHelper(wantOnline ? "You are visible for new jobs" : "You won't receive new jobs");
+  } catch (e) {
+    console.error("Update failed:", e);
+    render(!wantOnline);                    // revert the switch
+    setHelper("Couldn't save — please try again.");
+  }
+}
+
+/* -- SDK boot (no ZOHO.CREATOR.init in this SDK version) ------------ */
+function sdkReady() {
+  return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL &&
+         typeof ZOHO.CREATOR.UTIL.getInitParams === "function";
+}
+function waitForSDK(attempt) {
+  attempt = attempt || 0;
+  if (sdkReady()) { boot(); return; }
+  if (attempt > 50) {
+    console.error("ZOHO.CREATOR not ready. ZOHO =", window.ZOHO);
+    showError("Zoho SDK didn't load. Make sure this runs inside a Creator page.");
+    return;
+  }
+  setTimeout(function () { waitForSDK(attempt + 1); }, 200);
+}
+waitForSDK();
+</script>
+</body>
+</html>
