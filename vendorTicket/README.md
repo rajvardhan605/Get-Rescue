@@ -104,6 +104,20 @@ User-reported live via console: **`Cannot set properties of null (setting 'disab
 
 **Added diagnostic logging for `workCompleted()`** (`Invalid column value for Status` on Work Completed) — payload + full error now logged; cause not yet found, see `getRescueTicket/QUESTIONS_TO_ASK.md`.
 
+## 2026-08-03 (later still) — Diagnostic logging for Payment Received
+
+Same "Invalid column value" issue, now on `Payment_Status` — user-reported live on the Payment Received button. Added the same payload-logging + full-error pattern to `confirmPaymentReceived()`.
+
+## 2026-08-03 (yet later still) — Real bug fixed: `Payment_Status` isn't a separate field — resolved the earlier naming collision
+
+The user shared the real field's live Zoho config: `PAID` / `PENDING` / `NOT APPLICABLE` — this is the SAME `Payment_Status` field the Quote step already uses for the booking fee, not a distinct `Pending`/`Success` field as originally guessed for the Action 8 reconciliation. `renderPaymentScreen()`'s `alreadySuccess` check and its live status-preview, plus `confirmPaymentReceived()`'s own write, now all use `PAID`/`PENDING` instead of `Success`/`Pending`. See `FIELDS.md`'s own resolved callout for the fuller writeup.
+
+## 2026-08-03 (later again) — Real bug fixed: `Payment_Method1`'s actual option list; QR/gateway logic removed; camera+gallery both offered on every photo field
+
+User shared the real field's live Zoho config for `Payment_Method1`: `Cash` / `UPI` / `Card` / `Net Banking` — not the earlier guessed `Payment Gateway` / `Direct` / `Cash`. Since none of the real options is an automatic online payment gateway, `renderPaymentScreen()`'s QR-code block and its "Payment Gateway"-gated logic were removed entirely: the receipt-photo block is now always shown, and every method requires that photo (or a zero remaining balance) before "Payment Received" unlocks. `Payment_Method1`'s select now lists the four real options, defaulting to `Cash`.
+
+Also per explicit request: every photo-capture slot (`renderPhotoGrid()`) now shows two distinct "add" tiles instead of one — 📷 opens the existing live-camera modal (GPS/time watermark), and a new 🖼️ opens a plain gallery file picker (`openGallery()`, backed by a new hidden `<input type="file" id="galleryInput" accept="image/*">` with no `capture` attribute, so the OS shows its normal photo library / files chooser). Previously the only way to attach a photo without a working camera was the `cameraFallbackInput` error path, which still hints `capture="environment"` on mobile; the new gallery button is the explicit, always-available alternative.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

@@ -1022,19 +1022,21 @@ const STAGES = [
     statuses:["REMAINING FEE DUE"], status:"RSP CLOSED",
     fields:[
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
-    // Options + default corrected 2026-07-31 to match Payment_Method1
-    // specifically (a different field from `quote`'s own Payment_Method,
-    // not touched here) per the vendor/technician/driver widgets' own
-    // field-generation spec ("Payment Gateway [Default] / Direct / Cash").
-    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Payment Gateway","Direct","Cash"], default:"Payment Gateway" },
+    // Options corrected 2026-08-03 (user's own Zoho field screenshot): real
+    // list is Cash / UPI / Card / Net Banking — same as `quote`'s own
+    // Payment_Method, not the earlier guessed "Payment Gateway/Direct/Cash".
+    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], default:"Cash" },
     { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
     { n:"QR_Code", l:"QR / Reference", t:"text" },
     { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },
     { n:"Upload_Photo_of_receipt", l:"Receipt Photo", t:"file" },
-    // Added 2026-07-31 (Action 8 reconciliation) — the explicit Payment
-    // Status (Pending/Success) shown on all three field widgets' own Payment
-    // screen; wasn't mirrored here yet. Shown read-only since the field
-    // widgets (or a future gateway webhook) are the ones that actually set it.
+    // Added 2026-07-31 (Action 8 reconciliation) — this is the exact SAME
+    // Payment_Status field the `quote` stage already declares above (a real
+    // Select, PAID/PENDING/NOT APPLICABLE — user-confirmed 2026-08-03 via
+    // the live field config, resolving an earlier "is this a naming
+    // collision" flag: it isn't, it's one field used at both steps), just
+    // mirrored read-only here since it wasn't shown on this stage's own
+    // screen before. The field widgets write "PAID" on Payment Received.
     { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true }
   ]}
   /* the old "closure" stage (branch:"final", __summary + Remarks) was removed

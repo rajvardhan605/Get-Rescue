@@ -70,7 +70,7 @@ This file is the **one place** every Zoho field API/link name used anywhere in t
 | `Rate_Breakup` | Rate Breakup (editable text) | textarea | Agent | ✅ |
 | `Send_Link_For_The_Breakdown_Location` | Bundled "send payment link + request location" action (fee>0 case) — same field as Step 3's own copy | button | Agent | 🟡 |
 | `Payment_Method` | Payment Method — **a different field from Step 8's `Payment_Method1`** | select | Agent | ❓ (kept as-is 2026-07-31 despite a flow spec showing a different list — user-confirmed) |
-| `Payment_Status` | Payment Status (`PAID`/`PENDING`/`NOT APPLICABLE`) | select | Agent | ❓ (kept as-is 2026-07-31 despite a flow spec showing "Success/Pending" — user-confirmed) |
+| `Payment_Status` | Payment Status (`PAID`/`PENDING`/`NOT APPLICABLE`) — **confirmed 2026-08-03 via the live Zoho field config**: this is the ONE real field, also used (same values) at Step 8's own Payment screen — resolves the earlier "naming collision" flag, see Step 8's own row and the Open Questions note below | select | Agent, Technician, Driver, Vendor | ✅ (confirmed live 2026-08-03) |
 | `Total_Service_Fee1` | Total Service Fee (Payment Record) — likely-duplicate of `Total_Service_Fee`, relationship unconfirmed | number | Agent | ❓ |
 | `Image_Upload` | Receipt Photo (locked/readonly here) | file | Agent | 🟡 |
 
@@ -210,12 +210,12 @@ This file is the **one place** every Zoho field API/link name used anywhere in t
 | Field | Label | Type | Widgets | Status |
 |---|---|---|---|---|
 | `Remaining_Fee` | Remaining Fee (readonly display here — same field as Step 2's own copy) | decimal | Agent, Technician, Driver, Vendor | 🟡 |
-| `Payment_Method1` | Payment Method — **a different field from Step 2's `Payment_Method`** | select | Agent, Technician, Driver, Vendor | 🟡 — options corrected 2026-07-31 to `["Payment Gateway","Direct","Cash"]`, default `"Payment Gateway"`; the flow spec's own "/ Etc" implies more may exist (see Open Questions) |
+| `Payment_Method1` | Payment Method — same option list as Step 2's own `Payment_Method`, but tracked as a separate field | select | Agent, Technician, Driver, Vendor | ✅ — **corrected 2026-08-03** (user's own Zoho field screenshot) to `["Cash","UPI","Card","Net Banking"]`, default `"Cash"`; replaces the earlier guessed `["Payment Gateway","Direct","Cash"]` |
 | `Payment_received` | Payment Received? | radio | Agent, Technician, Driver, Vendor | 🟡 |
-| `QR_Code` | QR / Reference | text | Agent | 🟡 |
+| `QR_Code` | QR / Reference | text | Agent | 🟡 (vestigial now that Payment_Method1 has no "Payment Gateway" option — no widget shows a QR block anymore) |
 | `Send_Payment_Link1` | Send payment link | check | Agent | 🟡 |
-| `Upload_Photo_of_receipt` | Receipt Photo — mandatory when Payment Method isn't Payment Gateway | file | Agent, Technician, Driver, Vendor | 🟡 |
-| `Payment_Status` | `Pending`/`Success` — added 2026-07-31 as an explicit field (was previously only inferred internally). Technician/Driver/Vendor auto-flip it to `Success` once a receipt photo is attached for a non-gateway method, or read it as already `Success` if some other real integration set it; **"Payment Received" is only enabled once this is `Success` or the balance is zero**. Mirrored read-only into `getRescueTicket`'s own `payment` stage/Final Closure display 2026-07-31 (Final Closure reconciliation) — wasn't shown to the agent at all before | select | Agent (view-only), Technician, Driver, Vendor | 🟡 |
+| `Upload_Photo_of_receipt` | Receipt Photo — **now mandatory for every Payment Method** (2026-08-03: since none of the real options is an automatic gateway, the old "mandatory unless Payment Gateway" carve-out no longer applies) — both a live-camera capture (GPS/time watermark) and a plain gallery picker are offered per user request | file | Agent, Technician, Driver, Vendor | 🟡 |
+| `Payment_Status` | **Corrected 2026-08-03**: this is the SAME field as Step 2's own `Payment_Status` (`PAID`/`PENDING`/`NOT APPLICABLE`) — not a separate `Pending`/`Success` field as originally guessed (that guess was confirmed rejected live: `"Invalid column value for Payment_Status"`). Technician/Driver/Vendor auto-flip it to `PAID` once a receipt photo is attached, or read it as already `PAID` if some other real integration set it; **"Payment Received" is only enabled once this is `PAID` or the balance is zero**. Mirrored read-only into `getRescueTicket`'s own `payment` stage/Final Closure display — wasn't shown to the agent at all before | select | Agent, Technician, Driver, Vendor | ✅ (confirmed live 2026-08-03) |
 | `Transaction_ID` / `Time_Of_Receipt` | The mock's own "transaction ID, time of receipt... captured in their respective fields" once a real Payment Gateway returns success — **not implemented**, since there's no real gateway webhook in this app to source these from honestly (would need a real integration, not a client-side guess) | text/datetime | — | ❓ (not set by any widget yet — see Open Questions) |
 
 ## Final Closure (Agent only)
@@ -296,11 +296,7 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 
 Every select/radio/dropdown field across all four widgets, with the **exact** values the code sends — build the Zoho Creator dropdown/radio fields with these exact options (case and spelling matter; Zoho matches on the literal string). `Status` itself is its own table right below this one, since it's the biggest and most step-dependent.
 
-> ⚠️ **Naming collision found 2026-07-31, not yet resolved — needs your decision before building.** Two *different* fields both ended up named `Payment_Status` on `Create_Case`:
-> 1. The **original `quote`-stage field** (booking-fee payment status): options `PAID` / `PENDING` / `NOT APPLICABLE`. Been in this app since early on, currently `disabled:true` in the wizard (display-only there).
-> 2. A **new field added 2026-07-31** for the Action 8 reconciliation (final/remaining-fee payment status, read/written by `technicianTicket`/`driverTicket`/`vendorTicket`'s own Payment screen and mirrored into `getRescueTicket`'s `payment` stage): options `Pending` / `Success`.
->
-> These can't both really be one field — the value sets don't overlap and mean different things (booking fee vs. final fee). **Please tell me which of these is the real, already-existing `Payment_Status` field in your Zoho form** (if either), so I can rename the other one to something distinct (e.g. `Final_Payment_Status`) across `getRescueTicket` and all three field widgets. Until this is resolved, don't create a single `Payment_Status` dropdown expecting it to serve both purposes — it needs to be two separate fields.
+> ✅ **Naming collision flagged 2026-07-31, resolved 2026-08-03.** There was only ever ONE real `Payment_Status` field, not two — the user confirmed its live Zoho field config directly: options `PAID` / `PENDING` / `NOT APPLICABLE`. The three field widgets had been guessing a separate `Pending`/`Success` value set for it, which was live-confirmed rejected (`"Invalid column value for Payment_Status"` on the Payment Received button). Corrected `technicianTicket`/`driverTicket`/`vendorTicket`'s Payment screen (`renderPaymentScreen`/`confirmPaymentReceived`) to read/write `PAID`/`PENDING` instead of `Success`/`Pending` — same one field, used at both the Quote step (booking fee) and the Payment step (remaining fee).
 
 ### Shared reason list — `REJECT_REASONS`
 Used, unmodified, by every "reason" dropdown below (rejections, cancellations, cx-rejects, refunds, closure) unless noted otherwise:
@@ -312,7 +308,7 @@ Used, unmodified, by every "reason" dropdown below (rejections, cancellations, c
 | `Time_of_service` | `NOW`, `LATER` | — | Step 1 (Create) | Agent |
 | `Service_Type` | `RSR`, `TOW` | — | Step 1 (derived from the chosen issue's `Issue_Type`, not picked directly) | Agent |
 | `Payment_Method` | `Cash`, `UPI`, `Card`, `Net Banking` | — | Step 2 (Quote/Booking Fee) — currently `disabled:true`, display-only | Agent |
-| `Payment_Status` (quote-stage one) | `PAID`, `PENDING`, `NOT APPLICABLE` | — | Step 2 (Quote/Booking Fee) — **see naming-collision callout above** | Agent |
+| `Payment_Status` | `PAID`, `PENDING`, `NOT APPLICABLE` | — | Step 2 (Quote/Booking Fee) **and** Step 8 (Payment) — one field, confirmed 2026-08-03, see the callout above | Agent, Technician, Driver, Vendor |
 | `Preferred_Vendor` | `Yes`, `No` | `No` | Step 4 (Assignment) | Agent |
 | `Assignment_Sent` | `Yes`, `No` | — | Step 4 (Assignment) | Agent |
 | `Assign_Technican` (RSR) / `Assign_Technican1` (TOW) | `Yes`, `No` | — | Step 5/5a (Acceptance) | Agent (view-only) |
@@ -322,9 +318,8 @@ Used, unmodified, by every "reason" dropdown below (rejections, cancellations, c
 | `Rejection_Reason` | *`REJECT_REASONS`* | — | Step 7 (RSR Cx-reject) & Step 7a (TOW Loading Cx-reject) — same field, shared across both | Technician/Driver/Vendor, Agent (view-only) |
 | `Toll_Charges` (Step 6a) / `Toll_Charges1` (Step 7b) | `Yes`, `No` | — | Step 6a / 7b | Driver/Vendor, Agent (view-only) |
 | `Handover_to_Designation` | `Home`, `Office`, `Work Shop` | — | Step 7c (Unloading) | Driver/Vendor, Agent (view-only) |
-| `Payment_Method1` | `Payment Gateway`, `Direct`, `Cash` | `Payment Gateway` | Step 8 (Payment) — the flow spec's own "/ Etc" implies more may exist, unconfirmed | Technician/Driver/Vendor, Agent |
+| `Payment_Method1` | `Cash`, `UPI`, `Card`, `Net Banking` | `Cash` | Step 8 (Payment) — **corrected 2026-08-03** via user's own Zoho field screenshot; same list as Step 2's `Payment_Method` | Technician/Driver/Vendor, Agent |
 | `Payment_received` | `Yes`, `No` | — | Step 8 (Payment) | Agent |
-| `Payment_Status` (payment-stage one) | `Pending`, `Success` | — | Step 8 (Payment) — **see naming-collision callout above** | Technician/Driver/Vendor, Agent (view-only) |
 | `Refund_Due` | `Yes`, `No` | `No` | Final Closure | Agent |
 | `Refund_Reason` | *`REJECT_REASONS`* | — | Final Closure — reused list, not a dedicated refund-reason set; unconfirmed if that's actually correct | Agent |
 | `Closure_Status` | `Not Converted`, `Cancelled`, `Completed` | — | Final Closure — kept as 3 options, not split into "Cancelled Billable"/"Cancelled Not Billable" (see README §5, 2026-07-30) | Agent |

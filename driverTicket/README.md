@@ -81,6 +81,18 @@ Same change as `technicianTicket`'s own matching entry — renamed throughout th
 
 Same fixes as `vendorTicket`'s own matching entry (see its README) — added `setDisabled()` and replaced all `.disabled=` sites in this file (~18), changed `Service_Acceptance_Next` from `true` to `"Yes"`. (This widget has no `workCompleted()` — TOW's own equivalent outcome is `vehiclePicked()`/`confirmDropped()`, not affected by the Status error reported this round.)
 
+## 2026-08-03 (later still) — Diagnostic logging for Payment Received
+
+Same fix as `vendorTicket`'s own matching entry — added payload/error logging to `confirmPaymentReceived()` for the `Payment_Status` "Invalid column value" error.
+
+## 2026-08-03 (yet later still) — Real bug fixed: `Payment_Status` resolved to `PAID`/`PENDING`/`NOT APPLICABLE`
+
+Same fix as `vendorTicket`'s own matching entry — see its README for the full explanation.
+
+## 2026-08-03 (later again) — Real bug fixed: `Payment_Method1`'s actual option list; QR/gateway logic removed; camera+gallery both offered on every photo field
+
+Same fixes as `vendorTicket`'s own matching entry (see its README for the full explanation) — `Payment_Method1` now lists the real `Cash`/`UPI`/`Card`/`Net Banking` options (default `Cash`), the QR-code/"Payment Gateway"-gated logic is gone (every method now requires the receipt photo or a zero balance), and every photo-capture slot offers both a 📷 camera tile and a new 🖼️ gallery tile (`openGallery()` + a new hidden `galleryInput` with no `capture` attribute).
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

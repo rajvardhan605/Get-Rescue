@@ -93,6 +93,18 @@ The user resolved the "maximum digits" error a different way than more precision
 
 Same fixes as `vendorTicket`'s own matching entry (see its README for the full explanation) — added `setDisabled()` and replaced all `.disabled=` sites in this file (~14), changed `Service_Acceptance_Next` from `true` to `"Yes"`, and added payload/error logging to `workCompleted()`.
 
+## 2026-08-03 (later still) — Diagnostic logging for Payment Received
+
+Same fix as `vendorTicket`'s own matching entry — added payload/error logging to `confirmPaymentReceived()` for the `Payment_Status` "Invalid column value" error.
+
+## 2026-08-03 (yet later still) — Real bug fixed: `Payment_Status` resolved to `PAID`/`PENDING`/`NOT APPLICABLE`
+
+Same fix as `vendorTicket`'s own matching entry — see its README for the full explanation. `Payment_Status` is the same field as the Quote step's own one, not a separate field; this widget's Payment screen now reads/writes `PAID`/`PENDING` instead of the guessed `Success`/`Pending`.
+
+## 2026-08-03 (later again) — Real bug fixed: `Payment_Method1`'s actual option list; QR/gateway logic removed; camera+gallery both offered on every photo field
+
+Same fixes as `vendorTicket`'s own matching entry (see its README for the full explanation) — `Payment_Method1` now lists the real `Cash`/`UPI`/`Card`/`Net Banking` options (default `Cash`), the QR-code/"Payment Gateway"-gated logic is gone (every method now requires the receipt photo or a zero balance), and every photo-capture slot offers both a 📷 camera tile and a new 🖼️ gallery tile (`openGallery()` + a new hidden `galleryInput` with no `capture` attribute).
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

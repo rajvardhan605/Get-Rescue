@@ -679,7 +679,9 @@ const STAGES = [
     statuses:["RSP COMPLETE"], status:"RSP COMPLETE", // best guess — confirm vs RSP CLOSED
     fields:[
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
-    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Payment Gateway","Cash","Card"] },
+    // Options corrected 2026-08-03 (user's own Zoho field screenshot): real
+    // list is Cash / UPI / Card / Net Banking.
+    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"] },
     { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
     { n:"QR_Code", l:"QR / Reference", t:"text" },
     { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },

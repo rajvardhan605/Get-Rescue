@@ -162,6 +162,8 @@ img,svg{max-width:100%}
   </div>
 </div>
 <input type="file" id="cameraFallbackInput" accept="image/*" capture="environment" style="display:none">
+<!-- no `capture` attribute here — lets the OS picker offer Gallery too -->
+<input type="file" id="galleryInput" accept="image/*" style="display:none">
 
 <div class="toast" id="toast"></div>
 
@@ -735,41 +737,37 @@ async function confirmDropped(){
 function renderPaymentScreen(){
   const r=state.current;
   const remaining=Number(r.Remaining_Fee)||0;
-  const alreadySuccess=String(r.Payment_Status||"").toLowerCase()==="success";
+  // Real bug fixed (2026-08-03, user-confirmed via the actual Zoho field
+  // config) — see technicianTicket's own comment on this same line. Real
+  // options are PAID / PENDING / NOT APPLICABLE, not "Pending"/"Success".
+  const alreadySuccess=String(r.Payment_Status||"").toUpperCase()==="PAID";
+  // Payment_Method1's real options confirmed 2026-08-03 (user's own Zoho
+  // field screenshot): Cash / UPI / Card / Net Banking — replaces the
+  // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
+  // is an automatic online gateway, so the QR/auto-pay block is gone —
+  // every method now requires the receipt photo (or remaining<=0) before
+  // "Payment Received" unlocks.
   $("ascreenBody").innerHTML = `
     <div class="card">
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
       <div class="fld"><label>Payment Method</label>
         <select id="paymentMethod1">
-          <option value="Payment Gateway" selected>Payment Gateway</option>
-          <option value="Direct">Direct</option>
-          <option value="Cash">Cash</option>
+          <option value="Cash" selected>Cash</option>
+          <option value="UPI">UPI</option>
+          <option value="Card">Card</option>
+          <option value="Net Banking">Net Banking</option>
         </select>
       </div>
-      <div id="qrBlock" style="text-align:center;margin:10px 0">
-        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
-        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
-      </div>
-      <div id="receiptBlock" style="display:none">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
-      <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"Success":"Pending"}" readonly></div>
+      <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
+      <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
     </div>
     <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
   wirePhotoField("Upload_Photo_of_receipt",1);
-  const methodEl=$("paymentMethod1");
-  function syncMethod(){
-    const gateway=methodEl.value==="Payment Gateway";
-    $("qrBlock").style.display=gateway?"":"none";
-    $("receiptBlock").style.display=gateway?"none":"";
-    refreshPayButton();
-  }
-  methodEl.onchange=syncMethod; syncMethod();
+  refreshPayButton();
   function refreshPayButton(){
-    const gateway=methodEl.value==="Payment Gateway";
     const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
-    // See technicianTicket's own comment on this exact block — same
-    // Payment_Status Pending/Success logic, not repeated here.
-    const success = alreadySuccess || (!gateway && receiptOk);
-    $("paymentStatusDisplay").value = success ? "Success" : "Pending";
+    const success = alreadySuccess || receiptOk;
+    $("paymentStatusDisplay").value = success ? "PAID" : "PENDING";
     $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
   }
   document.getElementById("ascreenBody").addEventListener("click", refreshPayButton);
@@ -780,12 +778,15 @@ async function confirmPaymentReceived(){
   try{
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
-    // "Success" here since clicking this button is itself the attestation.
-    await apiUpdate(r.ID, { Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"Success", Status:"RSP CLOSED" });
+    // "PAID" here since clicking this button is itself the attestation.
+    const payload={ Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
+    console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
+    await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Payment recorded — job closed","ok");
     backToDashboard();
-  }catch(e){ toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
+  }catch(e){ console.error("[Get-Rescue] confirmPaymentReceived error:", e); toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
 }
 
 function photoFieldHtml(fieldName,label,min,max){
@@ -802,10 +803,17 @@ function renderPhotoGrid(fieldName,max){
   files.forEach(function(f,i){
     html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
-  if(files.length<max){ html+=`<div class="photo-slot add" id="pf_${fieldName}_add">📷</div>`; }
+  if(files.length<max){
+    // Two explicit add tiles (2026-08-03, user-requested) — live camera
+    // capture (with GPS/time watermark) and a plain gallery picker.
+    html+=`<div class="photo-slot add" id="pf_${fieldName}_addCam" title="Take Photo">📷</div>`;
+    html+=`<div class="photo-slot add" id="pf_${fieldName}_addGal" title="Choose from Gallery">🖼️</div>`;
+  }
   grid.innerHTML=html;
-  const addEl=$("pf_"+fieldName+"_add");
-  if(addEl) addEl.onclick=function(){ openCamera(fieldName,max); };
+  const addCamEl=$("pf_"+fieldName+"_addCam");
+  if(addCamEl) addCamEl.onclick=function(){ openCamera(fieldName,max); };
+  const addGalEl=$("pf_"+fieldName+"_addGal");
+  if(addGalEl) addGalEl.onclick=function(){ openGallery(fieldName,max); };
   grid.querySelectorAll(".rm").forEach(function(btn){
     btn.onclick=function(){ files.splice(Number(btn.dataset.i),1); renderPhotoGrid(fieldName,max); };
   });
@@ -852,6 +860,17 @@ async function openCamera(fieldName,max){
     };
     $("cameraFallbackInput").click();
   }
+}
+function openGallery(fieldName,max){
+  currentPhotoField=fieldName; currentPhotoMax=max;
+  $("galleryInput").onchange=function(){
+    const f=$("galleryInput").files[0]; if(!f) return;
+    state.photos[fieldName]=state.photos[fieldName]||[];
+    state.photos[fieldName].push(f);
+    renderPhotoGrid(fieldName,max);
+    $("galleryInput").value="";
+  };
+  $("galleryInput").click();
 }
 function closeCamera(){
   if(cameraStream){ cameraStream.getTracks().forEach(function(t){ t.stop(); }); cameraStream=null; }
