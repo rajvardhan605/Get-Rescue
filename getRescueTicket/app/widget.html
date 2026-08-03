@@ -58,7 +58,16 @@ img,svg{max-width:100%}
 .combo-opt{padding:10px 12px;font-size:13.5px;cursor:pointer;border-top:1px solid var(--line)}
 .combo-opt:first-child{border-top:0}
 .combo-opt:hover{background:var(--worktop)}
+.combo-opt.hi{background:var(--worktop)}
 .combo-empty{padding:10px 12px;font-size:12.5px;color:var(--muted-2);font-family:var(--f-mono)}
+/* rich vendor row inside the Vendors "+ Add…" dropdown (see vendorOptionHtml) */
+.vopt{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+.vopt .vnm{font-weight:700;font-size:13.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vopt .vmeta{font-family:var(--f-mono);font-size:11px;color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vopt .flag{display:inline-flex;align-items:center;gap:4px;font-family:var(--f-mono);font-size:9.5px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.03em;padding:3px 8px 3px 5px;border-radius:999px;background:var(--worktop);color:var(--muted-2);flex:none}
+.vopt .flag svg{width:12px;height:12px;flex:none}
+.vopt .flag.on{background:var(--ok-soft);color:var(--ok)}
 .btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:14.5px;letter-spacing:.02em;
   padding:12px 18px;border-radius:11px;display:inline-flex;align-items:center;gap:8px;transition:.15s;white-space:nowrap}
 .btn svg{width:17px;height:17px}
@@ -82,7 +91,7 @@ img,svg{max-width:100%}
 /* ---------- dashboard report lists ---------- */
 .report-lists{display:flex;flex-direction:column;gap:22px}
 .rlist{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--sh-1);overflow:hidden}
-.rlist-head{display:flex;align-items:center;gap:13px;padding:16px 20px;position:relative;
+.rlist-head{display:flex;align-items:center;gap:13px;padding:16px 20px;position:relative;cursor:pointer;user-select:none;
   background:linear-gradient(180deg,#fff,var(--worktop) 260%)}
 .rlist-head::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent,var(--signal))}
 .rlist-head .ic{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;flex:none;
@@ -92,7 +101,25 @@ img,svg{max-width:100%}
 .rlist-head .tt span{font-family:var(--f-mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .rlist-head .cnt{margin-left:auto;font-family:var(--f-disp);font-size:19px;font-weight:900;color:var(--text);
   background:#fff;border:1.5px solid var(--line);min-width:38px;text-align:center;padding:5px 10px;border-radius:12px}
+/* Collapsible report sections (2026-07-31, user request) — a click on the
+   header toggles just that one section; state persists across re-renders via
+   COLLAPSED_BUCKETS (see renderReportLists). */
+.rlist-head .chev{flex:none;margin-left:10px;color:var(--muted);transition:transform .2s}
+.rlist.collapsed .rlist-head .chev{transform:rotate(-90deg)}
 .rlist-body{display:flex;flex-direction:column}
+.rlist.collapsed .rlist-body{display:none}
+/* dashboard rows only — wraps rowHtml's own row button with a separate
+   sibling "Close Case" action (see rowHtmlWithClose). The divider border
+   moves here from .rrow itself so a wrapped row still shows exactly one
+   divider; .rrow's own border-top stays for its standalone use in the
+   search dropdown, which isn't wrapped and is unaffected. */
+.rrow-wrap{display:flex;align-items:stretch;border-top:1px solid var(--line)}
+.rrow-wrap:first-child{border-top:0}
+.rrow-wrap .rrow{border-top:0;flex:1;min-width:0}
+.rrow-close-btn{flex:none;width:46px;border:0;border-left:1px solid var(--line);background:#fff;color:var(--muted);
+  display:grid;place-items:center;cursor:pointer;transition:.12s}
+.rrow-close-btn:hover{background:var(--stop-soft);color:var(--stop)}
+.rrow-close-btn svg{width:18px;height:18px}
 .rrow{display:flex;align-items:center;gap:14px;padding:13px 20px;border-top:1px solid var(--line);cursor:pointer;
   transition:background .12s;text-align:left;font:inherit;color:inherit;width:100%;background:#fff}
 .rrow:hover{background:var(--worktop)}
@@ -160,10 +187,19 @@ img,svg{max-width:100%}
 .form-card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-1);padding:22px;margin-bottom:100px}
 .form-card h3{font-family:var(--f-disp);font-size:19px;margin-bottom:4px}
 .form-card .fdesc{font-size:13px;color:var(--muted);margin-bottom:18px}
+/* Collapsible Final Closure sections (2026-07-31, user request) — same
+   chevron-toggle pattern as the dashboard's report sections. */
+.closure-group{padding:0;overflow:hidden}
+.closure-group .cg-head{display:flex;align-items:center;gap:10px;padding:18px 22px;cursor:pointer;user-select:none}
+.closure-group .cg-head h3{margin:0;flex:1}
+.closure-group .cg-head .chev{flex:none;color:var(--muted);transition:transform .2s}
+.closure-group.collapsed .cg-head .chev{transform:rotate(-90deg)}
+.closure-group .cg-body{padding:0 22px 22px}
+.closure-group.collapsed .cg-body{display:none}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
 .fld{display:flex;flex-direction:column;gap:6px}
 .fld.full{grid-column:1 / -1}
-.fld-row{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,1fr);gap:14px 16px}
+.fld-row{grid-column:1 / -1;display:grid;grid-template-columns:repeat(var(--row-cols,3),1fr);gap:14px 16px}
 .fld label{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
 .fld label .req{color:var(--stop);margin-left:2px}
 .fld input,.fld select,.fld textarea{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;
@@ -171,10 +207,27 @@ img,svg{max-width:100%}
 .fld textarea{resize:vertical;min-height:74px}
 .fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
 .fld input[type=file]{padding:9px;background:var(--worktop);border-style:dashed;cursor:pointer;font-family:var(--f-mono);font-size:12px}
+/* view-only fields (2026-07-31 — the vendor/technician/driver-side wizard
+   stages, whose data now comes from the vendor's own native Zoho Creator
+   form, not this widget — see the stage-level `viewOnly` flag) */
+.fld input[readonly],.fld textarea[readonly],.fld select:disabled,.fld input:disabled,.fld input[type=file]:disabled{
+  background:var(--worktop);color:var(--muted);cursor:not-allowed}
+/* Common append-only Remarks (2026-07-31): past entries are read-only, the
+   agent can only add a new one — see buildField/wireField's "remarks" branch. */
+.remarks-log{max-height:160px;overflow-y:auto;border:1.5px solid var(--line-strong);border-radius:10px;
+  padding:10px 12px;font-size:13.5px;line-height:1.5;background:var(--worktop);color:var(--text);margin-bottom:8px;white-space:pre-wrap}
+.remarks-log .empty{color:var(--muted);font-style:italic}
+.remarks-add{display:flex;gap:8px;align-items:flex-start}
+.remarks-add textarea{flex:1;min-height:44px}
+.remarks-add .btn{width:auto;padding:10px 16px;font-size:13px;flex:none}
 .radio-set{display:flex;flex-wrap:wrap;gap:8px}
 .radio-set .opt{border:1.5px solid var(--line-strong);border-radius:9px;padding:9px 14px;font-size:13.5px;font-weight:600;
   color:var(--muted);cursor:pointer;background:#fff;transition:.12s;user-select:none}
 .radio-set .opt.sel{border-color:var(--signal);background:var(--signal-soft);color:var(--signal-deep)}
+.radio-set .opt:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+.radio-set.locked .opt{cursor:not-allowed;opacity:.75}
+.radio-set.locked .opt.sel{opacity:1}
+.chips.locked{opacity:.9}
 .check{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding:8px 0}
 .check input{width:20px;height:20px;accent-color:var(--signal)}
 .check span{font-size:14px;color:var(--text)}
@@ -195,6 +248,30 @@ img,svg{max-width:100%}
 .summary .srow .k{color:var(--muted);font-weight:600}
 .summary .srow .v{text-align:right;font-weight:500}
 
+/* editable Final Closure summary rows (.crow) — every row is a button that
+   opens the shared field-edit popup (see openFieldEditor/#fieldModal). Single
+   column (not summary's 2-col grid) since some values here (Remarks,
+   Rate_Breakup, Navigation_Link…) run long. */
+.summary.editable{display:block;grid-template-columns:none}
+.crow{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;width:100%;
+  padding:11px 6px;border:0;border-bottom:1px solid var(--line);border-radius:8px;background:transparent;
+  font-family:var(--f-body);text-align:left;cursor:pointer;transition:.15s}
+.crow:last-child{border-bottom:0}
+.crow:hover,.crow:focus-visible{background:var(--worktop)}
+.crow:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
+.crow .k{color:var(--muted);font-weight:600;font-size:13px;flex:0 0 44%}
+.crow .v{flex:1;text-align:right;font-weight:500;font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+.crow .v.empty{color:var(--muted-2);font-weight:400}
+.crow .edit-ic{flex:none;color:var(--muted-2);margin-top:2px}
+.crow:hover .edit-ic,.crow:focus-visible .edit-ic{color:var(--signal)}
+.cgroup-empty{padding:9px 6px;font-size:12.5px;color:var(--muted-2);font-family:var(--f-mono)}
+
+/* wide variant of the shared confirm modal — hosts a single buildField()
+   editor instead of a Yes/No prompt (see openFieldEditor/#fieldModal) */
+.modal .box.wide{max-width:480px;text-align:left}
+.modal .box.wide h4{margin-bottom:14px}
+#fieldModalBody{margin-bottom:18px}
+
 /* button bar (sticky) */
 .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);backdrop-filter:blur(8px);border-top:1px solid var(--line);
   padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:40;box-shadow:0 -6px 20px rgba(20,22,28,.06)}
@@ -203,7 +280,11 @@ img,svg{max-width:100%}
 
 /* toast + modal */
 .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
-  background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:60;
+  background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;
+  /* above .modal's z-index:70 — saveFieldEditor() keeps #fieldModal open and
+     toasts an error on a failed save so the agent can retry, so unlike every
+     other toast() call in this app, this one now needs to be visible while a
+     modal is still up. */
   transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
@@ -323,16 +404,38 @@ img,svg{max-width:100%}
     </div>
   </div>
 
+  <!-- FINAL CLOSURE (Back-Office) — separate from the step wizard; reachable
+       from a dashboard row action and (per explicit request) also from a
+       permanent button inside the wizard, at any point in the ticket's
+       timeline, not gated by the stepper's normal forward progress. -->
+  <div class="wizard" id="closureView">
+    <div class="wiz-top">
+      <div class="wiz-title">
+        <h2>Final Closure</h2>
+        <span class="cid" id="closureCaseId">unsaved</span>
+        <button class="close-x" id="closureBack" type="button" aria-label="Back to dashboard"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+      </div>
+    </div>
+    <div class="form-card">
+      <h3>Close Case</h3>
+      <div class="fdesc">Review the ticket and record the final outcome. This can be done at any point during the task's timeline.</div>
+      <div id="closureFields"></div>
+    </div>
+  </div>
+
 </div>
 
-<!-- sticky action bar -->
+<!-- sticky action bar (shared by the wizard and the closure screen; each
+     view's own buttons are toggled by showView()/renderWizard()) -->
 <div class="bar" id="bar" style="display:none"><div class="inner">
   <button class="btn ghost" id="prevBtn" type="button">
     <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Previous</button>
   <button class="btn ghost" id="cancelBtn" type="button">Cancel</button>
+  <button class="btn ghost" id="closureCancelBtn" type="button" style="display:none">Back to Dashboard</button>
   <span class="spacer"></span>
-  <button class="btn danger" id="closeBtn" type="button">Close Ticket</button>
+  <button class="btn ghost" id="wizClosureBtn" type="button" style="display:none">Close Case</button>
   <button class="btn primary" id="saveBtn" type="button">Save &amp; Continue</button>
+  <button class="btn primary" id="closureSaveBtn" type="button" style="display:none">Close Case</button>
 </div></div>
 
 <div class="toast" id="toast"></div>
@@ -341,6 +444,18 @@ img,svg{max-width:100%}
   <h4 id="mTitle">Are you sure?</h4>
   <p id="mMsg"></p>
   <div class="row"><button class="btn ghost" id="mNo" type="button">No</button><button class="btn danger" id="mYes" type="button">Yes</button></div>
+</div></div>
+
+<!-- Final Closure "click any field to edit" popup — every row in the closure
+     screen's summary (agent AND vendor/technician/driver fields alike) opens
+     this with that one field's normal input re-used from buildField(), so
+     editing behaves exactly like it does everywhere else in the wizard. Save
+     writes just that field back to Zoho immediately (not gated behind the
+     bottom Close Case button) — see openFieldEditor/saveFieldEditor. -->
+<div class="modal" id="fieldModal"><div class="box wide">
+  <h4 id="fieldModalTitle">Edit field</h4>
+  <div id="fieldModalBody"></div>
+  <div class="row"><button class="btn ghost" id="fieldModalCancel" type="button">Cancel</button><button class="btn primary" id="fieldModalSave" type="button">Save</button></div>
 </div></div>
 
 <script>
@@ -364,6 +479,14 @@ const CONFIG = {
   vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
   vehicleCategoryField: "Category",     // 2W/4W field on vehicle_master_Report, matched against Vehicle_Issue_Report's VEHICLE_TYPE
   rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
+  // Invites form/report (2026-08-03, user-confirmed): one record per invited
+  // vendor per ticket — RSID (Lookup -> this Create_Case record), Vendor
+  // (Lookup -> vendors_Report). Created by THIS widget's own JS when the
+  // Assignment step is saved (confirmed — not a backend workflow). Vendor/
+  // technician/driver widgets now read their own "my tickets" list from
+  // Invites_Report instead of Agent_Ticket_Report directly — see syncInvites().
+  invitesForm: "Invites",
+  invitesReport: "Invites_Report",
   // option sources (best-effort; degrade to text/empty if unavailable) — report names are the MASTER tables we pull picker options from, unrelated to the Create_Case field names above
   optionReports: {
     vehicles:    { report:"vehicle_master_Report", label:["Name"], max:1000 },
@@ -372,7 +495,28 @@ const CONFIG = {
     technicians: { report:"technicians_Report",    label:["technician_name","Name"], emailField:"Email" },
     clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
   },
-  fetchLatest: 1000   // how many recent tickets to pull for the dashboard — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
+  fetchLatest: 1000,  // how many recent tickets to pull for the dashboard — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
+  // Assignment step's "Preferred_Vendor = No" radius filter — see vendorsFor().
+  // Split by Service_Type 2026-07-31 (Action 4 flow spec, stated explicitly:
+  // "8 km geofence... for RSR Tasks and... 20km geofence for TOW Tasks") —
+  // was a single flat 8km for both.
+  vendorDistanceKm: { RSR:8, TOW:20 },
+  // Field-name candidates for vendors_Report's phone/priority/online-offline/location —
+  // NOT confirmed live yet (unlike the label candidates above, which are already in
+  // use elsewhere). vendorInfo() tries each in order and degrades gracefully (blank/
+  // unknown) if none match — verify against a real vendors_Report record and correct
+  // these if the real field names differ. "status" is expected to hold "Online"/
+  // "Offline" — the same field name/values the toggleGetRescue widget reads/writes.
+  vendorFieldCandidates: {
+    phone:    ["Vendor_Phone","Phone","phone_number","Contact_Number","Mobile","Mobile_Number"],
+    priority: ["Priority","Vendor_Priority","Rank"],
+    status:   ["Availability_Status","Status","Vendor_Status"],
+    lat:      ["Latitude","Vendor_Latitude","Lat"],
+    lon:      ["Longitude","Vendor_Longitude","Long","Lng"],
+    // added 2026-07-31 — needed to auto-populate the new hidden Vendor_Emails
+    // field whenever Vendors1 is saved, see vendorEmailsFor().
+    email:    ["Email","Vendor_Email","email"]
+  }
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
@@ -463,8 +607,21 @@ function quoteStatus(r){
 const STAGES = [
   /* ---- COMMON ---- */
   { key:"create", branch:"all", bucket:0, short:"Create", title:"Create Service Ticket",
-    desc:"Basic customer, vehicle and issue details.", save:"Save & Continue",
-    statuses:["NEW"], status:"NEW",
+    desc:"Basic customer, vehicle and issue details.",
+    // matches the "Action 1: Create Service Ticket" flow spec's CTA label
+    // literally (2026-07-31) — was the generic "Save & Continue" every other
+    // stage also uses.
+    save:"Create Case",
+    // Per the 2026-07-31 flow spec's own backend note ("TASK STATUS ON CTA —
+    // changes to 'SERVICE FEE QUOTE'"), user-confirmed this replaces the
+    // earlier live-confirmed "create writes NEW" fact — NEW is no longer
+    // written anywhere in this app. `statuses` (used only for resuming an
+    // existing ticket at the right step, see stageIndexForStatus) is now
+    // empty: "SERVICE FEE QUOTE" is claimed by the `quote` stage below instead
+    // (it's earlier in STAGES' order, so if `create` also listed it,
+    // stageIndexForStatus would wrongly resume every such ticket back at
+    // `create` instead of `quote`).
+    statuses:[], status:"SERVICE FEE QUOTE",
     /* Create_Case has a required "Phone_Number" field separate from the one
        shown in this form ("Phone_Number1"). Mirror the value the agent types
        rather than showing a duplicate box. Confirmed via a live "Enter a value
@@ -480,16 +637,29 @@ const STAGES = [
     { n:"Customer_Name", l:"Customer Name", t:"text", req:true, row:"contact" },
     { n:"Phone_Number1", l:"Phone Number", t:"tel", req:true, row:"contact" },
     { n:"Email", l:"Email", t:"email", row:"contact" },
-    { n:"Client", l:"Client", t:"select", o:"@clients", req:true, useId:true, searchable:true },
-    { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text" },
-    { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true, searchable:true },
-    { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text" },
+    // Re-added 2026-07-31 (was removed 2026-07-25) per the flow spec, which
+    // shows it paired with Phone Number — same +91-prefixing `t:"tel"`
+    // treatment as Phone_Number1, per explicit choice. Field link name is the
+    // one this app used before its removal, not re-confirmed live since.
+    { n:"Alternate_Phone_Number", l:"Alternate Phone Number", t:"tel", full:true },
+    { n:"Client", l:"Client", t:"select", o:"@clients", req:true, useId:true, searchable:true, row:"client" },
+    // Hidden when Client is the special "ON DEMAND" walk-in entry — per
+    // 2026-07-31 user request, a tracking ID doesn't apply to those.
+    { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text", row:"client",
+      when:(s)=>String(s.Client||"").trim().toUpperCase()!=="ON DEMAND" },
+    { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true, searchable:true, row:"vehicle" },
+    { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text", row:"vehicle" },
     { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true, searchable:true },
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
-    { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"] },
-    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"] },
+    { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true }, // required per 2026-07-31 flow spec — was optional
+    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true }, // required per 2026-07-31 flow spec — was optional
     { n:"Schedule_Date", l:"Schedule Date", t:"date", req:true, when:(s)=>s.Time_of_service==="LATER" },
-    { n:"Service_Time", l:"Service Time", t:"select", o:SERVICE_TIMES, req:true, when:(s)=>s.Time_of_service==="LATER" }
+    { n:"Service_Time", l:"Service Time", t:"select", o:SERVICE_TIMES, req:true, when:(s)=>s.Time_of_service==="LATER" },
+    // "Remarks [Text Area – optional]" — shown as a plain editable field on
+    // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
+    // own copy was `readonly:true` before this (added 2026-07-28, with no
+    // other place in the app ever setting it) — now editable on both steps.
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
   ]},
   /* Quote + Booking Fee merged into one step (was two) — matches the native
      form, which shows them as a single section ("Service_Fee_Quote_Booking_fee_Collection"
@@ -497,7 +667,13 @@ const STAGES = [
      hook (keyed on that string) keeps working unchanged. */
   { key:"quote", branch:"all", bucket:0, short:"Quote", title:"Service Fee Quote & Booking Fee",
     desc:"Distance, rate breakup, the fee to quote, and the upfront booking fee.", save:"Save & Continue",
-    statuses:["SERVICE FEE QUOTE","LOCATION REQUEST","BOOKING FEE PENDING"], status:quoteStatus,
+    // "LOCATION REQUEST"/"LOCATION PENDING" removed from this resume list
+    // 2026-07-31 — both now belong exclusively to `locations` (see its own
+    // comment): the Action 3 flow spec says its own screen opens whenever
+    // Status is "Location Request", so a ticket at either "waiting on
+    // location" status should always reopen there, not back here on Quote —
+    // quoteStatus() itself is UNCHANGED and can still return either value.
+    statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING"], status:quoteStatus,
     // can't advance to Capture Locations until the required action for this
     // ticket's fee situation has actually been done (see quoteStatus above)
     // not a hard block anymore — Save & Continue always saves. If the required
@@ -508,13 +684,17 @@ const STAGES = [
     // is PAID (quoteStatus -> "LOCATION PENDING"), Save & Continue advances normally.
     canAdvance:(r)=>quoteStatus(r)==="LOCATION PENDING",
     blockedMessage:"Saved. This ticket will wait here until the location is requested (or the payment is confirmed) — reopen it from the dashboard to continue.",
-    // Only Total_Service_Fee, Booking_Fee, Rate_Breakup and Payment_Status are
-    // agent-editable on this step (explicit request, 2026-07-28) — everything
-    // else here is locked read-only/disabled. Distance_For_Quote_RT_KM and
-    // Payment_Method being locked means nothing currently populates them (no
-    // auto distance calc or auto payment-method detection exists yet) — see §4.
+    // Distance_For_Quote_RT_KM UN-locked 2026-07-31 (was readonly:true per an
+    // earlier 2026-07-28 explicit request) — the flow spec explicitly shows it
+    // as an entry field ("used only for towing Tasks") feeding the TOW
+    // Suggested Rate formula, and the 2026-07-28 lock was already flagged in
+    // §4 as breaking every TOW quote (no distance could ever be entered).
+    // Total_Service_Fee, Booking_Fee, Rate_Breakup, Payment_Status stay
+    // agent-editable as before; Payment_Method/Image_Upload are still locked
+    // pending clarification on the flow spec's Payment Method option list —
+    // see §4/§5.
     fields:[
-    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", readonly:true, when:(s)=>s.Service_Type==="TOW" },
+    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>s.Service_Type==="TOW" },
     { n:"Suggested_Rate", l:"Suggested Rate", t:"number", readonly:true },
     { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", recompute:true },
     { n:"Booking_Fee", l:"Booking Fee", t:"number", recompute:true },
@@ -525,7 +705,20 @@ const STAGES = [
        click (its action hook flips Send_Link_For_The_Breakdown_Location too)
        — once a real payment gateway is wired up, that integration is expected
        to trigger the location request itself, so this bundles the same
-       behavior by hand for now. Fee not >0 -> just the location request. */
+       behavior by hand for now. Fee not >0 -> just the location request.
+       2026-07-31 flow spec shows this as two separate "Send Message ... via
+       WhatsApp / Copy Msg" buttons instead — user explicitly confirmed (a)
+       keep this exact status/nav model and button design (not the spec's),
+       (b) there's no real WhatsApp integration yet, so nothing about the
+       actual click behavior changes today. Left the labels as they already
+       were rather than reworking them to the spec's wording, since the
+       spec's two buttons ("total fee" / "booking fee" messages) don't map
+       cleanly onto these two mutually-exclusive-by-Booking_Fee buttons —
+       revisit the exact labels/split once WhatsApp is actually wired up.
+       TODO(WhatsApp integration): once built, `action` below is where a real
+       "send via WhatsApp" call belongs — noted per the user's own words
+       ("for now whatsapp is not integrated when its integrated than it will
+       [be] done, remember it for later"). */
     { n:"Send_Payment_Link", l:"Send Payment Link", t:"button", full:true, when:(s)=>Number(s.Booking_Fee)>0,
       buttonLabel:"Send Payment Link & Request Location", doneLabel:"Payment Link & Location Sent",
       action:(r)=>{ r.Send_Link_For_The_Breakdown_Location=true; } },
@@ -535,28 +728,60 @@ const STAGES = [
     { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"] },
     { n:"Total_Service_Fee1", l:"Total Service Fee (Payment Record)", t:"number", readonly:true },
     { n:"Image_Upload", l:"Receipt Photo", t:"file", readonly:true },
-    { n:"Remarks", l:"Remarks", t:"textarea", full:true, readonly:true }
+    // no longer readonly (2026-07-31) — the flow spec shows this as a plain
+    // optional textarea on this step too, not display-only; it's now
+    // editable both here and on `create` (see that stage's own Remarks).
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
   ]},
   { key:"locations", branch:"all", bucket:0, short:"Location", title:"Capture Locations",
     desc:"Breakdown location (and drop location for tows).", save:"Save Locations",
-    // "LOCATION PENDING" (set by the quote stage once fee/location has been
-    // requested) resumes here — this is the next real step for that ticket.
-    // Bug fixed 2026-07-28: this used to write "READY" unconditionally on
-    // save, even with no location ever actually captured. Now it only
-    // becomes READY once a real breakdown location exists (hasLocFlag — the
-    // same Latitude/Longitude check backing the dashboard's "Loc" chip);
-    // otherwise it stays LOCATION PENDING and, like the quote step, saving
-    // without it just exits to the dashboard instead of advancing.
-    statuses:["READY","LOCATION PENDING"], status:(r)=> hasLocFlag(r) ? "READY" : "LOCATION PENDING",
+    // "LOCATION REQUEST"/"LOCATION PENDING" (both mean "waiting on a
+    // location" — the first from `quote`'s fee-free branch, the second once
+    // fee/location has been requested) both resume HERE now (2026-07-31,
+    // moved off `quote`'s own resume list — see its comment) — this is the
+    // next real step for either ticket. Bug fixed 2026-07-28: this used to
+    // write "READY" unconditionally on save, even with no location ever
+    // actually captured. Now it only advances once a real breakdown location
+    // exists (hasLocFlag — the same Latitude/Longitude check backing the
+    // dashboard's "Loc" chip); otherwise saving just exits to the dashboard
+    // instead of advancing.
+    // Status values renamed 2026-07-31 (Action 3 flow spec, user-confirmed):
+    // "READY" -> "READY FOR ASSIGNMENT" (moved to `assignment`'s own resume
+    // list, matching its name — see that stage), "LOCATION PENDING" (as this
+    // stage's OWN written value, not `quote`'s) -> "LOCATION REQUEST".
+    statuses:["LOCATION REQUEST","LOCATION PENDING"], status:(r)=> hasLocFlag(r) ? "READY FOR ASSIGNMENT" : "LOCATION REQUEST",
     canAdvance:(r)=> hasLocFlag(r),
     blockedMessage:"Saved. This ticket will wait here until a breakdown location is actually captured — reopen it from the dashboard to continue.",
+    // Stamps the exact moment a real breakdown location first exists — only
+    // set once (never overwritten on a later re-save of this same step) so it
+    // stays "time of receipt", not "time of most recent save". Field name/type
+    // ("Location_Received_Time", a DateTime field) user-confirmed 2026-07-31 —
+    // not independently re-verified against a live record, unlike names
+    // confirmed via an actual API error elsewhere in this file.
+    extra:(r)=> (hasLocFlag(r) && !r.Location_Received_Time) ? { Location_Received_Time: fmtDateTime(new Date()) } : {},
     fields:[
+    // Both "send link" actions are WhatsApp-message placeholders, same
+    // situation as the `quote` step's fee/booking-fee link buttons — no real
+    // WhatsApp integration exists yet (user-confirmed 2026-07-31), so these
+    // just flip a one-way "done" flag with no actual send. TODO(WhatsApp
+    // integration): wire a real send into each `action`/onclick once built.
     { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true,
       buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent" },
+    // 2026-07-31: user explicitly confirmed location is captured ONLY this
+    // way for now (paste "lat, long" text, split into the two real decimal
+    // fields) — the flow spec's "[Location field type]" wording does NOT mean
+    // a native Zoho Location/map-picker field; keep LatLongPaste as-is.
     { n:"LatLongPaste", l:"Paste Breakdown Lat,Long", t:"text", full:true, hint:"e.g. 28.6139, 77.2090", parseTarget:["Latitude","Longitude"] },
     { n:"Latitude", l:"Breakdown Latitude", t:"decimal" },
     { n:"Longitude", l:"Breakdown Longitude", t:"decimal" },
-    { n:"Send_Link_For_The_Drop_Location", l:"Send drop-location link", t:"check", full:true, when:(s)=>s.Service_Type==="TOW" },
+    // 2026-07-31: user explicitly confirmed Drop Location is TOW-only —
+    // matches the existing `when` guards below already (re-confirms, not a
+    // change). Converted from `t:"check"` to `t:"button"` (same shape as the
+    // breakdown-location one above) since the flow spec shows both as
+    // buttons — previously left as a checkbox since nothing had confirmed
+    // otherwise (see the 2026-07-28 changelog entry).
+    { n:"Send_Link_For_The_Drop_Location", l:"Send Drop Location Link", t:"button", full:true, when:(s)=>s.Service_Type==="TOW",
+      buttonLabel:"Send Drop Location Link to Customer", doneLabel:"Location Link Sent" },
     { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
     { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
     { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
@@ -566,53 +791,122 @@ const STAGES = [
        since coordinates might get corrected after a first calculation. */
     { n:"Calculate_Distance", l:"Calculate Round-Trip Distance", t:"button", full:true, repeatable:true, when:(s)=>s.Service_Type==="TOW",
       buttonLabel:"Calculate Round-Trip Distance", action:(r)=>{ r.RT_KM=calcRoundTripKm(r); } },
-    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW" }
+    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW" },
+    // "Remarks [Text Area – optional]" — same shared field as create/quote's
+    // own copies (2026-07-31 flow spec shows it here too), editable on all three.
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
   ]},
   { key:"assignment", branch:"all", bucket:1, short:"Assign", title:"Vendor Assignment",
     desc:"Assign to vendor(s) and (optionally) a technician.", save:"Assign & Continue",
-    statuses:["RSP IRA (INVITE RESPONSE AWAITED)"], status:"RSP IRA (INVITE RESPONSE AWAITED)",
+    // "READY FOR ASSIGNMENT" added 2026-07-31 (was "READY", resumed on
+    // `locations` instead) — `locations` writes this once a breakdown
+    // location exists, and its name says exactly what it means: go do the
+    // assignment step next, so that's where reopening such a ticket lands.
+    // "RSP REJECT" also added 2026-07-31 (Action 4 flow spec: this screen
+    // explicitly opens on that status too, to re-assign) — removed from
+    // `acceptance`/`acceptanceTow`'s own resume lists, which still WRITE it.
+    statuses:["READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","RSP REJECT"], status:"RSP IRA (INVITE RESPONSE AWAITED)",
     fields:[
-    { n:"Preferred_Vendor", l:"Preferred Vendor?", t:"radio", o:["Yes","No"] },
-    { n:"Vendors", l:"Vendors", t:"multiselect", o:"@vendors", full:true },
-    { n:"Vendor_Email", l:"Vendor Email", t:"text" },
-    { n:"Assignment_Sent", l:"Assignment Sent?", t:"radio", o:["Yes","No"] },
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
-    { n:"Assigned_Technician_Email", l:"Technician Email", t:"text" }
+    { n:"Preferred_Vendor", l:"Preferred Vendor?", t:"radio", o:["Yes","No"], default:"No" },
+    /* Yes -> every vendor, searchable by name. No (or unset) -> only vendors
+       within radiusKmFor(record) of the ticket's own captured breakdown
+       location (Latitude/Longitude, set on the locations stage) — 8km RSR /
+       20km TOW as of 2026-07-31 (Action 4 flow spec; was a flat 8km before) —
+       straight-line distance, see vendorsFor(). Results are sorted by
+       priority then distance (added 2026-07-31, see sortVendors() — this
+       step's own field previously only filtered, never sorted). Each
+       "+ Add…" dropdown option shows name, priority, distance and phone,
+       plus an Online/Offline flag — see vendorOptionHtml()/vendorInfo(). */
+    // Real Zoho field API name is "Vendors1" (confirmed 2026-07-31 by the
+    // user — "Vendors" was already taken/renamed on their side). Also
+    // confirmed 2026-07-31: this is a real (multi) Lookup field, not a plain
+    // multiselect of text — useId:true added so it saves real vendors_Report
+    // record IDs instead of the composite "[priority] Name | Phone | Status"
+    // string this app was previously sending (which a genuine Lookup field
+    // silently rejects — this was the root cause of "no vendor is assigned
+    // after I click assign vendor"). NOTE: switching to plain ID Lookups
+    // means priority/phone/online-status can no longer ride along on the
+    // saved value itself — see vendorNamesFor()'s own comment on what that
+    // costs for later display.
+    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendorsFiltered", full:true, searchable:true, useId:true,
+      hint:(s)=>vendorPickerHint(s) },
+    // "Remarks [Text Area – optional]" — same shared field as the earlier
+    // steps (2026-07-31 flow spec shows it here too).
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
+    // Simplified 2026-07-31 (user-requested — matches the Action 4 mock,
+    // which only shows the Assign-To picker + Remarks on this screen):
+    // Vendor_Email, Assigned_Technician, Assigned_Technician_Email moved to
+    // `acceptance`/`acceptanceTow`'s own display (outcome data, shown once
+    // someone's actually accepted, not something the agent fills in here).
+    // Assignment_Sent removed entirely — nothing ever read it, no real
+    // notification system is wired to it, and it isn't in the mock at all.
   ]},
 
   /* ---- RSR branch (reordered: accept -> reach -> WIP, was accept -> WIP -> reach) ---- */
   { key:"acceptance", branch:"rsr", bucket:1, short:"Accept", title:"Service Acceptance",
     desc:"Vendor/technician response to the assignment.", save:"Save Acceptance",
-    statuses:["RSP ON THE WAY","RSP REJECT"],
-    status:(r)=> r.Service_Request==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    // "RSP REJECT" removed from this resume list 2026-07-31 (Action 4 flow
+    // spec: that screen explicitly opens on "RSP Reject" too, to re-assign —
+    // moved onto `assignment`'s own resume list instead, see that stage).
+    // This stage still WRITES "RSP REJECT" below; only where a ticket at that
+    // status reopens changed.
+    statuses:["RSP ON THE WAY"],
+    // 2026-07-31: was deriving this from a "Service_Request" radio that
+    // technicianTicket never actually writes (it writes Status directly) —
+    // reading the record's own real Status is the only reliable source now
+    // that this stage is vendor-side viewOnly. See QUESTIONS_TO_ASK.md.
+    status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
+    // viewOnly (2026-07-31, user-confirmed): the vendor/technician enters
+    // this data directly in their own native Zoho Creator form/app, not this
+    // widget — every field below now renders locked (see renderFields'
+    // viewOnly handling). The agent can still page through and see it, and
+    // Save still advances the stepper (status is computed from whatever the
+    // vendor already saved), just can't type into any of these fields here.
+    viewOnly:true,
     fields:[
-    { n:"Service_Request", l:"Response", t:"radio", o:["Accepted","Rejected"] },
     { n:"Assign_Technican", l:"Assign Technician?", t:"radio", o:["Yes","No"] },
-    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request==="Rejected", full:true },
+    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason, full:true },
     { n:"Vendor_Email1", l:"Vendor Email", t:"text" },
-    { n:"Technician_Email", l:"Technician Email", t:"text" }
+    { n:"Technician_Email", l:"Technician Email", t:"text" },
+    // Moved here from `assignment` 2026-07-31 (UI simplification, matches
+    // the Action 4 mock) — these are outcome fields, shown once someone's
+    // actually accepted, not something the agent fills in upfront.
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
+    // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
+    // OWN Accept action once they accept — not written by this widget at
+    // all (viewOnly stage). Assumed to lookup vendors_Report (same target as
+    // Vendors1) — not independently confirmed; see QUESTIONS_TO_ASK.md.
+    { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true }
   ]},
   { key:"reach", branch:"rsr", bucket:2, short:"Reach", title:"Reach Breakdown Location",
     desc:"Arrival, ETA and navigation.", save:"Save",
     statuses:["RSP ON THE WAY","RSP CANCELLED"],
-    status:(r)=> r.Action_field==="Cancel" ? "RSP CANCELLED" : "RSP ON THE WAY",
+    // 2026-07-31: same fix as `acceptance` above — "Action_field" was never
+    // written by technicianTicket (it writes Status directly on Cancel).
+    status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
-    { n:"Action_field", l:"Action", t:"radio", o:["Reached","Cancel"] },
     { n:"ETA", l:"ETA (mins)", t:"number" },
     { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", t:"number" },
     { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
-    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field==="Cancel", full:true }
+    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true }
   ]},
   { key:"wip", branch:"rsr", bucket:2, short:"WIP", title:"Work In Progress",
     desc:"On-site repair — photos, expense and resolution.", save:"Save Progress",
     statuses:["WORK IN PROGRESS"], status:"WORK IN PROGRESS",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
     { n:"Issue_Resolved", l:"Issue Resolved?", t:"radio", o:["Yes","No"] },
+    { n:"Unresolved_Note", l:"Issue Not Resolved — Notes", t:"textarea", when:(s)=>!!s.Unresolved_Note, full:true },
     { n:"Image_Upload3", l:"Pre-service Photo", t:"file" },
     { n:"Image_Upload4", l:"Post-service Photo", t:"file" },
     { n:"Expense_Amount", l:"Expense Amount", t:"number" },
     { n:"Expense_Photo", l:"Expense Photo", t:"file" },
+    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true },
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" },
     { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number" },
     { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number" },
     { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number" },
@@ -623,81 +917,132 @@ const STAGES = [
      was accept -> reach -> reached drop -> load -> unload) ---- */
   { key:"acceptanceTow", branch:"tow", bucket:1, short:"Accept", title:"Service Acceptance (Tow)",
     desc:"Driver response to the tow assignment.", save:"Save Acceptance",
-    statuses:["RSP ON THE WAY","RSP REJECT"],
-    status:(r)=> r.Service_Request1==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    // "RSP REJECT" removed from this resume list 2026-07-31 — see the
+    // matching comment on `acceptance` (its RSR sibling) above.
+    statuses:["RSP ON THE WAY"],
+    // 2026-07-31: same fix as `acceptance` above — "Service_Request1" was
+    // never written by driverTicket (it writes Status directly).
+    status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
-    { n:"Service_Request1", l:"Response", t:"radio", o:["Accepted","Rejected"] },
     { n:"Assign_Technican1", l:"Assign Driver?", t:"radio", o:["Yes","No"] },
-    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request1==="Rejected", full:true },
+    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason1, full:true },
     { n:"Image_Upload1", l:"Photo", t:"file" },
     { n:"Vendor_Email2", l:"Vendor Email", t:"text" },
-    { n:"Technician_Email1", l:"Driver Email", t:"text" }
+    { n:"Technician_Email1", l:"Driver Email", t:"text" },
+    // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
+    // See `acceptance`'s own comment on this same new field.
+    { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true }
   ]},
   { key:"reachTow", branch:"tow", bucket:2, short:"Reach", title:"Reach Breakdown (Tow)",
     desc:"Arrival, odometer and toll.", save:"Save",
-    statuses:["RSP ON THE WAY"], status:"RSP ON THE WAY",
+    // 2026-07-31: added "RSP CANCELLED" (was static "RSP ON THE WAY" only,
+    // so a Save here on a cancelled TOW ticket would have silently reverted
+    // its real Status) — same fix as `reach`'s own RSR sibling above.
+    statuses:["RSP ON THE WAY","RSP CANCELLED"],
+    status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
     { n:"Odometer_reading_at_Reached_Location", l:"Odometer at Reached", t:"number" },
     { n:"Toll_Charges", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
     { n:"Navigate_To_Breakdown_Link", l:"Navigate to Breakdown Link", t:"textarea", full:true },
     { n:"Image_Upload5", l:"Arrival Photo", t:"file" },
-    { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, full:true }
+    { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason2, full:true }
   ]},
   { key:"wipLoadingTow", branch:"tow", bucket:2, short:"Loading", title:"Loading",
     desc:"On-truck loading photos and VCRF.", save:"Save Loading",
-    statuses:["LOADING","RSP CANCELLED"],
-    status:(r)=> r.Action_field2==="Cancel" ? "RSP CANCELLED" : "LOADING",
+    // 2026-07-31 (Action 7a reconciliation): this stage's alternate outcome
+    // is "Customer Rejected" -> Status "REMAINING FEE DUE" (goes to Final
+    // Payment Collection), NOT "Cancel" -> "RSP CANCELLED" as previously
+    // guessed here — that Cancel outcome actually belongs to `reachTow`
+    // (Action 6a), not this Loading stage. "REMAINING FEE DUE" is
+    // deliberately NOT added to this stage's own resume `statuses` (it stays
+    // `payment`'s alone) — same reasoning as `acceptance`'s own comment
+    // about "RSP REJECT" above, to avoid the resume-routing ambiguity bug
+    // already fixed once this session (see README §5, 2026-07-31).
+    statuses:["LOADING"], status:"LOADING",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
     { n:"Pre_service_Photo", l:"Pre-service Photo", t:"file" },
     { n:"Image_Upload_On_truck", l:"On-truck Photo", t:"file" },
     { n:"VCRF", l:"VCRF", t:"file" },
     { n:"Image_Upload6", l:"Additional Photo", t:"file" },
-    { n:"Action_field2", l:"Action", t:"radio", o:["Loaded","Cancel"] },
-    { n:"Rejection_Reason1", l:"Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field2==="Cancel", full:true }
+    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true },
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" }
   ]},
   { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
     desc:"Odometer and drop-location proof.", save:"Save",
     statuses:["TO DROP LOCATION"], status:"TO DROP LOCATION",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
-    { n:"Odometer_Reading", l:"Odometer Reading Photo", t:"file" },
+    // "Odometer_Reading" corrected 2026-07-31 from t:"file" to t:"number" —
+    // it's the same plain number field Accept's own Start Odometer writes
+    // (driverTicket/vendorTicket both send Number(odo)), not a photo upload.
+    { n:"Odometer_Reading", l:"Odometer Reading", t:"number" },
     { n:"Drop_Location_Photo", l:"Drop Location Photo", t:"file" },
-    { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"] }
+    { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
+    // Action 7b mock, added 2026-07-31 — driver's own live GPS + timestamp
+    // captured when "Reached Drop Location" is tapped (guessed names).
+    { n:"Drop_Location_Arrival_Time", l:"Drop Arrival Time", t:"text" },
+    { n:"RSP_Drop_Location_Lat", l:"RSP Drop Location (Lat)", t:"text" },
+    { n:"RSP_Drop_Location_Lon", l:"RSP Drop Location (Lon)", t:"text" }
   ]},
   { key:"wipUnloadingTow", branch:"tow", bucket:2, short:"Unload", title:"Unloading & Handover",
     desc:"Unload, handover details and return journey.", save:"Save Handover",
     statuses:["UNLOADING"], status:"UNLOADING",
+    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
     { n:"Unloaded_Images", l:"Unloaded Photo", t:"file" },
     { n:"VCRF_Image", l:"VCRF Image", t:"file" },
     { n:"Handover_Image", l:"Handover Photo", t:"file" },
     { n:"Handover_to_Name", l:"Handover to (Name)", t:"text" },
-    { n:"Handover_to_Number", l:"Handover Number", t:"tel" },
+    { n:"Handover_to_Number", l:"Handover Number", t:"number" },
     { n:"Handover_to_Designation", l:"Handover Location", t:"select", o:["Home","Office","Work Shop"] },
     { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true },
     { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km)", t:"number" },
     { n:"Drop_To_Office_Distance", l:"Drop → Office (km)", t:"number" },
-    { n:"Return_Journey_ETA", l:"Return ETA (mins)", t:"number" }
+    { n:"Return_Journey_ETA", l:"Return ETA (mins)", t:"number" },
+    // Action 7c mock, added 2026-07-31 — "DROPPED" click stamps the same
+    // shared completion-time field as RSR's Work Completed/Cx Reject.
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" }
   ]},
 
   /* ---- shared late stages ---- */
+  // Status corrected 2026-07-31: the vendor/technician/driver widgets built
+  // the same day (their own field-generation spec, not a guess) confirm this
+  // stage's entry status is "REMAINING FEE DUE" (set by the prior WIP/
+  // Unloading step once work is done) and its own write on completion is
+  // "RSP CLOSED" — replacing the earlier "RSP COMPLETE" guess (flagged
+  // unconfirmed in §4 since 2026-07-28) with real, if indirect, evidence.
   { key:"payment", branch:"pay", bucket:3, short:"Payment", title:"Final Payment Collection",
     desc:"Collect the remaining balance.", save:"Save Payment",
-    statuses:["RSP COMPLETE"], status:"RSP COMPLETE", // best guess — confirm vs RSP CLOSED
+    statuses:["REMAINING FEE DUE"], status:"RSP CLOSED",
     fields:[
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
-    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Payment Gateway","Cash","Card"] },
+    // Options + default corrected 2026-07-31 to match Payment_Method1
+    // specifically (a different field from `quote`'s own Payment_Method,
+    // not touched here) per the vendor/technician/driver widgets' own
+    // field-generation spec ("Payment Gateway [Default] / Direct / Cash").
+    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Payment Gateway","Direct","Cash"], default:"Payment Gateway" },
     { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
     { n:"QR_Code", l:"QR / Reference", t:"text" },
     { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },
-    { n:"Upload_Photo_of_receipt", l:"Receipt Photo", t:"file" }
-  ]},
-  { key:"closure", branch:"final", bucket:3, short:"Close", title:"Final Closure",
-    desc:"Review the ticket and close it out.", save:"Finish & Close",
-    statuses:["CLOSED"], status:"CLOSED",
-    fields:[
-    { n:"__summary", l:"", t:"summary", full:true },
-    { n:"Remarks", l:"Closing Notes", t:"textarea", full:true }
+    { n:"Upload_Photo_of_receipt", l:"Receipt Photo", t:"file" },
+    // Added 2026-07-31 (Action 8 reconciliation) — the explicit Payment
+    // Status (Pending/Success) shown on all three field widgets' own Payment
+    // screen; wasn't mirrored here yet. Shown read-only since the field
+    // widgets (or a future gateway webhook) are the ones that actually set it.
+    { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true }
   ]}
+  /* the old "closure" stage (branch:"final", __summary + Remarks) was removed
+     2026-07-30 — ticket closure no longer happens as the last step of this
+     linear wizard at all. It's now its own dedicated "Final Closure" screen
+     (see CLOSURE_FIELDS / openClosure / renderClosure / saveClosure below),
+     reachable from a dashboard row action and a permanent button inside the
+     wizard, at ANY point in a ticket's timeline — not gated by the stepper. */
 ];
 
 /* build the active stage path from Service_Type */
@@ -705,8 +1050,7 @@ function buildPath(serviceType){
   const all   = STAGES.filter(s=>s.branch==="all");
   const branch= STAGES.filter(s=>s.branch===(serviceType==="TOW"?"tow":"rsr"));
   const pay   = STAGES.filter(s=>s.branch==="pay");
-  const fin   = STAGES.filter(s=>s.branch==="final");
-  return all.concat(branch, pay, fin);
+  return all.concat(branch, pay);
 }
 /* Create_Case.Status is a real fixed picklist (confirmed 2026-07-28) — every
    save must write one of these exact values, never the human-readable stage
@@ -715,13 +1059,76 @@ function buildPath(serviceType){
 function computeStatus(step, record){
   return typeof step.status==="function" ? step.status(record) : step.status;
 }
+
+/* =====================================================================
+   FINAL CLOSURE — a separate screen from the step wizard (added 2026-07-30,
+   per the Back-Office "Final Closure RSR & Tow" mock). Reachable from a
+   dashboard row action and a permanent button inside the wizard, at ANY
+   point in a ticket's timeline — not part of STAGES/buildPath, not gated by
+   the stepper. Field link names below (Refund_Due, Refund_Reason,
+   Refund_Amount, Closure_Status, Closure_Reason, Cx_Feedback_Score,
+   Cx_Feedback_Text, B2B_GST_Invoice_Required, GST_Number, Closure_Extra_Photo)
+   are pattern-matched guesses, NOT confirmed live — same disclaimer as
+   CONFIG.vendorFieldCandidates elsewhere in this file; verify against a real
+   Create_Case record and correct if the real names differ.
+   Interpretation choices made building this from the mock (flagged here,
+   not silently assumed — see README §4 for the fuller writeup):
+   - The mock's field list shows a 3-option Closure_Status ("Not Converted"/
+     "Cancelled"/"Completed"), but its own validation table has separate
+     "CANCELLED BILLABLE"/"CANCELLED NOT BILLABLE" rows with the IDENTICAL
+     fee condition — user confirmed (2026-07-30): keep 3 options, don't split
+     "Cancelled" into two saved values, since the validation behavior doesn't
+     actually differ between them.
+   - User confirmed (2026-07-30): the Close Case trigger lives BOTH on each
+     dashboard row AND as a permanent button inside the wizard (next to Save
+     & Continue) — not a replacement of one by the other. ===================================================================== */
+const CLOSURE_FIELDS=[
+  { n:"__closureSummary", l:"", t:"summary", full:true },
+  { n:"Refund_Due", l:"Refund Due?", t:"radio", o:["Yes","No"], default:"No" },
+  { n:"Refund_Reason", l:"Refund Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Refund_Due==="Yes", req:true },
+  { n:"Refund_Amount", l:"Refund Amount", t:"number", when:(s)=>s.Refund_Due==="Yes", req:true },
+  { n:"Closure_Status", l:"Closure Status", t:"select", o:["Not Converted","Cancelled","Completed"], req:true, full:true },
+  { n:"Closure_Reason", l:"Not Converted / Cancelled Reason", t:"select", o:REJECT_REASONS, full:true,
+    when:(s)=>s.Closure_Status==="Cancelled"||s.Closure_Status==="Not Converted", req:true },
+  { n:"Remarks", l:"Remarks", t:"remarks", full:true },
+  { n:"Cx_Feedback_Score", l:"Customer Feedback (1–10)", t:"radio", o:["1","2","3","4","5","6","7","8","9","10"], full:true,
+    req:(s)=>s.Closure_Status==="Completed" },
+  { n:"Cx_Feedback_Text", l:"Customer Feedback (Notes)", t:"textarea", full:true },
+  { n:"B2B_GST_Invoice_Required", l:"B2B GST Invoice Required?", t:"radio", o:["Yes","No"], default:"No" },
+  { n:"GST_Number", l:"GST Number", t:"text", when:(s)=>s.B2B_GST_Invoice_Required==="Yes",
+    req:(s)=>s.Closure_Status==="Completed" && s.B2B_GST_Invoice_Required==="Yes" },
+  { n:"Closure_Extra_Photo", l:"Additional Photo", t:"file", full:true }
+];
+/* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
+   TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
+   existing Remaining_Fee; the mock's separate REFUNDBF/REFUNDBALF split isn't
+   reflected in a real field here (only one Refund_Amount box exists on the
+   actual screen) — treated as their combined total. Applies to Completed and
+   Cancelled (both rows in the table use the identical formula); Not Converted
+   has no fee condition at all, so saveClosure() leaves Total_Service_Fee
+   untouched in that case. */
+function computeClosureTSF(r){
+  const bf=Number(r.Booking_Fee)||0, balf=Number(r.Remaining_Fee)||0;
+  const refund = r.Refund_Due==="Yes" ? (Number(r.Refund_Amount)||0) : 0;
+  return bf + balf - refund;
+}
 /* Dashboard shows exactly 3 report lists (by explicit request) — anything
    whose Status isn't in one of these three sets simply won't appear on the
    dashboard (still findable via phone search, which lists every status). */
 const BUCKETS = [
   { name:"New & Open", sub:"Just came in", statuses:["NEW","OPEN","SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQUEST","LOCATION PENDING"], accent:"var(--info)", pill:"b-new",
     icon:'<svg viewBox="0 0 24 24" fill="none"><path d="M4 12h4l2 3h4l2-3h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 5h13l1.5 7v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6l1.5-7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>' },
-  { name:"Ready & Invited", sub:"Ready for a provider", statuses:["SCHEDULED","READY","RSP REJECT","RSP COMPLETE"], accent:"var(--wait)", pill:"b-asg",
+  // 2026-08-03: real bug fixed — "RSP IRA (INVITE RESPONSE AWAITED)" (the
+  // status every ticket sits at right after the agent invites vendors, via
+  // the new Invites mechanism) was missing from EVERY bucket's own statuses
+  // list, so bucketOfStatus() returned -1 for it and such tickets silently
+  // vanished from the whole dashboard (all four buckets showed 0, even
+  // though Agent_Ticket_Report clearly had matching records — user-reported
+  // live). Added here, its natural home ("awaiting a provider's response" is
+  // the same bucket as "ready to be assigned one" / "provider rejected").
+  // Also removed the stale "RSP COMPLETE" — confirmed superseded by
+  // "RSP CLOSED" (already in the RSP Closed bucket below) earlier this session.
+  { name:"Ready & Invited", sub:"Ready for a provider", statuses:["SCHEDULED","READY","READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","RSP REJECT"], accent:"var(--wait)", pill:"b-asg",
     icon:'<svg viewBox="0 0 24 24" fill="none"><rect x="6" y="4" width="12" height="17" rx="2" stroke="currentColor" stroke-width="2"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2"/><path d="m9 13 2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
   { name:"Work In Progress", sub:"Out on the job", statuses:["RSP ON THE WAY","WORK IN PROGRESS","LOADING","TO DROP LOCATION","UNLOADING"], accent:"var(--signal)", pill:"b-wip",
     icon:'<svg viewBox="0 0 24 24" fill="none"><path d="M14.7 6.3a4 4 0 0 0-5.4 4.9L4 16.5V20h3.5l5.3-5.3a4 4 0 0 0 4.9-5.4l-2.6 2.6-2-2 2.6-2.6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>' },
@@ -769,6 +1176,7 @@ async function loadOptions(){
 function optionsListFor(field){
   if(Array.isArray(field.o)) return field.o.map(function(v){ return {v:v,label:v}; });
   if(field.o==="@vehicleIssues") return vehicleIssuesFor(state.record[CONFIG.vehicleField]);
+  if(field.o==="@vendorsFiltered") return vendorsFor(state.record);
   if(typeof field.o==="string" && field.o[0]==="@"){ return OPTIONS[field.o.slice(1)] || []; }
   return [];
 }
@@ -803,13 +1211,24 @@ function isTowIssue(issueLabel){
   return /tow/i.test(type);
 }
 
-/* Zoho's Decimal field for Latitude/Longitude rejected a raw GPS paste's full
-   ~15-digit precision ("Longitude has exceeded its maximum digits" — live
-   error). 6 decimal places (~11cm accuracy, the usual convention for GPS
-   coordinates) is far more precision than dispatch needs and comfortably
-   under any reasonable digit limit — best-effort guess at the actual
-   configured limit, not confirmed against the live field's exact settings. */
-function roundCoord(n){ return Math.round(Number(n)*1e6)/1e6; }
+/* Zoho's Decimal field for Latitude/Longitude rejects a value once it has too
+   many TOTAL digits ("...has exceeded its maximum digits" — live error,
+   confirmed 2026-07-30 to still fire even at 17 decimal places, e.g.
+   23.123456789012344 = 17 total digits). This is a hard server-side limit
+   configured on the field in Zoho Studio, not something client-side rounding
+   alone can satisfy without knowing the exact number — and that number isn't
+   confirmed (see README §4). decimals defaults to 17 (the requested ceiling,
+   effectively a pass-through for any real GPS coordinate — a JS double only
+   carries ~15-17 significant digits total anyway); saveWithCoordFallback()
+   below calls this again with a lower value to retry after that exact error.
+   Uses toFixed() rather than Math.round(n*10**decimals)/10**decimals — the
+   multiply-based approach overflows Number.MAX_SAFE_INTEGER for coordinate-
+   sized values (2+ integer digits) at high decimal counts and would silently
+   round incorrectly instead of to the requested precision. */
+function roundCoord(n, decimals){
+  const num=Number(n);
+  return isNaN(num) ? num : Number(num.toFixed(decimals==null?17:decimals));
+}
 
 /* ---------- round-trip distance (TOW only, "locations" step) ----------
    Static office location; round trip = office -> breakdown -> drop -> office.
@@ -835,6 +1254,179 @@ function calcRoundTripKm(r){
   }
   return Math.round(total*10)/10;
 }
+
+/* ---------- vendors_Report → Assignment-step vendor picker ----------
+   Preferred_Vendor="Yes" shows every vendor (searchable, sorted); "No" (or
+   unset) filters to only vendors within radiusKmFor(record)'s radius (8km
+   RSR / 20km TOW, CONFIG.vendorDistanceKm) of the ticket's own captured
+   breakdown location, using the same plain Haversine great-circle distance
+   haversineKm() already provides above — no Google Maps API call. Results are
+   always sorted by priority then distance (sortVendors()).
+   vendors_Report's exact field names for phone/priority/online-offline/
+   vendors_Report's exact field names for phone/priority/online-offline/
+   location are NOT confirmed live (unlike the label candidates in
+   CONFIG.optionReports.vendors) — vendorInfo() tries each candidate in
+   CONFIG.vendorFieldCandidates in turn and degrades to ""/unknown if none
+   match, the same defensive pattern pull()'s own label lookup already uses. */
+function firstRawValue(raw, candidates){
+  if(!raw) return "";
+  for(let i=0;i<candidates.length;i++){
+    const v=raw[candidates[i]];
+    if(v!=null && v!==""){ return (typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v; }
+  }
+  return "";
+}
+function vendorInfo(opt){
+  const raw=(opt&&opt.raw)||{};
+  const C=CONFIG.vendorFieldCandidates;
+  const phone=firstRawValue(raw,C.phone);
+  const priority=firstRawValue(raw,C.priority);
+  const status=String(firstRawValue(raw,C.status)||"").trim(); // expected "Online"/"Offline"
+  const lat=Number(firstRawValue(raw,C.lat)), lon=Number(firstRawValue(raw,C.lon));
+  const hasLoc=!isNaN(lat)&&!isNaN(lon);
+  const email=firstRawValue(raw,C.email);
+  return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:status.toUpperCase()==="ONLINE", lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email };
+}
+/* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
+   auto-populate a hidden "Vendor_Emails" field with the selected vendors'
+   own emails (comma-separated) — resolved from OPTIONS.vendors/vendorInfo()
+   via the same vendors_Report the picker itself pulls from. Not shown as a
+   field in this widget at all (the user will hide it on the real Zoho form
+   too); vendors with no resolvable email are silently skipped. */
+function vendorEmailsFor(names){
+  const arr=Array.isArray(names)?names:(names?[names]:[]);
+  return arr.map(function(name){
+    const opt=OPTIONS.vendors.find(function(o){ return String(o.v)===String(name); });
+    return opt ? vendorInfo(opt).email : "";
+  }).filter(Boolean).join(", ");
+}
+// Same OPTIONS.vendors cache Vendors1's own picker uses — resolves a display
+// name to its real vendors_Report record ID (bare, not wrapped — see the
+// Lookup write-shape revert earlier this session; wrapping broke saving).
+function vendorIdByName(name){
+  const opt=OPTIONS.vendors.find(function(o){ return String(o.v)===String(name); });
+  return opt && opt.id!=null ? opt.id : name;
+}
+/* Invites (2026-08-03, user-confirmed): one record per invited vendor per
+   ticket, created by THIS widget's own JS — not a backend workflow. Called
+   right after a successful Assignment-step save (see saveStep()) with
+   whatever vendor names are currently in Vendors1. Duplicate-safe: checks
+   which vendors already have an Invites record for this ticket (by RSID)
+   first, only creates new ones for the rest — re-saving the Assignment step
+   without changing Vendors1 shouldn't spam duplicate invites.
+   NOTE: "RSID" here is the real Invites.RSID Lookup field (-> this
+   Create_Case record) — unrelated to this app's own "RSID"+digits Case_ID
+   display-tag convention used elsewhere (saveStep's own caseId variable),
+   which is just a human-readable string, a naming coincidence only.
+   UNCONFIRMED: the exact criteria syntax for matching a Lookup field
+   (RSID == recordId) — best-effort; if it silently matches nothing, this
+   degrades to occasionally creating a duplicate Invites record rather than
+   losing data, so flagged as low-risk pending live verification. */
+async function syncInvites(recordId, vendorNames){
+  const names=(Array.isArray(vendorNames)?vendorNames:(vendorNames?[vendorNames]:[])).filter(Boolean);
+  if(!recordId || !names.length) return;
+  let existingVendorIds=[];
+  try{
+    const existing = await apiGetReport(CONFIG.invitesReport, "(RSID == "+recordId+")", 200);
+    existingVendorIds = existing.map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); }).filter(Boolean);
+  }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
+  const fn=resolve("addRecords"); if(!fn) return;
+  for(const name of names){
+    const vendorId=String(vendorIdByName(name));
+    if(existingVendorIds.indexOf(vendorId)>=0) continue; // already invited — don't duplicate
+    try{
+      await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:{
+        RSID: recordId, Vendor: vendorId
+      } } });
+      console.log("[Get-Rescue] created Invites record for vendor", name, "(id "+vendorId+") on ticket", recordId);
+    }catch(e){ console.warn("[Get-Rescue] could not create Invites record for", name, e); }
+  }
+}
+/* straight-line distance from the ticket's own Latitude/Longitude (set on the
+   locations stage) to a vendor's own lat/lon — null if either side is missing */
+function vendorDistanceKm(record, vInfo){
+  const bLat=Number(record.Latitude), bLon=Number(record.Longitude);
+  if(isNaN(bLat)||isNaN(bLon)||vInfo.lat==null||vInfo.lon==null) return null;
+  return Math.round(haversineKm(bLat,bLon,vInfo.lat,vInfo.lon)*10)/10;
+}
+/* Radius is Service_Type-specific (2026-07-31 Action 4 flow spec, explicit:
+   "8 km geofence... for RSR Tasks and... 20km geofence for TOW Tasks") — was
+   a single flat 8km for both before. Falls back to the RSR figure for any
+   unrecognized/blank Service_Type (matches buildPath's own RSR-is-default). */
+function radiusKmFor(record){
+  const t=(record[CONFIG.serviceTypeField]||"").toUpperCase();
+  return t==="TOW" ? CONFIG.vendorDistanceKm.TOW : CONFIG.vendorDistanceKm.RSR;
+}
+/* Lower priority number = higher priority (P1 ranks above P2 — matches the
+   flow atlas mock's own P1..P4 ordering). Vendors with no usable priority
+   value sort after every vendor that has one, rather than floating to the
+   top as if they were "P0". Distance is the tiebreaker within the same
+   priority (or across unknown-priority vendors), ascending — nearest first;
+   vendors with no computable distance sort last within their priority band.
+   Added 2026-07-31 (Action 4 flow spec, "Sort results based on priority &
+   distance from Breakdown location") — vendorsFor() previously only filtered,
+   never sorted. */
+function vendorSortKey(o){
+  // explicit blank/null check before Number() — Number("") is 0, not NaN, so
+  // without this a vendor with no priority at all would sort as if it were
+  // the *highest* priority ("P0") instead of last (same class of bug the
+  // existing hasLocFlag() guards against for Latitude/Longitude).
+  const raw=o.vinfo.priority;
+  const p=(raw==null||raw==="") ? NaN : Number(raw);
+  return { p: isNaN(p) ? Infinity : p, d: o.vinfo.distanceKm==null ? Infinity : o.vinfo.distanceKm };
+}
+function sortVendors(list){
+  return list.slice().sort(function(a,b){
+    const ka=vendorSortKey(a), kb=vendorSortKey(b);
+    return (ka.p-kb.p) || (ka.d-kb.d);
+  });
+}
+function vendorsFor(record){
+  const all=OPTIONS.vendors.map(function(o){
+    const info=vendorInfo(o);
+    return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info) }) });
+  });
+  if(record.Preferred_Vendor==="Yes") return sortVendors(all);
+  const withLoc=all.filter(function(o){ return o.vinfo.distanceKm!=null; });
+  if(!withLoc.length) return sortVendors(all); // breakdown location not captured yet, or no vendor has location data under any guessed field name — show everyone rather than an empty list
+  const radius=radiusKmFor(record);
+  return sortVendors(withLoc.filter(function(o){ return o.vinfo.distanceKm<=radius; }));
+}
+function vendorPickerHint(record){
+  if(record.Preferred_Vendor==="Yes") return "Showing all vendors, sorted by priority & distance — search by name.";
+  const bLat=Number(record.Latitude), bLon=Number(record.Longitude);
+  if(isNaN(bLat)||isNaN(bLon)) return "Breakdown location not captured yet — showing all vendors. Capture it on the Locations step to filter by distance.";
+  const anyVendorHasLoc=OPTIONS.vendors.some(function(o){ return vendorInfo(o).lat!=null; });
+  if(!anyVendorHasLoc) return "Vendor location data unavailable — showing all vendors.";
+  return "Showing vendors within "+radiusKmFor(record)+" km of the breakdown location (straight-line distance), sorted by priority & distance.";
+}
+/* rich option row for the Vendors "+ Add…" dropdown — name, priority,
+   distance, phone, plus an Online/Offline flag (reuses the same .flag chip
+   style as the dashboard's Paid/Loc flags — see FLAG_ON/FLAG_OFF below).
+   Falls back to a plain label for any other searchable multiselect (e.g.
+   Vehicle_Issue options have no .vinfo). */
+function vendorOptionHtml(o){
+  if(!o.vinfo) return esc(o.label);
+  const v=o.vinfo;
+  const meta=[];
+  if(v.priority) meta.push("P"+v.priority);
+  if(v.distanceKm!=null) meta.push(v.distanceKm+" km");
+  if(v.phone) meta.push(v.phone);
+  const statusLabel=v.statusKnown?(v.online?"Online":"Offline"):"Unknown";
+  return `<div class="vopt">
+    <div style="min-width:0">
+      <div class="vnm">${esc(v.name)}</div>
+      ${meta.length?`<div class="vmeta">${esc(meta.join(" · "))}</div>`:""}
+    </div>
+    <span class="flag ${v.online?"on":""}">${v.online?FLAG_ON:FLAG_OFF}${esc(statusLabel)}</span>
+  </div>`;
+}
+/* formatVendorForSave() (the old "[priority] Name | Phone | Status" composite
+   string builder) was removed 2026-07-31 — Vendors1 is a real Lookup field
+   (confirmed live), so it now just saves plain vendors_Report record IDs via
+   the existing useId/idsFor() mechanism, same as Vehicle/Client. Priority/
+   phone/online-status are no longer persisted onto the saved value itself —
+   see vendorNamesFor()'s own comment for what that costs on redisplay. */
 
 /* ---------- Rate_Master → Suggested_Rate / Rate_Breakup ----------
    Ported from the native Create_Case form's Deluge (runs on Create -> Quote
@@ -1019,19 +1611,40 @@ async function loadDashboard(){
   recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
   renderReportLists(recs);
 }
+// Collapsible report sections (2026-07-31, user request — "a lot to scroll to
+// go to second report"). Keyed by bucket name so the collapsed/expanded state
+// survives a re-render (refresh, opening/closing a ticket) instead of always
+// resetting to fully-open. All start expanded.
+const COLLAPSED_BUCKETS=new Set();
+const CHEV_ICON='<svg class="chev" viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function renderReportLists(recs){
   const cols = BUCKETS.map(()=>[]);
   recs.forEach(r=>{ const b=bucketOfStatus(readVal(r,CONFIG.stageField)); if(b>=0) cols[b].push(r); });
   $("columns").innerHTML = BUCKETS.map((bk,i)=>{
     const items = cols[i]; // show every matching ticket, not just the first few
-    const rows = items.length ? items.map(rowHtml).join("") : `<div class="rlist-empty">No tickets right now</div>`;
-    return `<div class="rlist" style="--accent:${bk.accent}">
-      <div class="rlist-head"><span class="ic">${bk.icon}</span><span class="tt"><b>${bk.name}</b><span>${bk.sub}</span></span><span class="cnt">${cols[i].length}</span></div>
+    const rows = items.length ? items.map(rowHtmlWithClose).join("") : `<div class="rlist-empty">No tickets right now</div>`;
+    const collapsed = COLLAPSED_BUCKETS.has(bk.name);
+    return `<div class="rlist${collapsed?" collapsed":""}" style="--accent:${bk.accent}" data-bucket="${esc(bk.name)}">
+      <div class="rlist-head"><span class="ic">${bk.icon}</span><span class="tt"><b>${bk.name}</b><span>${bk.sub}</span></span><span class="cnt">${cols[i].length}</span>${CHEV_ICON}</div>
       <div class="rlist-body">${rows}</div>
     </div>`;
   }).join("");
+  // header click toggles that one section's collapsed state
+  document.querySelectorAll("#columns .rlist-head").forEach(el=>{
+    el.onclick=()=>{
+      const box=el.closest(".rlist"); const name=box.dataset.bucket;
+      if(COLLAPSED_BUCKETS.has(name)) COLLAPSED_BUCKETS.delete(name); else COLLAPSED_BUCKETS.add(name);
+      box.classList.toggle("collapsed");
+    };
+  });
+  // clicking the row itself still opens the edit wizard exactly as before
   document.querySelectorAll("#columns .rrow").forEach(el=>{
     el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); if(rec) openTicket(rec); };
+  });
+  // the new sibling action opens the Final Closure screen instead — stops
+  // propagation defensively even though it's not actually nested inside .rrow
+  document.querySelectorAll("#columns .rrow-close-btn").forEach(el=>{
+    el.onclick=(e)=>{ e.stopPropagation(); const rec=recs.find(r=>String(r.ID)===el.dataset.closeId); if(rec) openClosure(rec); };
   });
 }
 function initials(name){
@@ -1042,9 +1655,10 @@ function initials(name){
 /* checked = green filled box + white tick; unchecked = plain outline box */
 const FLAG_ON='<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/><path d="m7 12.3 3.2 3.2 6.6-6.6" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const FLAG_OFF='<svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="3.5" width="17" height="17" rx="5" stroke="currentColor" stroke-width="2"/></svg>';
-/* "Paid" also counts as ticked when there's no booking fee to collect at all
-   (Booking_Fee not >0) — matches quoteStatus()'s own feeZero test, same rule. */
-function isPaidFlag(r){ return r.Payment_Status==="PAID" || !(Number(r.Booking_Fee)>0); }
+// Corrected 2026-07-31 (user request): the "Paid" dashboard flag now ticks
+// ONLY when Payment_Status is literally "PAID" — removed the earlier
+// "no booking fee counts as paid too" shortcut, which the user didn't want.
+function isPaidFlag(r){ return r.Payment_Status==="PAID"; }
 /* "Loc" ticked only once both Latitude and Longitude actually hold a value —
    empty-string/null must not read as valid 0,0 (Number("") is 0, not NaN). */
 function hasLocFlag(r){
@@ -1052,14 +1666,19 @@ function hasLocFlag(r){
   if(lat==null||lat===""||lon==null||lon==="") return false;
   return !isNaN(Number(lat)) && !isNaN(Number(lon));
 }
-/* Vendors' saved shape is a composite "[priority] Name | Phone | Status"
-   string (see §3 in README) — the dashboard row should show just the name,
-   not the priority/phone/status riding along with it. */
+/* Vendors1 is a real Lookup (confirmed 2026-07-31) — a raw fetch returns
+   each selection as a lookup object (display_value/zc_display_value), same
+   shape unwrapLookup() already handles elsewhere. The "[priority] Name |
+   Phone | Status" composite-string stripping below is kept only so any
+   ticket saved under the OLD (pre-2026-07-31) plain-text format still
+   displays a clean name instead of the raw composite string — it's a no-op
+   on a plain lookup display_value (no brackets/pipes to strip). */
 function vendorDisplayName(v){
-  return String(v||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
+  const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
+  return String(plain||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
 }
 function vendorNamesFor(r){
-  const v=r.Vendors; const arr=Array.isArray(v)?v:(v?[v]:[]);
+  const v=r.Vendors1; const arr=Array.isArray(v)?v:(v?[v]:[]);
   return arr.map(vendorDisplayName).filter(Boolean).join(", ");
 }
 function rowHtml(r){
@@ -1090,6 +1709,15 @@ function rowHtml(r){
     <span class="pill ${pill}">${esc(stage)}</span>
     <svg class="chev" viewBox="0 0 24 24" width="18" height="18"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>`;
+}
+const CLOSE_TASK_ICON='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+/* Wraps rowHtml's own row button with a separate SIBLING "Close Case" button
+   (not nested — a button can't contain another button) — dashboard rows
+   only. Search-dropdown results still render plain rowHtml(r), unchanged:
+   clicking a row there keeps opening the edit wizard exactly as before, per
+   explicit request that only the dashboard report gains this new action. */
+function rowHtmlWithClose(r){
+  return `<div class="rrow-wrap">${rowHtml(r)}<button class="rrow-close-btn" data-close-id="${esc(r.ID)}" type="button" title="Close this ticket" aria-label="Close this ticket">${CLOSE_TASK_ICON}</button></div>`;
 }
 
 /* search — a dropdown under the search bar, driven by the search button/Enter
@@ -1134,12 +1762,38 @@ document.addEventListener("click",e=>{
 /* =====================================================================
    VIEWS
    ===================================================================== */
+/* Widget runs inside a Zoho Creator-hosted iframe — a plain window.scrollTo(0,0)
+   only ever resets THIS document's own scroll. If Creator auto-sizes the iframe
+   to full content height (no internal scrollbar of its own), the scrollbar the
+   agent actually sees belongs to the OUTER Creator page, not this window, and a
+   step change would otherwise leave the outer page sitting wherever the agent
+   had scrolled down to reach Save & Continue. Belt-and-suspenders: reset every
+   scroll container this document has, then best-effort reach up to the parent/
+   top frame too (wrapped in try/catch — same-origin only, silently no-ops
+   under the normal cross-origin widget embed instead of throwing). */
+function scrollToTop(){
+  try{ window.scrollTo(0,0); }catch(e){}
+  try{ document.documentElement.scrollTop=0; document.body.scrollTop=0; }catch(e){}
+  try{ if(window.frameElement && window.parent && window.parent!==window) window.parent.scrollTo(0,0); }catch(e){}
+  try{ if(window.frameElement && window.top && window.top!==window) window.top.scrollTo(0,0); }catch(e){}
+}
 function showView(v){
   state.view=v;
   $("dashboard").classList.toggle("off", v!=="dashboard");
   $("wizard").classList.toggle("on", v==="wizard");
-  $("bar").style.display = v==="wizard" ? "block" : "none";
-  if(v==="dashboard") window.scrollTo(0,0);
+  $("closureView").classList.toggle("on", v==="closure");
+  $("bar").style.display = (v==="wizard"||v==="closure") ? "block" : "none";
+  // per-view button groups — wizClosureBtn gets a further, finer-grained
+  // recordId check inside renderWizard() itself (mirrors the old closeBtn
+  // pattern), since renderWizard() runs on every step change without
+  // showView() being re-invoked each time.
+  $("prevBtn").style.display = v==="wizard" ? "" : "none";
+  $("cancelBtn").style.display = v==="wizard" ? "" : "none";
+  $("saveBtn").style.display = v==="wizard" ? "" : "none";
+  $("wizClosureBtn").style.display = v==="wizard" ? "" : "none";
+  $("closureCancelBtn").style.display = v==="closure" ? "" : "none";
+  $("closureSaveBtn").style.display = v==="closure" ? "" : "none";
+  if(v==="dashboard") scrollToTop();
 }
 
 /* =====================================================================
@@ -1161,13 +1815,72 @@ function unwrapLookup(v){
   return v;
 }
 function openTicket(rec){
+  // Diagnostic logging (2026-07-31, user-reported "fields show empty when
+  // reopening a saved ticket") — logs the RAW record exactly as Zoho
+  // returned it, before anything in this widget touches it. If a field that
+  // was definitely filled in and saved shows up missing/blank in this log
+  // too, the field's `n:` name in STAGES doesn't match the real Zoho API
+  // name (see FIELDS.md's own ❓/🟡-marked, not-independently-confirmed
+  // fields for the likeliest suspects) — if it's present HERE but still
+  // renders blank, the bug is in this widget's own display code instead.
+  console.log("[Get-Rescue] openTicket raw record from Zoho:", rec);
+  // Targeted log (2026-08-03) — pulls out exactly the fields the user
+  // reported as blank-on-reopen (Phone_Number/Phone_Number1, Remarks) as
+  // their OWN console line, so they're visible without expanding the big
+  // collapsed object above.
+  console.log("[Get-Rescue] openTicket key fields — Phone_Number:", JSON.stringify(rec.Phone_Number), "| Phone_Number1:", JSON.stringify(rec.Phone_Number1), "| Remarks:", JSON.stringify(rec.Remarks));
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
+  // Real bug fixed (2026-08-03, user-reported): Create_Case has a required
+  // "Phone_Number" field (real, always populated) separate from the one this
+  // widget's own Create step actually shows/edits ("Phone_Number1", mirrored
+  // into Phone_Number only on SAVE via the create stage's own extra() hook —
+  // see that comment). Any ticket where Phone_Number1 was never independently
+  // set (e.g. created directly in Zoho Studio, or before this widget existed)
+  // has a real Phone_Number but a blank Phone_Number1 — so reopening it here
+  // showed an empty Phone Number box despite the record clearly having one.
+  // Falls back to Phone_Number so the box isn't blank; re-saving still mirrors
+  // whatever's typed back into Phone_Number as before.
+  if(!state.record.Phone_Number1 && state.record.Phone_Number) state.record.Phone_Number1=state.record.Phone_Number;
+  // Vendors1's own display-name unwrapping now happens for free here, same
+  // as Vehicle/Client — it's a real Lookup (useId:true, confirmed 2026-07-31),
+  // so unwrapLookup() already extracts a plain name from each selection; no
+  // separate vendorDisplayName() pass needed anymore (that was only for the
+  // old composite-string save format).
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  console.log("[Get-Rescue] openTicket state.record after unwrap:", state.record);
   setPath();
   const st=readVal(rec,CONFIG.stageField);
   state.stepIndex = stageIndexForStatus(state.path, st);
   state.maxStepIndex = state.stepIndex; // can revisit anything already reached, not skip ahead of it
   showView("wizard"); renderWizard();
+}
+/* Opens the Final Closure screen directly for an existing ticket — NOT part
+   of the step wizard's path/stepper (state.path/stepIndex are left alone),
+   so it works regardless of which step the ticket is actually on. Reached
+   from a dashboard row's dedicated Close action (rec = a freshly-fetched full
+   record) or the wizard's own "Close Case" button (rec = the wizard's own
+   state.record, so any unsaved edits on the current step carry over — the
+   click handler runs collectStep(false) first to snapshot them). Either way
+   this clones rec fresh, same pattern as openTicket. */
+function openClosure(rec){
+  state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
+  // Vendors1's own display-name unwrapping happens for free below — see
+  // openTicket()'s own comment on this same pattern.
+  STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  showView("closure"); renderClosure(); scrollToTop();
+}
+function renderClosure(){
+  $("closureCaseId").textContent = state.recordId ? caseLabel(state.record) : "unsaved";
+  renderFields({fields:CLOSURE_FIELDS}, "closureFields");
+  // Collapsible closure sections (2026-07-31, extended 2026-08-03) — header
+  // click toggles just that one group; state persists via EXPANDED_CLOSURE_GROUPS.
+  document.querySelectorAll("#closureFields .closure-group .cg-head").forEach(el=>{
+    el.onclick=()=>{
+      const box=el.closest(".closure-group"); const name=box.dataset.group;
+      if(EXPANDED_CLOSURE_GROUPS.has(name)) EXPANDED_CLOSURE_GROUPS.delete(name); else EXPANDED_CLOSURE_GROUPS.add(name);
+      box.classList.toggle("collapsed");
+    };
+  });
 }
 function setPath(){
   const t=(state.record[CONFIG.serviceTypeField]||"").toUpperCase();
@@ -1199,7 +1912,9 @@ function renderWizard(){
   // buttons
   $("prevBtn").disabled = state.stepIndex===0;
   $("saveBtn").textContent = step.save;
-  $("closeBtn").style.display = step.key==="create" ? "none" : ""; // no ticket to close yet on the first step
+  // Close Case (the rich Final Closure screen) needs a real saved record to update —
+  // hidden on the "create" step, same as the old Close Ticket button used to be.
+  $("wizClosureBtn").style.display = state.recordId ? "" : "none";
   if(step.key==="quote"){
     const q=calcQuote();
     state.record.Suggested_Rate=q.total; // readonly/computed — always kept in sync
@@ -1217,10 +1932,24 @@ function renderWizard(){
 }
 /* fields sharing the same "row" tag render side-by-side in one full-width
    row (e.g. Customer_Name/Phone_Number1/Email on the create step), instead of
-   each taking its own slot in the normal 2-column grid. */
-function renderFields(step){
-  const box=$("fields"); box.innerHTML="";
-  const visible = step.fields.filter(f=> !(f.when && !f.when(state.record)) && f.t!=="badge");
+   each taking its own slot in the normal 2-column grid. targetId defaults to
+   the wizard's own "fields" container; the Final Closure screen passes
+   "closureFields" instead so both views can share this one renderer. */
+/* step.viewOnly (2026-07-31) marks a whole stage's fields view-only — used
+   for the vendor/technician/driver-side stages (acceptance/reach/wip, or
+   their Tow equivalents), whose data is entered by the vendor directly in
+   their own native Zoho Creator form/app, not this widget (user-confirmed) —
+   the agent can see it here but shouldn't be able to edit it through this
+   wizard. Rather than hand-adding `readonly:true` to every one of those
+   stages' ~40 individual field defs (error-prone, and those same field
+   objects are also read by closureFieldGroups() for the Final Closure
+   summary, which was NOT asked to change — mutating them in place would leak
+   into that screen too), renderFields() clones each field here and forces
+   `readonly:true` only on the clone, only when rendering a viewOnly step. */
+function renderFields(step, targetId){
+  const box=$(targetId||"fields"); box.innerHTML="";
+  const visible = step.fields.filter(f=> !(f.when && !f.when(state.record)) && f.t!=="badge")
+    .map(f=> step.viewOnly ? Object.assign({},f,{readonly:true}) : f);
   let i=0;
   while(i<visible.length){
     const f=visible[i];
@@ -1229,6 +1958,11 @@ function renderFields(step){
       while(j<visible.length && visible[j].row===f.row){ group.push(visible[j]); j++; }
       const rowWrap=document.createElement("div");
       rowWrap.className="fld-row";
+      // Column count matches however many fields actually land in this row
+      // (a 2-field row like Client/Tracking ID splits 50/50, not into thirds
+      // with an empty slot) — `group` only ever holds already-visible fields
+      // since `visible` above was filtered by `when` first.
+      rowWrap.style.setProperty("--row-cols", group.length);
       group.forEach(gf=>rowWrap.appendChild(buildField(gf)));
       box.appendChild(rowWrap);
       i=j;
@@ -1241,18 +1975,29 @@ function renderFields(step){
 function buildField(f){
   const wrap=document.createElement("div");
   wrap.className="fld"+(f.full?" full":"");
-  if(f.t==="summary"){ wrap.innerHTML=summaryHtml(); return wrap; }
+  if(f.t==="summary"){ wrap.innerHTML=closureSummaryHtml(); return wrap; }
   const id="f_"+f.n;
-  const lab=`<label>${esc(f.l)}${f.req?'<span class="req">*</span>':""}</label>`;
+  const lab=`<label>${esc(f.l)}${isReq(f)?'<span class="req">*</span>':""}</label>`;
   const cur=state.record[f.n];
   if(f.t==="textarea"){
     wrap.innerHTML=lab+`<textarea id="${id}"${f.readonly?" readonly":""}>${esc(cur||"")}</textarea>`;
+  } else if(f.t==="remarks"){
+    // Common append-only Remarks (2026-07-31, user request): past entries are
+    // read-only — the agent can only add a new one, never edit/delete what's
+    // already there. Same one Create_Case field (f.n, "Remarks") wherever
+    // this appears (create/quote/assignment/closure); every stage renders and
+    // appends to the exact same accumulated string. See wireField's own
+    // "remarks" branch for the Add-button logic.
+    const existing=String(cur||"").trim();
+    wrap.innerHTML=lab+
+      `<div class="remarks-log" id="${id}_log">${existing?esc(existing).replace(/\n/g,"<br>"):'<span class="empty">No remarks yet.</span>'}</div>`+
+      (f.readonly?"":`<div class="remarks-add"><textarea id="${id}_new" placeholder="Add a note…" rows="2"></textarea><button type="button" class="btn primary" id="${id}_add">Add</button></div>`);
   } else if(f.t==="select" && f.searchable){
     const baseOpts=resolveOptions(f);
     const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
     const curOpt = baseOpts.find(o=>String(o.v)===String(effectiveCur));
     wrap.innerHTML=lab+`<div class="combo">
-      <input type="text" id="${id}" class="combo-input" autocomplete="off" placeholder="Search ${esc(f.l)}…" value="${esc(curOpt?curOpt.label:"")}">
+      <input type="text" id="${id}" class="combo-input" autocomplete="off" placeholder="Search ${esc(f.l)}…" value="${esc(curOpt?curOpt.label:"")}"${f.readonly?" disabled":""}>
       <div class="combo-dropdown" id="${id}_dd"></div>
     </div>`;
   } else if(f.t==="select"){
@@ -1263,15 +2008,33 @@ function buildField(f){
     const selVal = isCustom ? "Other" : effectiveCur;
     const opts=baseOpts.map(o=>`<option value="${esc(o.v)}" ${String(selVal)===String(o.v)?"selected":""}>${esc(o.label)}</option>`).join("");
     const showOther = f.other && selVal==="Other";
-    wrap.innerHTML=lab+`<select id="${id}"${f.disabled?" disabled":""}><option value="">— select —</option>${opts}</select>`
-      + (f.other ? `<input type="text" id="${id}_other" placeholder="Please specify ${esc(f.l)}" value="${esc(isCustom?effectiveCur:"")}" style="margin-top:8px${showOther?"":";display:none"}">` : "");
+    // <select> has no true "readonly" attribute — f.readonly is treated the
+    // same as f.disabled here (both just lock the control), same convention
+    // Payment_Method already established.
+    wrap.innerHTML=lab+`<select id="${id}"${(f.disabled||f.readonly)?" disabled":""}><option value="">— select —</option>${opts}</select>`
+      + (f.other ? `<input type="text" id="${id}_other" placeholder="Please specify ${esc(f.l)}" value="${esc(isCustom?effectiveCur:"")}" style="margin-top:8px${showOther?"":";display:none"}"${f.readonly?" disabled":""}>` : "");
   } else if(f.t==="radio"){
-    const sel = cur!=null?String(cur):"";
-    const opts=resolveOptions(f).map(o=>`<div class="opt ${sel===String(o.v)?"sel":""}" data-value="${esc(o.v)}">${esc(o.label)}</div>`).join("");
-    wrap.innerHTML=lab+`<div class="radio-set" id="${id}">${opts}</div>`;
+    // f.default pre-selects an option when nothing's been picked yet (e.g.
+    // Preferred_Vendor defaults to "No") — same effectiveCur pattern the
+    // select/searchable-select branches already use above. collectStep reads
+    // whichever option carries ".sel" at save time, so a default that's never
+    // touched still saves as that value, not blank.
+    const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
+    const sel = effectiveCur!=null?String(effectiveCur):"";
+    // Proper Tab order (2026-07-31, user request): only ONE option per group
+    // is a tab stop (the selected one, or the first if none picked yet) —
+    // same "roving tabindex" pattern native radio buttons use. Arrow keys
+    // move the tab stop + selection within the group (see wireField's radio
+    // branch); Tab itself then moves on to the next field/button, instead of
+    // silently skipping this whole custom widget (plain divs aren't
+    // focusable by default).
+    const allOpts=resolveOptions(f);
+    const selIdx=Math.max(0, allOpts.findIndex(o=>sel===String(o.v)));
+    const opts=allOpts.map((o,idx)=>`<div class="opt ${sel===String(o.v)?"sel":""}" data-value="${esc(o.v)}" tabindex="${f.readonly?"-1":(idx===selIdx?"0":"-1")}" role="radio" aria-checked="${sel===String(o.v)}">${esc(o.label)}</div>`).join("");
+    wrap.innerHTML=lab+`<div class="radio-set${f.readonly?" locked":""}" id="${id}" role="radiogroup">${opts}</div>`;
   } else if(f.t==="check"){
     const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
-    wrap.innerHTML=`<label class="check"><input type="checkbox" id="${id}" ${on?"checked":""}><span>${esc(f.l)}</span></label>`;
+    wrap.innerHTML=`<label class="check"><input type="checkbox" id="${id}" ${on?"checked":""}${f.readonly?" disabled":""}><span>${esc(f.l)}</span></label>`;
   } else if(f.t==="button"){
     const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
     const locked = on && !f.repeatable; // repeatable buttons (e.g. recalculate) never lock into a permanent "done" state
@@ -1297,7 +2060,8 @@ function buildField(f){
         const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
         addBox = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
       }
-      wrap.innerHTML=lab+`<div class="chips" id="${id}_chips">${chips}</div>`+addBox;
+      const hintText = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
+      wrap.innerHTML=lab+`<div class="chips" id="${id}_chips">${chips}</div>`+addBox+(hintText?`<span class="hint">${esc(hintText)}</span>`:"");
     }
   } else if(f.t==="file"){
     const has = state.files[f.n];
@@ -1311,20 +2075,87 @@ function buildField(f){
   setTimeout(()=>wireField(f,id),0);
   return wrap;
 }
-const RERENDER=["Time_of_service","Action_field","Action_field2","Service_Request","Service_Request1","Vehicle"];
+// "Client" added 2026-07-31 — Client_Tracking_Id's new `when` (hides it for
+// the special "ON DEMAND" client) needs a re-render to take effect live.
+const RERENDER=["Time_of_service","Vehicle","Client","Preferred_Vendor",
+  "Refund_Due","Closure_Status","B2B_GST_Invoice_Required"];
+/* Radio-field changes force a full re-render (see wireField's radio branch,
+   above RERENDER's own declaration) — this app now has two different top-level
+   views that can be "current" (the step wizard vs. the Final Closure screen),
+   so route to whichever is actually showing instead of always assuming the
+   wizard. */
+/* 2026-07-31 (real bug fixed, user-reported "Tab jumps back to the first
+   field"): a full re-render (renderWizard/renderClosure) wipes out and
+   rebuilds every field's DOM element. The native `change` event that a
+   recompute/parseTarget/select/radio field fires when you Tab out of it runs
+   AFTER the browser has already moved focus to the NEXT field (Tab's default
+   action) — so destroying the whole DOM at that exact moment also destroys
+   the element focus had JUST landed on, silently dropping focus to nothing.
+   The next Tab press then starts over from the very first focusable element
+   on the page, since nothing was focused to advance from. Every full
+   re-render triggered by a field's own change handler now goes through this
+   wrapper, which remembers the just-focused element's id and refocuses its
+   freshly-rebuilt equivalent (same id) right after the rebuild — Tab then
+   continues normally on the next press instead of restarting. */
+function preservingFocus(fn){
+  const activeId = document.activeElement && document.activeElement.id;
+  fn();
+  if(activeId){ const el=document.getElementById(activeId); if(el) el.focus(); }
+}
+function rerenderCurrentView(){ preservingFocus(()=>{ if(state.view==="closure") renderClosure(); else renderWizard(); }); }
 /* any field change that forces a full re-render must snapshot the DOM into
    state.record FIRST (via collectStep(false)) — otherwise every other field
    on the step (plain text inputs have no live listener of their own) reverts
    to its last-saved value and looks like it "went blank". */
 function wireField(f,id){
+  // Locked radio ".opt" divs aren't real form controls (disabled/readonly
+  // only works on actual <input>/<select>/etc.), so a readonly radio field
+  // needs its click handler skipped entirely, not just styled — the CSS
+  // "locked" class alone (see buildField) doesn't stop clicks. Every other
+  // field type below already renders a real disabled/readonly HTML control,
+  // which the browser itself refuses to fire events on, so nothing else here
+  // needs a matching guard.
+  if(f.t==="radio" && f.readonly) return;
+  if(f.t==="remarks"){
+    if(f.readonly) return;
+    const addBtn=$(id+"_add"); const newEl=$(id+"_new"); const logEl=$(id+"_log");
+    if(!addBtn||!newEl||!logEl) return;
+    const addEntry=()=>{
+      const text=newEl.value.trim(); if(!text) return;
+      const stamped=fmtDateTime(new Date())+" — "+text;
+      const existing=String(state.record[f.n]||"").trim();
+      state.record[f.n]=existing?(existing+"\n"+stamped):stamped;
+      logEl.innerHTML=esc(state.record[f.n]).replace(/\n/g,"<br>");
+      newEl.value="";
+    };
+    addBtn.onclick=addEntry;
+    // Enter submits (Shift+Enter still allows a multi-line note before adding).
+    newEl.onkeydown=(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); addEntry(); } };
+    return;
+  }
   if(f.t==="multiselect"){ wireMultiselect(f,id); return; }
   if(f.t==="select" && f.searchable){ wireCombo(f,id); return; }
   const el=$(id); if(!el) return;
   if(f.t==="radio"){
-    el.querySelectorAll(".opt").forEach(o=>o.onclick=()=>{
-      el.querySelectorAll(".opt").forEach(x=>x.classList.remove("sel")); o.classList.add("sel");
+    const opts=Array.from(el.querySelectorAll(".opt"));
+    const select=(o,focus)=>{
+      opts.forEach(x=>{ x.classList.remove("sel"); x.setAttribute("aria-checked","false"); x.tabIndex=-1; });
+      o.classList.add("sel"); o.setAttribute("aria-checked","true"); o.tabIndex=0;
+      if(focus) o.focus();
       state.record[f.n]=o.dataset.value;
-      if(RERENDER.indexOf(f.n)>=0){ collectStep(false); renderWizard(); }
+      if(RERENDER.indexOf(f.n)>=0){ collectStep(false); rerenderCurrentView(); }
+    };
+    opts.forEach((o,i)=>{
+      o.onclick=()=>select(o,false);
+      // Proper Tab/arrow-key navigation (2026-07-31, user request): ArrowRight/
+      // Down moves to (and selects) the next option, ArrowLeft/Up the
+      // previous — wrapping at the ends, same as a native radio group. Space
+      // also selects whichever option currently has focus.
+      o.onkeydown=(e)=>{
+        if(e.key==="ArrowRight"||e.key==="ArrowDown"){ e.preventDefault(); select(opts[(i+1)%opts.length],true); }
+        else if(e.key==="ArrowLeft"||e.key==="ArrowUp"){ e.preventDefault(); select(opts[(i-1+opts.length)%opts.length],true); }
+        else if(e.key===" "||e.key==="Enter"){ e.preventDefault(); select(o,false); }
+      };
     });
   } else if(f.t==="check"){
     el.onchange=()=>{ state.record[f.n]=el.checked; };
@@ -1332,7 +2163,7 @@ function wireField(f,id){
     el.onclick=()=>{
       state.record[f.n]=true;
       if(typeof f.action==="function") f.action(state.record); // e.g. Calculate_Distance sets RT_KM
-      collectStep(false); renderWizard();
+      collectStep(false); rerenderCurrentView();
     };
   } else if(f.t==="file"){
     el.onchange=()=>{ if(el.files&&el.files[0]) state.files[f.n]=el.files[0]; };
@@ -1342,8 +2173,23 @@ function wireField(f,id){
       if(f.other){ const oEl=$(id+"_other"); if(oEl) oEl.style.display = el.value==="Other" ? "block":"none"; if(el.value==="Other" && oEl) oEl.focus(); }
       if(RERENDER.indexOf(f.n)>=0){
         collectStep(false); // snapshot everything else on screen before we rebuild it
-        if(f.n===CONFIG.vehicleField){ state.record.Vehicle_Issue=[]; state.record[CONFIG.serviceTypeField]=""; state.record.Total_Service_Fee=""; }
-        setPath(); renderWizard();
+        // Vehicle changing invalidates Vehicle_Issue/Service_Type/the fee quote
+        // ONLY during initial ticket creation (the wizard's "create" step) — the
+        // Final Closure screen can also show/edit Vehicle (2026-07-31, see
+        // closureFieldGroups), and wiping a fully-progressed ticket's issue/fee
+        // just because the agent corrected the vehicle there would be a real
+        // data-loss surprise, not the same "pick vehicle before anything else
+        // depends on it" case this cascade exists for.
+        if(f.n===CONFIG.vehicleField && state.view!=="closure"){ state.record.Vehicle_Issue=[]; state.record[CONFIG.serviceTypeField]=""; state.record.Total_Service_Fee=""; }
+        setPath();
+        // was renderWizard() unconditionally — harmless while every RERENDER
+        // select field only ever lived inside the wizard, but Closure_Status/
+        // B2B_GST_Invoice_Required are select-type fields that live ONLY in the
+        // Final Closure screen, so this was silently never refreshing that
+        // screen's own conditional fields (Closure_Reason, GST_Number, Cx_Feedback_Score's
+        // requiredness) on change — same class of bug rerenderCurrentView() was
+        // already introduced to fix for the radio branch below.
+        rerenderCurrentView();
       }
     };
     if(f.other){ const oEl=$(id+"_other"); if(oEl) oEl.onchange=()=>{ if(el.value==="Other") state.record[f.n]=oEl.value; }; }
@@ -1352,10 +2198,7 @@ function wireField(f,id){
       collectStep(false);
       if(f.parseTarget){
         // e.g. "28.647, 65.546" -> Latitude/Longitude (or the drop-location pair)
-        // rounded to 6 decimal places — Zoho's Decimal field rejected the raw
-        // ~15-digit precision a live paste came in with ("Longitude has
-        // exceeded its maximum digits"); 6 decimals (~11cm accuracy) is more
-        // than enough for dispatch and comfortably under any reasonable limit.
+        // capped at 17 decimal places via roundCoord() — see its own comment.
         const parts=String(state.record[f.n]||"").split(",").map(s=>s.trim()).filter(Boolean);
         if(parts.length>=2){
           const lat=Number(parts[0]), lon=Number(parts[1]);
@@ -1363,7 +2206,9 @@ function wireField(f,id){
           if(!isNaN(lon)) state.record[f.parseTarget[1]]=roundCoord(lon);
         }
       }
-      renderWizard();
+      // This is the exact handler that was causing "Tab jumps back to the
+      // first field" — see rerenderCurrentView()'s own comment above.
+      rerenderCurrentView();
     };
   }
 }
@@ -1378,10 +2223,32 @@ function wireField(f,id){
 function wireCombo(f,id){
   const input=$(id); const dd=$(id+"_dd"); if(!input||!dd) return;
   const opts=resolveOptions(f);
+  let activeIdx=-1, curMatches=[];
   function labelFor(v){ const o=opts.find(x=>String(x.v)===String(v)); return o?o.label:""; }
+  function applyActive(){
+    dd.querySelectorAll(".combo-opt").forEach((el,i)=>el.classList.toggle("hi", i===activeIdx));
+    const hiEl=dd.querySelector(".combo-opt.hi");
+    if(hiEl && hiEl.scrollIntoView) hiEl.scrollIntoView({block:"nearest"});
+  }
+  function pick(o){
+    input.value=o.label;
+    state.record[f.n]=o.v;
+    dd.classList.remove("on");
+    if(RERENDER.indexOf(f.n)>=0){
+      collectStep(false); // snapshot everything else on screen before we rebuild it
+      // see the matching comment in wireField's plain "select" branch — same
+      // guard, needed now that Vehicle (searchable, so routed through here
+      // rather than that branch) is also editable from the Final Closure
+      // screen (2026-07-31).
+      if(f.n===CONFIG.vehicleField && state.view!=="closure"){ state.record.Vehicle_Issue=[]; state.record[CONFIG.serviceTypeField]=""; state.record.Total_Service_Fee=""; }
+      setPath(); rerenderCurrentView();
+    }
+  }
   function renderList(filter){
     const q=(filter||"").trim().toLowerCase();
     const matches=q ? opts.filter(o=>o.label.toLowerCase().indexOf(q)!==-1) : opts;
+    curMatches=matches;
+    activeIdx=matches.length?0:-1; // auto-highlight the top match so Enter alone picks it
     dd.innerHTML = matches.length
       ? matches.map(o=>`<div class="combo-opt" data-v="${esc(o.v)}">${esc(o.label)}</div>`).join("")
       : `<div class="combo-empty">No matches</div>`;
@@ -1389,20 +2256,21 @@ function wireCombo(f,id){
       el.onmousedown=(e)=>{
         e.preventDefault();
         const o=matches.find(m=>String(m.v)===el.dataset.v); if(!o) return;
-        input.value=o.label;
-        state.record[f.n]=o.v;
-        dd.classList.remove("on");
-        if(RERENDER.indexOf(f.n)>=0){
-          collectStep(false); // snapshot everything else on screen before we rebuild it
-          if(f.n===CONFIG.vehicleField){ state.record.Vehicle_Issue=[]; state.record[CONFIG.serviceTypeField]=""; state.record.Total_Service_Fee=""; }
-          setPath(); renderWizard();
-        }
+        pick(o);
       };
     });
     dd.classList.add("on");
+    applyActive();
   }
   input.addEventListener("focus",()=>renderList(""));
   input.addEventListener("input",()=>renderList(input.value));
+  input.addEventListener("keydown",(e)=>{
+    if(!dd.classList.contains("on") || !curMatches.length) return;
+    if(e.key==="ArrowDown"){ e.preventDefault(); activeIdx=Math.min(activeIdx+1, curMatches.length-1); applyActive(); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); activeIdx=Math.max(activeIdx-1, 0); applyActive(); }
+    else if(e.key==="Enter"){ if(activeIdx>=0 && curMatches[activeIdx]){ e.preventDefault(); pick(curMatches[activeIdx]); } }
+    else if(e.key==="Escape"){ dd.classList.remove("on"); }
+  });
   input.addEventListener("blur",()=>{
     setTimeout(()=>{ dd.classList.remove("on"); input.value=labelFor(state.record[f.n]); },150);
   });
@@ -1437,33 +2305,52 @@ function wireMultiselect(f,id){
 }
 function wireComboAdd(f,id){
   const input=$(id); const dd=$(id+"_dd"); if(!input||!dd) return;
+  let activeIdx=-1, curMatches=[];
   function remainingOpts(){
     const allOpts=resolveOptions(f);
     const cur=Array.isArray(state.record[f.n])?state.record[f.n]:[];
     return allOpts.filter(o=>cur.indexOf(o.v)===-1);
   }
+  function applyActive(){
+    dd.querySelectorAll(".combo-opt").forEach((el,i)=>el.classList.toggle("hi", i===activeIdx));
+    const hiEl=dd.querySelector(".combo-opt.hi");
+    if(hiEl && hiEl.scrollIntoView) hiEl.scrollIntoView({block:"nearest"});
+  }
+  function pick(o){
+    const cur=Array.isArray(state.record[f.n])?state.record[f.n].slice():[];
+    if(cur.indexOf(o.v)===-1) cur.push(o.v);
+    state.record[f.n]=cur;
+    dd.classList.remove("on");
+    afterMultiselectChange(f); // rebuilds the field, clearing the search input fresh
+  }
   function renderList(filter){
     const remaining=remainingOpts();
     const q=(filter||"").trim().toLowerCase();
     const matches=q ? remaining.filter(o=>o.label.toLowerCase().indexOf(q)!==-1) : remaining;
+    curMatches=matches;
+    activeIdx=matches.length?0:-1; // auto-highlight the top match so Enter alone picks it
     dd.innerHTML = matches.length
-      ? matches.map(o=>`<div class="combo-opt" data-v="${esc(o.v)}">${esc(o.label)}</div>`).join("")
+      ? matches.map(o=>`<div class="combo-opt" data-v="${esc(o.v)}">${vendorOptionHtml(o)}</div>`).join("")
       : `<div class="combo-empty">No matches</div>`;
     dd.querySelectorAll(".combo-opt").forEach(el=>{
       el.onmousedown=(e)=>{
         e.preventDefault();
         const o=matches.find(m=>String(m.v)===el.dataset.v); if(!o) return;
-        const cur=Array.isArray(state.record[f.n])?state.record[f.n].slice():[];
-        if(cur.indexOf(o.v)===-1) cur.push(o.v);
-        state.record[f.n]=cur;
-        dd.classList.remove("on");
-        afterMultiselectChange(f); // rebuilds the field, clearing the search input fresh
+        pick(o);
       };
     });
     dd.classList.add("on");
+    applyActive();
   }
   input.addEventListener("focus",()=>renderList(""));
   input.addEventListener("input",()=>renderList(input.value));
+  input.addEventListener("keydown",(e)=>{
+    if(!dd.classList.contains("on") || !curMatches.length) return;
+    if(e.key==="ArrowDown"){ e.preventDefault(); activeIdx=Math.min(activeIdx+1, curMatches.length-1); applyActive(); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); activeIdx=Math.max(activeIdx-1, 0); applyActive(); }
+    else if(e.key==="Enter"){ if(activeIdx>=0 && curMatches[activeIdx]){ e.preventDefault(); pick(curMatches[activeIdx]); } }
+    else if(e.key==="Escape"){ dd.classList.remove("on"); }
+  });
   input.addEventListener("blur",()=>{ setTimeout(()=>dd.classList.remove("on"),150); });
 }
 function afterMultiselectChange(f){
@@ -1479,45 +2366,231 @@ function afterMultiselectChange(f){
   setPath();
   renderWizard();
 }
-function summaryHtml(){
-  const r=state.record;
-  const rows=[
-    ["Case ID", state.recordId?caseLabel(r):"(unsaved)"],
-    ["Customer", readVal(r,CONFIG.nameField)],
-    ["Phone", r[CONFIG.phoneField]||""],
-    ["Service Type", r[CONFIG.serviceTypeField]||""],
-    ["Vehicle", r[CONFIG.vehicleField]||""],
-    ["Issue", readVal(r,"Vehicle_Issue")],
-    ["Total Fee", r.Total_Service_Fee||r.Total_Service_Fee1||""],
-    ["Booking Fee", r.Booking_Fee||""],
-    ["Remaining Fee", r.Remaining_Fee||""],
-    ["Vendor", readVal(r,"Vendors")||r.Vendor_Email||""],
-    ["Technician", r.Assigned_Technician||r.Assigned_Technician_Email||""]
-  ].filter(x=>x[1]!=="" && x[1]!=null);
-  return `<div class="summary">`+rows.map(x=>`<div class="srow"><span class="k">${esc(x[0])}</span><span class="v">${esc(x[1])}</span></div>`).join("")+`</div>`;
+/* ---------- Final Closure screen's read-only display sections ----------
+   Renders Customer Details / Service Summary / Fee Collected / Photos /
+   Mechanic-Vendor as separate cards, per the Back-Office Final Closure mock
+   (2026-07-30). Pulls straight from state.record — no new fields, this is
+   purely a richer read-only view of data already captured earlier in the
+   ticket's lifecycle. Photos only show a presence indicator ("Uploaded"), not
+   an actual image preview — this app has no existing mechanism anywhere to
+   read back a file field's URL/thumbnail after upload, so this doesn't
+   regress anything, just doesn't add capability this codebase didn't have. */
+/* Comprehensive, EDITABLE Final Closure summary (rebuilt 2026-07-31, replacing
+   the previous read-only version). Every field ever captured across the whole
+   ticket lifecycle — agent-side (create, quote, locations, assignment,
+   payment) AND vendor/technician/driver-side (acceptance/reach/wip, or their
+   Tow equivalents) — is pulled straight out of STAGES, the SAME field defs
+   the step wizard itself uses, so type/options/`when`-visibility can never
+   drift out of sync with the wizard. Each is shown as one clickable row;
+   clicking opens #fieldModal with that exact field's normal buildField()
+   editor (see openFieldEditor below) and saves it back to Zoho immediately —
+   the agent can correct anything from either side without hunting through
+   the linear wizard's steps to find where a given field actually lives.
+   (CLOSURE_FIELDS below stays its own plain always-visible form — those
+   fields belong to Final Closure itself, not any wizard step, so there's
+   nothing to gain from wrapping them in a click-to-edit popup too.) */
+function closureFieldGroups(){
+  const tow = (state.record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const byKey={}; STAGES.forEach(function(s){ byKey[s.key]=s; });
+  function grp(title, keys){
+    const fields=[];
+    keys.forEach(function(k){
+      const st=byKey[k]; if(!st) return;
+      st.fields.forEach(function(f){
+        if(f.t==="button"||f.t==="badge"||f.t==="summary") return; // no meaningful value to show/edit here
+        if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
+        fields.push(f);
+      });
+    });
+    return fields.length ? {title:title, fields:fields} : null;
+  }
+  return [
+    grp("Customer & Vehicle · Agent", ["create"]),
+    grp("Service Fee & Booking · Agent", ["quote"]),
+    grp("Locations · Agent", ["locations"]),
+    grp("Vendor Assignment · Agent", ["assignment"]),
+    tow ? grp("Driver Response · Vendor", ["acceptanceTow"]) : grp("Vendor / Technician Response", ["acceptance"]),
+    tow ? grp("Reach Breakdown · Driver", ["reachTow"]) : grp("Reach Breakdown · Technician", ["reach"]),
+    tow ? grp("Loading · Driver", ["wipLoadingTow"]) : grp("Work In Progress · Technician", ["wip"]),
+    tow ? grp("Reached Drop Location · Driver", ["wipReachedTow"]) : null,
+    tow ? grp("Unloading & Handover · Driver", ["wipUnloadingTow"]) : null,
+    grp("Final Payment · Technician/Driver", ["payment"])
+  ].filter(Boolean);
+}
+/* index of every field currently shown in the summary, keyed by link name —
+   rebuilt on every render (closureSummaryHtml) so it always matches what's on
+   screen; the delegated click handler (see WIRING) looks fields up here
+   instead of re-deriving closureFieldGroups() on every single click. */
+let CLOSURE_FIELD_INDEX={};
+function closureFieldValueDisplay(f){
+  const v=state.record[f.n];
+  if(f.t==="file"){
+    if(state.files[f.n]) return {text:"Selected: "+state.files[f.n].name, empty:false};
+    return v ? {text:"Uploaded", empty:false} : {text:"Not uploaded", empty:true};
+  }
+  if(Array.isArray(v)) return v.length ? {text:v.join(", "), empty:false} : {text:"None selected", empty:true};
+  if(f.t==="check") return {text:(v===true||v==="Yes")?"Yes":"No", empty:false};
+  if(v==null||v==="") return {text:"—", empty:true};
+  if(f.t==="remarks"){
+    // Just a one-line preview (the last entry) in the summary row — the full
+    // append-only log still shows in full when this row is clicked open.
+    const lines=String(v).split("\n"); const last=lines[lines.length-1];
+    return {text: lines.length>1 ? "… "+last : last, empty:false};
+  }
+  return {text:String(v), empty:false};
+}
+const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+function closureFieldRowHtml(f){
+  const d=closureFieldValueDisplay(f);
+  return `<button type="button" class="crow" data-field="${esc(f.n)}">
+    <span class="k">${esc(f.l)}</span>
+    <span class="v${d.empty?" empty":""}">${esc(d.text)}</span>
+    ${EDIT_ICON}
+  </button>`;
+}
+// Collapsed/expanded state persists across re-renders, keyed by group title.
+// 2026-08-03 (user request — "collapsible section-wise, not full at a time"):
+// every section now starts COLLAPSED when Final Closure opens, one section at
+// a time expands as the agent clicks into it, instead of the dashboard
+// report-bucket pattern (COLLAPSED_BUCKETS) which defaults to all-expanded —
+// tracking membership INVERTED here on purpose: a group is only ever
+// expanded if its title is explicitly in this set (opt-in), so a brand new
+// group name (a different Service_Type branch's title, etc.) still starts
+// collapsed without needing to be pre-seeded.
+const EXPANDED_CLOSURE_GROUPS=new Set();
+function closureGroupHtml(group){
+  const collapsed=!EXPANDED_CLOSURE_GROUPS.has(group.title);
+  return `<div class="form-card closure-group${collapsed?" collapsed":""}" style="margin-bottom:14px" data-group="${esc(group.title)}">
+    <div class="cg-head"><h3>${esc(group.title)}</h3>${CHEV_ICON}</div>
+    <div class="cg-body"><div class="summary editable">${group.fields.map(closureFieldRowHtml).join("")}</div></div>
+  </div>`;
+}
+function closureSummaryHtml(){
+  const groups = closureFieldGroups();
+  CLOSURE_FIELD_INDEX={};
+  // A few field names legitimately appear in more than one group (e.g.
+  // Remarks: an editable copy on `create`, a `readonly:true` display-only
+  // mirror on `quote`; Remaining_Fee: readonly on `quote`, editable on
+  // `payment`) — whichever copy wins here is the one the click-to-edit popup
+  // actually renders for EVERY row sharing that name, so always prefer the
+  // editable copy over a readonly one, regardless of which group comes first
+  // in the array (a straight last-one-wins would sometimes pick the readonly
+  // mirror and silently make an otherwise-editable field un-editable here).
+  groups.forEach(function(g){ g.fields.forEach(function(f){
+    const existing = CLOSURE_FIELD_INDEX[f.n];
+    if(!existing || (existing.readonly && !f.readonly)) CLOSURE_FIELD_INDEX[f.n]=f;
+  }); });
+  return groups.map(closureGroupHtml).join("");
+}
+/* ---- click-any-field-to-edit popup (#fieldModal) ---- */
+let editingField=null;
+function openFieldEditor(fieldName){
+  const f=CLOSURE_FIELD_INDEX[fieldName]; if(!f) return;
+  editingField=f;
+  $("fieldModalTitle").textContent=f.l||f.n;
+  const body=$("fieldModalBody"); body.innerHTML="";
+  body.appendChild(buildField(f));
+  $("fieldModal").classList.add("on");
+}
+function closeFieldEditor(){ $("fieldModal").classList.remove("on"); editingField=null; }
+/* Reads the popup's single rendered field back into state.record — same
+   per-type DOM logic collectStep() uses for a whole step, just scoped to one
+   field (multiselect/searchable-select fields keep state.record current on
+   every pick/chip-change already, same as collectStep assumes — nothing to
+   scrape from the DOM for those; file fields are handled via state.files by
+   buildField's own wireField wiring). */
+function collectSingleField(f){
+  // "remarks" has no bare f_<name> element (only _log/_new/_add) — state.record
+  // is already kept current by the Add-button handler, same as multiselect.
+  if(f.t==="file" || f.t==="multiselect" || f.t==="remarks" || (f.t==="select"&&f.searchable)) return;
+  const el=$("f_"+f.n); if(!el) return;
+  let v;
+  if(f.t==="radio"){ const s=el.querySelector(".opt.sel"); v=s?s.dataset.value:""; }
+  else if(f.t==="check"){ v=el.checked; }
+  else if(f.t==="select" && f.other){
+    v=el.value;
+    if(v==="Other"){ const oEl=$("f_"+f.n+"_other"); const ov=((oEl&&oEl.value)||"").trim(); if(ov) v=ov; }
+  }
+  else if(f.t==="tel"){ v=formatIndianPhone(el.value); }
+  else { v=el.value; }
+  state.record[f.n]=v;
+}
+/* Saves just the one edited field straight to Zoho (not gated behind the
+   bottom Close Case button) — mirrors buildPayload()'s own per-type encoding
+   (multiselect arrays, check -> ["Yes"]/[], useId lookups, coord rounding) so
+   a field edited here is written identically to how the wizard would write
+   it. An empty value is simply not sent, same as buildPayload — this app has
+   no "clear a field" semantics anywhere else either. Keeps the popup open and
+   re-enables Save on failure so the agent can retry or Cancel out. */
+async function saveFieldEditor(){
+  const f=editingField; if(!f) return;
+  collectSingleField(f);
+  if(!state.recordId){
+    closeFieldEditor(); renderClosure();
+    toast("Saved — will be written to Zoho when you Close Case","ok");
+    return;
+  }
+  $("fieldModalSave").disabled=true;
+  try{
+    if(f.t==="file"){
+      const file=state.files[f.n];
+      if(file) await apiUpload(state.recordId,f.n,file);
+    } else {
+      const payload={};
+      let v=state.record[f.n];
+      if(f.t==="multiselect"){
+        let arr=Array.isArray(v)?v:(v?[v]:[]);
+        if(f.n==="Vendors1") payload.Vendor_Emails=vendorEmailsFor(arr);
+        if(f.useId) arr=idsFor(f,arr); // Vendors1 included as of 2026-07-31 — real Lookup, wants IDs not composite strings
+        payload[f.n]=arr;
+      } else if(f.t==="check"){
+        payload[f.n]=(v===true||v==="Yes")?["Yes"]:[];
+      } else if(v===""||v==null){
+        // nothing to send — see this function's own header comment
+      } else {
+        if(f.useId) v=idsFor(f,v);
+        if(f.t==="date") v=fmtDate(v);
+        else if(f.t==="datetime") v=fmtDateTime(v);
+        else if(f.t==="number"||f.t==="decimal") v=Number(v);
+        if(COORD_FIELDS.indexOf(f.n)>=0) v=roundCoord(v);
+        payload[f.n]=v;
+      }
+      if(Object.keys(payload).length) await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
+    }
+    closeFieldEditor(); renderClosure();
+    toast("Saved","ok");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ $("fieldModalSave").disabled=false; }
 }
 
-/* ---- collect current step DOM -> state.record ---- */
+/* f.req may be a plain boolean (most fields) or a (record)=>boolean function
+   (e.g. CLOSURE_FIELDS' Cx_Feedback_Score/GST_Number, only mandatory once
+   Closure_Status==="Completed") — resolved fresh against the current
+   state.record every time, same evaluation point req was already checked at. */
+function isReq(f){ return typeof f.req==="function" ? f.req(state.record) : f.req; }
+/* ---- collect current step's (or the Final Closure screen's) DOM -> state.record ---- */
 function collectStep(validate){
-  const step=state.path[state.stepIndex]; let ok=true; let missing="";
-  step.fields.forEach(f=>{
+  const fields = state.view==="closure" ? CLOSURE_FIELDS : state.path[state.stepIndex].fields;
+  let ok=true; let missing="";
+  fields.forEach(f=>{
     if(f.when && !f.when(state.record)) return;
     if(f.t==="summary") return;
     if(f.t==="file") return; // handled via state.files
     if(f.t==="badge") return; // read-only, value already set by Vehicle_Issue handler
     if(f.t==="button") return; // no DOM value to read — its own onclick sets state.record directly
+    if(f.t==="remarks") return; // state.record kept current by the Add-button handler (see wireField) — nothing to scrape from the DOM
     let v;
     if(f.t==="multiselect"){
       // chip UI keeps state.record as the only source of truth — nothing to scrape from the DOM
       v=Array.isArray(state.record[f.n])?state.record[f.n]:[];
-      if(validate&&f.req && !v.length){ ok=false; missing=missing||f.l; }
+      if(validate&&isReq(f) && !v.length){ ok=false; missing=missing||f.l; }
       return;
     }
     if(f.t==="select" && f.searchable){
       // combo input's DOM value is the display label, not the real value —
       // wireCombo already keeps state.record[f.n] current on every pick
       v=state.record[f.n];
-      if(validate&&f.req){ const empty=(v===""||v==null); if(empty){ ok=false; missing=missing||f.l; } }
+      if(validate&&isReq(f)){ const empty=(v===""||v==null); if(empty){ ok=false; missing=missing||f.l; } }
       return;
     }
     const el=$("f_"+f.n); if(!el) return;
@@ -1530,22 +2603,54 @@ function collectStep(validate){
     else if(f.t==="tel"){ v=formatIndianPhone(el.value); }
     else { v=el.value; }
     state.record[f.n]=v;
-    if(validate&&f.req){ const empty=(v===""||v==null||(Array.isArray(v)&&!v.length)); if(empty){ ok=false; missing=missing||f.l; } }
+    if(validate&&isReq(f)){ const empty=(v===""||v==null||(Array.isArray(v)&&!v.length)); if(empty){ ok=false; missing=missing||f.l; } }
   });
   return {ok,missing};
 }
-/* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a live
-   record) — Creator's API rejects display text for those and wants the linked
-   record's ID instead. Vehicle_Issue/Vendors/Assigned_Technician are confirmed
-   plain multiselect/text, NOT lookups — don't re-add useId to those without new
+/* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a
+   live record, and for "Vendors1" 2026-07-31 by the user directly — sending
+   its old composite-string format was why vendor assignment silently saved
+   nothing) — Creator's API rejects display text for those and wants the
+   linked record's ID instead. Vehicle_Issue is confirmed plain multiselect
+   text, NOT a lookup. Assigned_Technician is assumed plain text by analogy
+   (not independently confirmed) — don't re-add useId to either without new
    evidence. Falls back to the raw value if no matching option is loaded yet
    (better a failed save you can see than a silent drop). */
+// 2026-07-31: briefly tried sending Lookup fields as an {"ID":"..."} object
+// (per user-reported Zoho behavior) but that broke saving entirely — even
+// the Create step stopped submitting. Reverted back to the plain bare-ID
+// value below, which is what was actually working before.
 function idsFor(field, value){
   const list = optionsListFor(field);
   const findId = (val)=>{ const m=list.find(o=>String(o.v)===String(val)); return (m && m.id!=null) ? m.id : val; };
   return Array.isArray(value) ? value.map(findId) : findId(value);
 }
 const COORD_FIELDS=["Latitude","Longitude","DropLocationLat","DropLocationLong"];
+/* Zoho's real max-digits limit for the coordinate Decimal fields isn't
+   confirmed (see README §4) and has been hit even at 17 decimal places live.
+   Rather than guess a single fixed cap (wrong for some environments, overly
+   lossy for others), retry the same save with progressively fewer decimal
+   places whenever Zoho rejects specifically for "...exceeded its maximum
+   digits", until one succeeds or every fallback level has also failed —
+   automatically adapts to whatever the real limit actually is. saveFn is
+   called with `payload` (mutated in place between attempts, so whichever
+   precision finally succeeds is what ends up saved) and should return
+   whatever the caller needs (addTicket's new ID, or true for an update). */
+const COORD_PRECISION_FALLBACKS=[17,14,12,10,8,6,4,2,0];
+async function saveWithCoordFallback(payload, saveFn){
+  for(let i=0;i<COORD_PRECISION_FALLBACKS.length;i++){
+    if(i>0){
+      const dp=COORD_PRECISION_FALLBACKS[i];
+      COORD_FIELDS.forEach(function(k){ if(payload[k]!=null) payload[k]=roundCoord(payload[k],dp); });
+      console.warn("[Get-Rescue] coordinate save rejected for exceeding max digits — retrying at "+dp+" decimal place(s)");
+    }
+    try{ return await saveFn(payload); }
+    catch(e){
+      const msg=(e&&e.message)||"";
+      if(!/maximum digits/i.test(msg) || i===COORD_PRECISION_FALLBACKS.length-1) throw e;
+    }
+  }
+}
 function buildPayload(step){
   const p={}; const r=state.record;
   step.fields.forEach(f=>{
@@ -1553,7 +2658,19 @@ function buildPayload(step){
     if(f.when && !f.when(r)) return;
     let v=r[f.n];
     if(f.t==="check"||f.t==="button"){ p[f.n]= (v===true||v==="Yes")?["Yes"]:[]; return; }
-    if(f.t==="multiselect"){ let arr=Array.isArray(v)?v:(v?[v]:[]); if(f.useId) arr=idsFor(f,arr); p[f.n]=arr; return; }
+    if(f.t==="multiselect"){
+      let arr=Array.isArray(v)?v:(v?[v]:[]);
+      // 2026-07-31: this branch still called the since-removed
+      // formatVendorForSave() — a real bug (would throw on every Assignment
+      // step save, "ReferenceError: formatVendorForSave is not defined").
+      // Fixed: Vendors1 just saves IDs via idsFor() like any other Lookup;
+      // also auto-populates the new hidden Vendor_Emails field, per user
+      // request, resolved from the ORIGINAL display-name array (before
+      // useId converts it to IDs).
+      if(f.n==="Vendors1") p.Vendor_Emails=vendorEmailsFor(arr);
+      if(f.useId) arr=idsFor(f,arr);
+      p[f.n]=arr; return;
+    }
     if(v===""||v==null) return;
     if(f.useId) v=idsFor(f,v);
     if(f.t==="date") v=fmtDate(v);
@@ -1581,7 +2698,7 @@ async function saveStep(advance){
   $("saveBtn").disabled=true;
   try{
     if(!state.recordId){
-      const id=await addTicket(payload); state.recordId=id;
+      const id=await saveWithCoordFallback(payload, addTicket); state.recordId=id;
       // Case_ID depends on the record's own ID, so it can only be set after creation —
       // short, unique-enough tag: "RSID" + the last 6 digits of the new record's ID.
       // Best-effort: if Create_Case already auto-stamps its own Case_ID on create
@@ -1593,15 +2710,18 @@ async function saveStep(advance){
       try{ await updateTicket(id,{[CONFIG.caseIdField]:caseId}); }
       catch(e){ console.warn("[Get-Rescue] could not set Case_ID to", caseId, "on record", id, "— ticket was still created; Case_ID may be left at Zoho's own default:", e); }
     }
-    else { await updateTicket(state.recordId,payload); }
+    else { await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p)); }
+    // Invites (2026-08-03) — one record per invited vendor, created right
+    // after a successful Assignment-step save. Best-effort/non-blocking,
+    // same pattern as the Task_Rejections log the field widgets already use.
+    if(step.key==="assignment"){
+      try{ await syncInvites(state.recordId, state.record.Vendors1); }
+      catch(e){ console.warn("[Get-Rescue] syncInvites failed (non-blocking)", e); }
+    }
     // best-effort file uploads (won't block)
     for(const k in state.files){ if(state.files[k]) apiUpload(state.recordId,k,state.files[k]); }
     $("wizCaseId").textContent=caseLabel(state.record)||("#"+state.recordId);
     toast("Saved","ok");
-    if(step.branch==="final"){ // closing step
-      await updateTicket(state.recordId,{[CONFIG.stageField]:"CLOSED"});
-      toast("Ticket closed","ok"); return backToDash();
-    }
     // required action not done yet (e.g. location/payment) -> save as-is and
     // close the wizard back to the dashboard, same as Cancel, rather than
     // blocking the agent on this page. Reopening the ticket from the dashboard
@@ -1613,14 +2733,14 @@ async function saveStep(advance){
     } else if(advance && state.stepIndex<state.path.length-1){
       state.stepIndex++;
       if(state.stepIndex>state.maxStepIndex) state.maxStepIndex=state.stepIndex; // unlocks the next step now that this one's required fields are saved
-      renderWizard(); window.scrollTo(0,0);
+      renderWizard(); scrollToTop();
     }
     else renderWizard();
   }catch(e){ console.error(e); toast((e&&e.message)||"Save failed","err"); }
   finally{ $("saveBtn").disabled=false; }
 }
-function prevStep(){ if(state.stepIndex===0) return; collectStep(false); state.stepIndex--; renderWizard(); window.scrollTo(0,0); }
-function jumpTo(i){ if(i===state.stepIndex || i>state.maxStepIndex) return; collectStep(false); setPath(); state.stepIndex=Math.min(i,state.path.length-1); renderWizard(); window.scrollTo(0,0); }
+function prevStep(){ if(state.stepIndex===0) return; collectStep(false); state.stepIndex--; console.log("[Get-Rescue] prevStep -> state.record:", state.record); renderWizard(); scrollToTop(); }
+function jumpTo(i){ if(i===state.stepIndex || i>state.maxStepIndex) return; collectStep(false); setPath(); state.stepIndex=Math.min(i,state.path.length-1); console.log("[Get-Rescue] jumpTo("+i+") -> state.record:", state.record); renderWizard(); scrollToTop(); }
 async function cancelWizard(){
   const yes=await confirmBox("Stop filling?","Your current progress on this step will be saved as-is before you leave.","Yes, stop");
   if(!yes) return;
@@ -1628,20 +2748,45 @@ async function cancelWizard(){
   // "LOCATION REQUEST"/"SERVICE FEE QUOTE" if a required action wasn't done)
   // so cancelling isn't silently different from saving without completing it.
   if(state.recordId){
-    try{ collectStep(false); setPath(); await updateTicket(state.recordId, buildPayload(state.path[state.stepIndex])); }
+    try{ collectStep(false); setPath(); await saveWithCoordFallback(buildPayload(state.path[state.stepIndex]), (p)=>updateTicket(state.recordId,p)); }
     catch(e){ console.warn("cancel: best-effort save failed", e); }
   }
   backToDash();
 }
-async function closeTicketAction(){
-  const yes=await confirmBox("Close this ticket?","It will be marked CLOSED and removed from the active stages.","Close ticket");
-  if(!yes) return;
+/* closeTicketAction() (the old danger-styled "Close Ticket" button that saved
+   the CURRENT step's fields + a hardcoded Status="CLOSED") was removed
+   2026-07-30 along with the "closure" stage — closing now always goes through
+   the dedicated Final Closure screen instead (see saveClosure() below). */
+/* Back to Dashboard from the Final Closure screen is a plain navigation, not a
+   save — nothing here has touched the live record until Close Case is
+   actually clicked, so there's nothing to persist and no confirm dialog
+   needed (unlike cancelWizard, which persists in-progress wizard state). */
+function cancelClosure(){ backToDash(); }
+/* Close Case — validates + saves CLOSURE_FIELDS and writes Status="CLOSED".
+   Only Completed/Cancelled apply the TSF reconciliation formula (see
+   computeClosureTSF/CLOSURE_FIELDS' own header comment) — Not Converted has
+   no fee condition per the mock's validation table, so Total_Service_Fee is
+   left exactly as it already was. */
+async function saveClosure(){
+  const chk=collectStep(true);
+  if(!chk.ok){ toast("Please fill: "+chk.missing,"err"); return; }
+  const r=state.record;
+  const payload={
+    Refund_Due:r.Refund_Due||"", Refund_Reason:r.Refund_Reason||"", Refund_Amount:r.Refund_Amount||"",
+    Closure_Status:r.Closure_Status||"", Closure_Reason:r.Closure_Reason||"", Remarks:r.Remarks||"",
+    Cx_Feedback_Score:r.Cx_Feedback_Score||"", Cx_Feedback_Text:r.Cx_Feedback_Text||"",
+    B2B_GST_Invoice_Required:r.B2B_GST_Invoice_Required||"", GST_Number:r.GST_Number||"",
+    [CONFIG.stageField]:"CLOSED"
+  };
+  if(r.Closure_Status==="Completed" || r.Closure_Status==="Cancelled") payload.Total_Service_Fee=computeClosureTSF(r);
+  $("closureSaveBtn").disabled=true;
   try{
-    collectStep(false); setPath();
-    const payload=Object.assign(buildPayload(state.path[state.stepIndex]),{[CONFIG.stageField]:"CLOSED"});
-    if(!state.recordId){ state.recordId=await addTicket(payload); } else { await updateTicket(state.recordId,payload); }
-    toast("Ticket closed","ok"); backToDash();
+    await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
+    for(const k in state.files){ if(state.files[k]) apiUpload(state.recordId,k,state.files[k]); }
+    toast("Ticket closed","ok");
+    backToDash();
   }catch(e){ toast((e&&e.message)||"Could not close","err"); }
+  finally{ $("closureSaveBtn").disabled=false; }
 }
 function backToDash(){ showView("dashboard"); loadDashboard(); }
 
@@ -1654,7 +2799,22 @@ $("wizClose").onclick=cancelWizard;
 $("prevBtn").onclick=prevStep;
 $("saveBtn").onclick=()=>saveStep(true);
 $("cancelBtn").onclick=cancelWizard;
-$("closeBtn").onclick=closeTicketAction;
+// permanent "Close Case" button inside the wizard — snapshots whatever's on
+// the current step first so the closure screen's summary reflects it too
+$("wizClosureBtn").onclick=()=>{ collectStep(false); openClosure(state.record); };
+$("closureBack").onclick=cancelClosure;
+$("closureCancelBtn").onclick=cancelClosure;
+$("closureSaveBtn").onclick=saveClosure;
+// click-any-field-to-edit popup — delegated so it keeps working across every
+// renderClosure() re-render (the summary's rows are rebuilt from scratch
+// each time, plain .onclick assignments on them wouldn't survive that)
+$("closureFields").addEventListener("click", (e)=>{
+  const row = e.target.closest(".crow");
+  if(row) openFieldEditor(row.dataset.field);
+});
+$("fieldModalCancel").onclick=closeFieldEditor;
+$("fieldModalSave").onclick=saveFieldEditor;
+$("fieldModal").addEventListener("click", (e)=>{ if(e.target.id==="fieldModal") closeFieldEditor(); });
 $("searchBtn").onclick=runSearch;
 $("q").addEventListener("input",onSearchInput);
 $("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });

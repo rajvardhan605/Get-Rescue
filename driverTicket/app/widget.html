@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Get-Rescue · Driver</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Same design tokens as every other Get-Rescue widget — kept identical on
+   purpose (2026-07-31: "the theme will be same"), not re-derived here. */
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA; --purple:#7A5AF8; --purple-soft:#ECE7FE;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:520px;margin:0 auto;padding:14px 14px 100px}
+img,svg{max-width:100%}
+
+.topbar{display:flex;align-items:center;gap:12px;background:var(--ink);border-radius:16px;padding:12px 14px;box-shadow:var(--sh-1);position:sticky;top:8px;z-index:30;margin-bottom:14px}
+.brand{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
+.brand .mk{width:32px;height:32px;border-radius:9px;background:var(--signal);display:grid;place-items:center;flex:none;box-shadow:0 3px 10px rgba(241,90,34,.4)}
+.brand .mk svg{width:18px;height:18px}
+.brand b{font-family:var(--f-disp);font-weight:900;font-size:16px;color:#fff;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand span{display:block;font-family:var(--f-mono);font-size:9.5px;color:rgba(255,255,255,.55);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+.toggle{flex:none;position:relative;width:96px;height:32px;border-radius:999px;background:var(--stop);box-shadow:inset 0 1px 3px rgba(20,22,28,.2);cursor:pointer;transition:background .25s}
+.toggle.on{background:var(--ok)}
+.toggle .lab{position:absolute;top:50%;transform:translateY(-50%);font-family:var(--f-disp);font-weight:700;font-size:11px;color:#fff;pointer-events:none}
+.toggle .lab.off{right:11px} .toggle .lab.on{left:11px;display:none}
+.toggle.on .lab.on{display:block} .toggle.on .lab.off{display:none}
+.toggle .knob{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(20,22,28,.3);transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
+.toggle.on .knob{transform:translateX(64px)}
+.toggle.locked{opacity:.6;pointer-events:none}
+
+.sec-head{display:flex;align-items:center;gap:8px;margin:6px 2px 10px}
+.sec-head h2{font-family:var(--f-disp);font-size:18px;font-weight:800}
+.sec-head .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted);background:var(--worktop);padding:3px 9px;border-radius:999px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);padding:16px;margin-bottom:12px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);padding:14px 16px;margin-bottom:11px;cursor:pointer;transition:.12s}
+.tcard:active{background:var(--worktop)}
+.tcard .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px}
+.tcard .cid{font-family:var(--f-mono);font-size:11px;color:var(--muted);background:var(--worktop);padding:3px 9px;border-radius:999px;flex:none}
+.tcard h3{font-family:var(--f-disp);font-size:17px;font-weight:800;margin:2px 0 3px}
+.tcard .meta{font-size:12.5px;color:var(--muted)}
+.st{display:inline-flex;align-items:center;gap:5px;font-family:var(--f-mono);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:4px 9px;border-radius:999px;white-space:nowrap}
+.st::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.st.invite{background:var(--purple-soft);color:#5a3fd6}
+.st.otw{background:var(--info-soft);color:#1d5fc0}
+.st.wip{background:var(--signal-soft);color:var(--signal-deep)}
+.st.pay{background:var(--wait-soft);color:#a85a06}
+.empty-state{text-align:center;padding:50px 16px;color:var(--muted)}
+.empty-state h3{font-family:var(--f-disp);font-size:17px;color:var(--text);margin:10px 0 4px}
+.spin{width:30px;height:30px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);animation:spin .7s linear infinite;margin:30px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+#actionScreen.off{display:none}
+.ascreen-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.back-x{border:0;background:var(--worktop);width:34px;height:34px;border-radius:9px;cursor:pointer;color:var(--muted);display:grid;place-items:center;flex:none}
+.ascreen-top h2{font-family:var(--f-disp);font-size:19px;font-weight:900;flex:1}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;margin-bottom:6px}
+.info-grid .full{grid-column:1/-1}
+.info-grid .k{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:2px}
+.info-grid .v{font-size:14px;font-weight:600}
+.nav-link{display:flex;align-items:center;justify-content:center;gap:9px;background:var(--info-soft);color:#1d5fc0;border-radius:11px;padding:12px;font-family:var(--f-disp);font-weight:800;font-size:14px;text-decoration:none;margin:6px 0}
+
+.photo-field{margin:12px 0}
+.photo-field .lab{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.photo-field .lab .l{font-family:var(--f-disp);font-weight:800;font-size:13.5px}
+.photo-field .lab .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
+.photo-field .lab .cnt.ok{color:var(--ok)}
+.photo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.photo-slot{aspect-ratio:1;border-radius:10px;overflow:hidden;position:relative;background:var(--worktop)}
+.photo-slot img{width:100%;height:100%;object-fit:cover;display:block}
+.photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
+.photo-slot.add:active{background:var(--worktop)}
+.photo-slot .rm{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(20,22,28,.65);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:11px}
+
+.fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.fld label{font-family:var(--f-disp);font-weight:700;font-size:13.5px}
+.fld input,.fld select,.fld textarea{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;font-family:var(--f-body);color:var(--text);background:#fff;outline:0;width:100%}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+.fld textarea{min-height:70px;resize:vertical}
+.radio-set{display:flex;flex-wrap:wrap;gap:8px}
+.radio-set .opt{border:1.5px solid var(--line-strong);border-radius:9px;padding:10px 15px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;background:#fff;user-select:none}
+.radio-set .opt.sel{border-color:var(--signal);background:var(--signal-soft);color:var(--signal-deep)}
+
+.btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:15px;letter-spacing:.02em;padding:14px 18px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;transition:.15s}
+.btn svg{width:18px;height:18px}
+.btn.primary{background:var(--signal);color:#fff;box-shadow:0 4px 12px rgba(241,90,34,.34)}
+.btn.primary:active{background:var(--signal-deep)}
+.btn.ok{background:var(--ok);color:#fff}
+.btn.danger{background:#fff;color:var(--stop);border:1.5px solid var(--stop)}
+.btn.ghost{background:transparent;color:var(--text);border:1.5px solid var(--line-strong)}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.btn-row{display:flex;gap:9px;margin-top:16px}
+.btn-row .btn{flex:1}
+
+.modal{position:fixed;inset:0;background:rgba(10,11,14,.92);display:none;align-items:center;justify-content:center;z-index:70;flex-direction:column}
+.modal.on{display:flex}
+#cameraVideo{width:100%;max-width:520px;flex:1;object-fit:cover;background:#000}
+.camera-bar{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;width:100%;max-width:520px}
+.cam-btn{width:56px;height:56px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.35);cursor:pointer}
+.cam-x{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.15);color:#fff;border:0;cursor:pointer;font-size:18px}
+.cam-hint{color:rgba(255,255,255,.7);font-family:var(--f-mono);font-size:11px;text-align:center;padding:8px 20px}
+
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mk"><svg viewBox="0 0 24 24" fill="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="#fff"/></svg></span>
+      <span><b id="techName">Driver</b><span>Get-Rescue</span></span>
+    </div>
+    <div class="toggle" id="availToggle" role="switch" aria-label="Toggle availability">
+      <span class="lab off">Offline</span><span class="lab on">Online</span>
+      <span class="knob"></span>
+    </div>
+  </div>
+
+  <div id="dashboard">
+    <div class="sec-head"><h2>My Tickets</h2><span class="cnt" id="ticketCount">0</span></div>
+    <div id="ticketList"></div>
+  </div>
+
+  <div id="actionScreen" class="off">
+    <div class="ascreen-top">
+      <button class="back-x" id="backBtn" type="button" aria-label="Back to my tickets"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <h2 id="ascreenTitle">—</h2>
+    </div>
+    <div class="card">
+      <div class="info-grid" id="ticketInfo"></div>
+    </div>
+    <div id="ascreenBody"></div>
+  </div>
+</div>
+
+<!-- camera modal — see technicianTicket's own copy for the full rationale
+     comment; identical here, not re-explained. -->
+<div class="modal" id="cameraModal">
+  <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="cam-hint" id="cameraHint">Center the shot, then tap to capture</div>
+  <div class="camera-bar">
+    <button class="cam-x" id="cameraCancel" type="button" aria-label="Cancel">✕</button>
+    <button class="cam-btn" id="cameraShutter" type="button" aria-label="Capture photo"></button>
+    <span style="width:40px"></span>
+  </div>
+</div>
+<input type="file" id="cameraFallbackInput" accept="image/*" capture="environment" style="display:none">
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   GET-RESCUE · DRIVER WIDGET (TOW field flow)
+   Sibling of technicianTicket's widget.html — same CORE (theme, data layer,
+   camera/GPS watermark modal, distance/ETA stand-in, toggle), TOW-specific
+   action screens instead of RSR's. See technicianTicket/app/widget.html's
+   own header comment for the full set of confirmed decisions this build
+   relies on (Create_Case only, no "Invites" form, Haversine stand-in for
+   Google Maps, etc.) — not re-explained per file here.
+   ===================================================================== */
+const CONFIG = {
+  appName: "get-rescue",
+  formName: "Create_Case",
+  reportName: "Agent_Ticket_Report",
+  stageField: "Status",
+  caseIdField: "Case_ID",
+  serviceTypeField: "Service_Type",
+  nameField: "Customer_Name",
+  phoneField: "Phone_Number",
+  vehicleField: "Vehicle",
+  myEmailFieldCandidates: ["Assigned_Technician_Email","Technician_Email1","Vendor_Email2"],
+  techReport: "technicians_Report",
+  techStatusField: "Availability_Status",
+  techEmailField: "Email",
+  techNameField: "technician_name",
+  // Invites (2026-08-03, user-confirmed — "invite covers all") — see
+  // technicianTicket's own comment on this same config entry.
+  invitesReport: "Invites_Report"
+};
+/* TOW dashboard statuses — mirrors technicianTicket's own MY_STATUSES note
+   on "REMAINING FEE DUE" not matching getRescueTicket's existing guess;
+   same caveat applies here. */
+const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE"];
+const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228;
+
+let SDK_READY=false, LOGIN_EMAIL="", MY_TECH_NAME="";
+function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams==="function"; }
+function resolve(method){
+  const C=window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces=[C.DATA,C.PUBLISH,C.META,C.UTIL,C.FILE];
+  for(let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function apiGetReport(report, criteria, max){
+  const fn=resolve("getRecords"); if(!fn) return [];
+  const cfg={ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||200 };
+  if(criteria) cfg.criteria=criteria;
+  try{ const r=await fn(cfg); return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : []; } catch(e){ return []; }
+}
+async function apiUpdate(id, data){ return apiUpdateReport(CONFIG.reportName, id, data); }
+async function apiUpdateReport(report, id, data){
+  const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
+  const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
+  if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
+  return true;
+}
+// Writes to THIS driver's own Invites record for a given ticket — see
+// vendorTicket's own updateMyInvite() for the fuller comment (same pattern).
+async function updateMyInvite(ticketId, data){
+  const invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
+  if(!invite || invite.ID==null) return;
+  try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
+  catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
+}
+async function apiUpload(id, fieldName, file){
+  const fn=resolve("uploadFile"); if(!fn || !file) return false;
+  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
+  catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
+}
+
+function haversineKm(lat1,lon1,lat2,lon2){
+  const toRad=function(d){ return d*Math.PI/180; };
+  const R=6371;
+  const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+const ASSUMED_SPEED_KMH=30; // see technicianTicket's own comment — Haversine stand-in for Google Maps Distance Matrix API, no key yet (2026-07-31)
+function calcDistanceETA(fromLat,fromLon,toLat,toLon){
+  if([fromLat,fromLon,toLat,toLon].some(function(n){ return n==null || isNaN(n); })) return null;
+  const distanceKm=Math.round(haversineKm(fromLat,fromLon,toLat,toLon)*10)/10;
+  const etaMins=Math.max(1, Math.round((distanceKm/ASSUMED_SPEED_KMH)*60));
+  return { distanceKm:distanceKm, etaMins:etaMins };
+}
+/* 4-point roundtrip (Action 7b): Office -> Breakdown -> Drop -> Office —
+   matches the flow-generation prompt's own naming for the four legs
+   (Office_To_Mechanic / Mechanic_To_Breakdown / Breakdown_To_Drop_Distance /
+   Drop_To_Office_Distance), all saved individually plus the Roundtrip_Distance total. */
+function calc4PointRoundtrip(bLat,bLon,dLat,dLon){
+  const officeToBreakdown=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
+  const breakdownToDrop = (dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon)) ? haversineKm(bLat,bLon,dLat,dLon) : 0;
+  const dropToOffice = (dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon)) ? haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON) : haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON);
+  const total=officeToBreakdown+breakdownToDrop+dropToOffice;
+  return {
+    officeToMechanic: Math.round(officeToBreakdown*10)/10,
+    mechanicToBreakdown: 0, // office->breakdown modeled as a single leg here (no separate "mechanic pickup" waypoint tracked) — see QUESTIONS_TO_ASK.md
+    breakdownToDrop: Math.round(breakdownToDrop*10)/10,
+    dropToOffice: Math.round(dropToOffice*10)/10,
+    total: Math.round(total*10)/10
+  };
+}
+
+const $=(id)=>document.getElementById(id);
+// Real bug fixed (2026-08-03) — see vendorTicket's own comment on this same
+// helper. Guards against "Cannot set properties of null (setting 'disabled')"
+// when an action's `finally` block runs after navigation already destroyed
+// that button's DOM element.
+function setDisabled(id,val){ const el=$(id); if(el) el.disabled=val; }
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
+function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
+// Lookup fields (RSID/Vendor on Invites) come back from Creator as objects.
+function unwrapLookup(v){
+  if(v==null) return v;
+  if(Array.isArray(v)) return v.map(unwrapLookup);
+  if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||v.ID||"";
+  return v;
+}
+function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
+let toastT=null;
+function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
+function isMine(rec){
+  if(!LOGIN_EMAIL) return true;
+  if(CONFIG.myEmailFieldCandidates.some(function(f){ return String(rec[f]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); })) return true;
+  // Technician_Emails (2026-07-31, per user request): hidden, comma-separated
+  // field vendorTicket's fleet hand-off now populates alongside Assigned_Technician_Email.
+  const emails=String(rec.Technician_Emails||"").split(",").map(function(e){ return e.trim().toLowerCase(); });
+  return emails.indexOf(LOGIN_EMAIL.trim().toLowerCase())>=0;
+}
+
+const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{} };
+
+// Invites-based matching (2026-08-03) — see technicianTicket's own
+// loadMyInvites() for the fuller comment (identical pattern).
+async function loadMyInvites(){
+  const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+  console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; MY_TECH_NAME="+MY_TECH_NAME);
+  const mine = all.filter(function(inv){
+    const vName=String(unwrapLookup(inv.Vendor)||"").trim().toLowerCase();
+    return MY_TECH_NAME && vName===MY_TECH_NAME.trim().toLowerCase();
+  });
+  console.log("[Get-Rescue] loadMyInvites: "+mine.length+" match MY_TECH_NAME", mine);
+  const map={};
+  mine.forEach(function(inv){ const tid=lookupId(inv.RSID); if(tid!=null) map[String(tid)]=inv; });
+  return map;
+}
+async function loadDashboard(){
+  $("ticketList").innerHTML='<div class="spin"></div>';
+  let inviteMap={};
+  try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[Get-Rescue] loadMyInvites failed (falling back to email match only)", e); }
+  state.inviteByTicketId = inviteMap;
+  const criteria = '(Service_Type == "TOW")';
+  const recs = await apiGetReport(CONFIG.reportName, criteria, 200);
+  state.tickets = recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; })
+    .filter(function(r){ return inviteMap[String(r.ID)]!=null || isMine(r); });
+  renderDashboard();
+}
+const STATUS_PILL = {
+  "RSP IRA (INVITE RESPONSE AWAITED)": {cls:"invite", label:"New Invite"},
+  "RSP ON THE WAY": {cls:"otw", label:"On The Way"},
+  "LOADING": {cls:"wip", label:"Loading"},
+  "TO DROP LOCATION": {cls:"wip", label:"To Drop"},
+  "UNLOADING": {cls:"wip", label:"Unloading"},
+  "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"}
+};
+function renderDashboard(){
+  $("ticketCount").textContent=state.tickets.length;
+  if(!state.tickets.length){
+    $("ticketList").innerHTML='<div class="empty-state"><h3>No open tickets</h3><p>New invites and active jobs will show up here.</p></div>';
+    return;
+  }
+  $("ticketList").innerHTML = state.tickets.map(function(r){
+    const st = String(r[CONFIG.stageField]||"").trim().toUpperCase();
+    const pill = STATUS_PILL[st] || {cls:"", label:st};
+    return `<div class="tcard" data-id="${esc(r.ID)}">
+      <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
+      <h3>${esc(readVal(r,CONFIG.vehicleField)||"Vehicle")}</h3>
+      <div class="meta">${esc(readVal(r,"Vehicle_Issue")||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll(".tcard").forEach(function(el){
+    el.onclick=function(){ openTicket(el.dataset.id); };
+  });
+}
+function openTicket(id){
+  const rec = state.tickets.find(function(r){ return String(r.ID)===String(id); });
+  if(!rec) return;
+  state.current = Object.assign({}, rec);
+  state.photos = {}; state.files = {};
+  $("dashboard").classList.add("off"); $("dashboard").style.display="none";
+  $("actionScreen").classList.remove("off");
+  renderActionScreen();
+}
+function backToDashboard(){
+  $("actionScreen").classList.add("off");
+  $("dashboard").style.display=""; $("dashboard").classList.remove("off");
+  loadDashboard();
+}
+/* Moves straight into the next action screen for the SAME ticket, instead of
+   dropping back to the dashboard list — see technicianTicket's own comment
+   on this function for the full rationale (Action 5 flow spec, 2026-07-31). */
+function goToStatus(newStatus){
+  state.current[CONFIG.stageField]=newStatus;
+  renderActionScreen();
+}
+function renderTicketInfo(){
+  const r=state.current;
+  const loc = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? (r.Latitude+", "+r.Longitude) : "");
+  const rows=[
+    ["Case ID", caseLabel(r)],
+    ["Customer", readVal(r,CONFIG.nameField)],
+    ["Phone", r[CONFIG.phoneField]||""],
+    ["Vehicle", readVal(r,CONFIG.vehicleField)],
+    ["Location", loc],
+    ["Issue", readVal(r,"Vehicle_Issue")]
+  ].filter(function(p){ return p[1]; });
+  $("ticketInfo").innerHTML = rows.map(function(p){ return `<div><span class="k">${esc(p[0])}</span><span class="v">${esc(p[1])}</span></div>`; }).join("");
+}
+
+function renderActionScreen(){
+  renderTicketInfo();
+  const st=String(state.current[CONFIG.stageField]||"").trim().toUpperCase();
+  if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance (Tow)"; renderAcceptScreen(); }
+  else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown (Tow)"; renderReachScreen(); }
+  else if(st==="LOADING"){ $("ascreenTitle").textContent="Loading"; renderLoadingScreen(); }
+  else if(st==="TO DROP LOCATION"){ $("ascreenTitle").textContent="Reached Drop Location"; renderReachedDropScreen(); }
+  else if(st==="UNLOADING"){ $("ascreenTitle").textContent="Unloading & Handover"; renderUnloadingScreen(); }
+  else if(st==="REMAINING FEE DUE"){ $("ascreenTitle").textContent="Final Payment"; renderPaymentScreen(); }
+  else { $("ascreenBody").innerHTML='<div class="empty-state"><p>Nothing to do on this ticket right now.</p></div>'; }
+}
+
+/* ===== Action 5a: Service Acceptance & Rejection (Tow) ===== */
+function renderAcceptScreen(){
+  const r=state.current;
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : "";
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      <div class="info-grid">
+        ${dropHref?`<div class="full"><span class="k">Drop Location</span><span class="v">${esc(dropHref)}</span></div>`:""}
+      </div>
+      <div class="fld"><label>Start Odometer</label><input type="number" id="startOdometer"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn danger" id="rejectBtn" type="button">Reject</button>
+      <button class="btn ok" id="acceptBtn" type="button">Accept Service</button>
+    </div>
+    <div class="card" id="rejectPanel" style="display:none;margin-top:12px">
+      <div class="fld"><label>Reject Reason<span style="color:var(--stop)">*</span></label>
+        <select id="rejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromRejectBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmRejectBtn" type="button">RSP Reject</button>
+      </div>
+    </div>`;
+  $("acceptBtn").onclick=acceptService;
+  $("rejectBtn").onclick=()=>{ $("rejectPanel").style.display="block"; };
+  $("backFromRejectBtn").onclick=()=>{ $("rejectPanel").style.display="none"; };
+  $("confirmRejectBtn").onclick=rejectService;
+}
+async function acceptService(){
+  setDisabled("acceptBtn",true);
+  try{
+    const pos = await getPositionSafe();
+    const r=state.current;
+    const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+    const dist = pos ? calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
+    const odo=$("startOdometer").value;
+    const payload={ Service_Acceptance_For_Tow: fmtDateTime(new Date()), Status:"RSP ON THE WAY" };
+    if(dist){ payload.ETA_TOW=dist.etaMins; payload.Distance_To_Breakdown_TOW=dist.distanceKm; }
+    if(odo!=="") payload.Odometer_Reading=Number(odo);
+    // See technicianTicket's own comment — persisted so Action 6a's Cancel
+    // flow can compute "distance from RSP Start location to present
+    // location." Guessed field names, not confirmed.
+    if(pos){ payload.RSP_Start_Latitude=pos.lat; payload.RSP_Start_Longitude=pos.lon; r.RSP_Start_Latitude=pos.lat; r.RSP_Start_Longitude=pos.lon; }
+    // Diagnostic logging (2026-08-03) — see technicianTicket's own comment on this same call.
+    console.log("[Get-Rescue] acceptService payload:", JSON.stringify(payload), "| pos:", pos, "| RSP_Start_Latitude raw:", payload.RSP_Start_Latitude, typeof payload.RSP_Start_Latitude, String(payload.RSP_Start_Latitude), "| RSP_Start_Longitude raw:", payload.RSP_Start_Longitude, typeof payload.RSP_Start_Longitude, String(payload.RSP_Start_Longitude));
+    await apiUpdate(r.ID, payload);
+    // Invites (2026-08-03) — see vendorTicket's own acceptService() comment.
+    // 2026-08-03: see vendorTicket's own comment on this same call — a
+    // boolean `true` was confirmed rejected live, switched to "Yes".
+    updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes" });
+    toast("Service accepted","ok");
+    goToStatus("RSP ON THE WAY");
+  }catch(e){ console.error("[Get-Rescue] acceptService error:", e); toast((e&&e.message)||"Could not accept","err"); }
+  finally{ setDisabled("acceptBtn",false); }
+}
+async function rejectService(){
+  const reason=$("rejectReason").value;
+  if(!reason){ toast("Please pick a reject reason","err"); return; }
+  setDisabled("confirmRejectBtn",true);
+  try{
+    const r=state.current;
+    // "Service_Reject_Time" — see technicianTicket's own comment; same field,
+    // same Action 5 flow-spec correction, not repeated here.
+    await apiUpdate(r.ID, { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason1: reason, Status:"RSP REJECT" });
+    // Invites (2026-08-03) — see vendorTicket's own rejectService() comment.
+    updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
+    try{
+      const fn=resolve("addRecords");
+      // Case_ID/Vehicle are real Lookup fields on Task_Rejections (confirmed
+      // 2026-07-31) — see technicianTicket's own comment on this same call.
+      // Reverted the {"ID":...} object-wrapping attempt — broke saving.
+      if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
+        Case_ID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
+      } } });
+    }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
+    toast("Rejected","ok");
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not reject","err"); }
+  finally{ setDisabled("confirmRejectBtn",false); }
+}
+
+/* ===== Action 6a: Reach Breakdown & Cancel (Tow) ===== */
+function renderReachScreen(){
+  const r=state.current;
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  $("ascreenBody").innerHTML = `
+    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : ""}
+    <div class="card">
+      <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA_TOW||"")}" placeholder="Enter manually if blank"></div>
+      <div class="fld"><label>Odometer at Reached</label><input type="number" id="odoReached"></div>
+      <div class="fld"><label>Toll Charges?</label>
+        <div class="radio-set" id="tollCharges"><div class="opt" data-value="Yes">Yes</div><div class="opt" data-value="No">No</div></div>
+      </div>
+      ${photoFieldHtml("Image_Upload5","Arrival Photo",1,1)}
+    </div>
+    <div class="btn-row">
+      <button class="btn ghost" id="cancelTaskBtn" type="button">Cancel Task</button>
+      <button class="btn primary" id="reachedBtn" type="button">Reached Location</button>
+    </div>
+    <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
+      ${photoFieldHtml("Image_Upload5","Cancel Photo",1,1)}
+      <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
+        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmCancelBtn" type="button">RSP Cancel</button>
+      </div>
+    </div>`;
+  wirePhotoField("Image_Upload5",1);
+  document.querySelectorAll("#tollCharges .opt").forEach(function(o){
+    o.onclick=function(){ document.querySelectorAll("#tollCharges .opt").forEach(function(x){x.classList.remove("sel");}); o.classList.add("sel"); };
+  });
+  $("reachedBtn").onclick=markReached;
+  $("cancelTaskBtn").onclick=()=>{ $("cancelPanel").style.display="block"; };
+  $("backFromCancelBtn").onclick=()=>{ $("cancelPanel").style.display="none"; };
+  $("confirmCancelBtn").onclick=confirmCancel;
+}
+async function markReached(){
+  if((state.photos.Image_Upload5||[]).length<1){ toast("Arrival photo is required","err"); return; }
+  setDisabled("reachedBtn",true);
+  try{
+    const r=state.current;
+    const toll=document.querySelector("#tollCharges .opt.sel");
+    const odo=$("odoReached").value;
+    const payload={ Reach_Time: fmtDateTime(new Date()), Status:"LOADING" };
+    if(toll) payload.Toll_Charges=toll.dataset.value;
+    if(odo!=="") payload.Odometer_reading_at_Reached_Location=Number(odo);
+    const etaVal=$("etaField").value;
+    if(etaVal!=="") payload.ETA_TOW=Number(etaVal);
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Marked as reached","ok");
+    goToStatus("LOADING");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("reachedBtn",false); }
+}
+async function confirmCancel(){
+  const reason=$("cancelReason").value;
+  if(!reason){ toast("Please pick a cancel reason","err"); return; }
+  if((state.photos.Image_Upload5||[]).length<1){ toast("Cancel photo is required","err"); return; }
+  setDisabled("confirmCancelBtn",true);
+  try{
+    const r=state.current;
+    // See technicianTicket's own comment on confirmCancel() — same
+    // Cancellation_Time/Cancel_Location_Lat/Lon/Cancel_Distance capture,
+    // not repeated here.
+    const payload={ Reject_Reason2: reason, Status:"RSP CANCELLED", Cancellation_Time: fmtDateTime(new Date()) };
+    const pos = await getPositionSafe();
+    if(pos){
+      payload.Cancel_Location_Lat=pos.lat; payload.Cancel_Location_Lon=pos.lon;
+      const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
+      const dist = !isNaN(startLat) && !isNaN(startLon) ? calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
+      if(dist) payload.Cancel_Distance=dist.distanceKm;
+    }
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Task cancelled","ok");
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not cancel","err"); }
+  finally{ setDisabled("confirmCancelBtn",false); }
+}
+
+/* ===== Action 7a: WIP - Loading / Cx Reject (Tow) ===== */
+function renderLoadingScreen(){
+  const r=state.current;
+  const dropReady=!!r.Navigate_To_Drop_Link;
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      ${photoFieldHtml("Pre_service_Photo","Pre-service Photos",4,4)}
+      ${photoFieldHtml("Image_Upload_On_truck","On-truck Photos",3,3)}
+      ${photoFieldHtml("VCRF","VCRF Form",1,1)}
+    </div>
+    <div class="btn-row">
+      <button class="btn ghost" id="cxRejectBtn" type="button">Customer Rejected</button>
+      <button class="btn primary" id="vehiclePickedBtn" type="button" ${dropReady?"":"disabled"}>Vehicle Picked</button>
+    </div>
+    ${dropReady?"":'<div class="empty-state" style="padding:10px"><p style="font-size:12px">Waiting on a drop location before this can be confirmed.</p></div>'}
+    <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
+      <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
+        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmCxRejectBtn" type="button">Service Reject</button>
+      </div>
+    </div>`;
+  wirePhotoField("Pre_service_Photo",4); wirePhotoField("Image_Upload_On_truck",3); wirePhotoField("VCRF",1);
+  $("vehiclePickedBtn").onclick=vehiclePicked;
+  $("cxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="block"; };
+  $("backFromCxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="none"; };
+  $("confirmCxRejectBtn").onclick=confirmCxRejectLoading;
+}
+async function vehiclePicked(){
+  if((state.photos.Pre_service_Photo||[]).length<4){ toast("4 pre-service photos required","err"); return; }
+  if((state.photos.Image_Upload_On_truck||[]).length<3){ toast("3 on-truck photos required","err"); return; }
+  if((state.photos.VCRF||[]).length<1){ toast("VCRF upload required","err"); return; }
+  setDisabled("vehiclePickedBtn",true);
+  try{
+    const r=state.current;
+    // Mock says Drop distance/ETA are "based on current GPS location of
+    // Driver" (not the ticket's static breakdown Lat/Lon) — use a live fix,
+    // falling back to the breakdown location if GPS isn't available.
+    const pos = await getPositionSafe();
+    const bLat=pos?pos.lat:Number(r.Latitude), bLon=pos?pos.lon:Number(r.Longitude);
+    const dLat=Number(r.DropLocationLat), dLon=Number(r.DropLocationLong);
+    const dist=calcDistanceETA(bLat,bLon,dLat,dLon);
+    const payload={ Pickup_Time: fmtDateTime(new Date()), Status:"TO DROP LOCATION" };
+    if(dist){ payload.Breakdown_To_Drop_Distance=dist.distanceKm; payload.Return_Journey_ETA=dist.etaMins; }
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Vehicle picked up","ok");
+    goToStatus("TO DROP LOCATION");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("vehiclePickedBtn",false); }
+}
+async function confirmCxRejectLoading(){
+  const reason=$("cxRejectReason").value;
+  if(!reason){ toast("Please pick a rejection reason","err"); return; }
+  setDisabled("confirmCxRejectBtn",true);
+  try{
+    const r=state.current;
+    // Same shared "RSP_Completion_Time" as the RSR WIP screen's own Cx Reject — see technicianTicket's own comment.
+    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Status:"REMAINING FEE DUE" });
+    toast("Saved","ok");
+    goToStatus("REMAINING FEE DUE");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("confirmCxRejectBtn",false); }
+}
+
+/* ===== Action 7b: WIP - Reached Drop Location (Tow) ===== */
+function renderReachedDropScreen(){
+  const r=state.current;
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : "";
+  $("ascreenBody").innerHTML = `
+    ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : ""}
+    <div class="card">
+      <div class="fld"><label>Odometer Reading</label><input type="number" id="odoDrop"></div>
+      <div class="fld"><label>Toll Charges?</label>
+        <div class="radio-set" id="tollCharges1"><div class="opt" data-value="Yes">Yes</div><div class="opt" data-value="No">No</div></div>
+      </div>
+      ${photoFieldHtml("Drop_Location_Photo","Drop Location Photos",4,4)}
+    </div>
+    <button class="btn primary" id="reachedDropBtn" type="button">Reached Drop Location</button>`;
+  wirePhotoField("Drop_Location_Photo",4);
+  document.querySelectorAll("#tollCharges1 .opt").forEach(function(o){
+    o.onclick=function(){ document.querySelectorAll("#tollCharges1 .opt").forEach(function(x){x.classList.remove("sel");}); o.classList.add("sel"); };
+  });
+  $("reachedDropBtn").onclick=reachedDrop;
+}
+async function reachedDrop(){
+  if((state.photos.Drop_Location_Photo||[]).length<4){ toast("4 drop-location photos required","err"); return; }
+  setDisabled("reachedDropBtn",true);
+  try{
+    const r=state.current;
+    const toll=document.querySelector("#tollCharges1 .opt.sel");
+    const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+    const dLat=Number(r.DropLocationLat), dLon=Number(r.DropLocationLong);
+    const legs=calc4PointRoundtrip(bLat,bLon,dLat,dLon);
+    const odo=$("odoDrop").value;
+    const payload={
+      Status:"UNLOADING",
+      Office_To_Mechanic: legs.officeToMechanic,
+      Mechanic_To_Breakdown: legs.mechanicToBreakdown,
+      Breakdown_To_Drop_Distance: legs.breakdownToDrop,
+      Drop_To_Office_Distance: legs.dropToOffice,
+      Roundtrip_Distance: legs.total,
+      // Action 7b mock: "time is captured as 'drop location arrival time'" +
+      // "Location is captured as 'RSP Drop Location'" — the driver's own live
+      // GPS fix at click time, separate from the ticket's static
+      // DropLocationLat/Long (which is the customer-specified drop point
+      // already used above for the roundtrip calc). Both guessed names.
+      Drop_Location_Arrival_Time: fmtDateTime(new Date())
+    };
+    const pos=await getPositionSafe();
+    if(pos){ payload.RSP_Drop_Location_Lat=pos.lat; payload.RSP_Drop_Location_Lon=pos.lon; }
+    if(toll) payload.Toll_Charges1=toll.dataset.value;
+    if(odo!=="") payload.Odometer_Reading=Number(odo);
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Marked as reached drop location","ok");
+    goToStatus("UNLOADING");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("reachedDropBtn",false); }
+}
+
+/* ===== Action 7c: WIP - Unloading (Tow) ===== */
+function renderUnloadingScreen(){
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      ${photoFieldHtml("Unloaded_Images","Unloaded Photos",4,4)}
+      ${photoFieldHtml("Handover_Image","Handover Photo",1,1)}
+      ${photoFieldHtml("VCRF_Image","VCRF Image",1,1)}
+      <div class="fld"><label>Handover to (Name)</label><input type="text" id="handoverName"></div>
+      <div class="fld"><label>Handover Number</label><input type="number" id="handoverNumber"></div>
+      <div class="fld"><label>Handover Location</label>
+        <select id="handoverDesignation"><option value="">— select —</option><option value="Home">Home</option><option value="Office">Office</option><option value="Work Shop">Work Shop</option></select>
+      </div>
+    </div>
+    <button class="btn primary" id="droppedBtn" type="button">Dropped</button>`;
+  wirePhotoField("Unloaded_Images",4); wirePhotoField("Handover_Image",1); wirePhotoField("VCRF_Image",1);
+  $("droppedBtn").onclick=confirmDropped;
+}
+async function confirmDropped(){
+  if((state.photos.Unloaded_Images||[]).length<4){ toast("4 unloaded photos required","err"); return; }
+  if((state.photos.Handover_Image||[]).length<1){ toast("Handover photo required","err"); return; }
+  if((state.photos.VCRF_Image||[]).length<1){ toast("VCRF image required","err"); return; }
+  const name=$("handoverName").value.trim();
+  const number=$("handoverNumber").value.trim();
+  const designation=$("handoverDesignation").value;
+  if(!name || !number || !designation){ toast("Handover name, number and location are all required","err"); return; }
+  setDisabled("droppedBtn",true);
+  try{
+    const r=state.current;
+    await apiUpdate(r.ID, {
+      Handover_to_Name:name, Handover_to_Number:number, Handover_to_Designation:designation,
+      // "Route to Action 8 (Final Payment Collection)" per the spec — same
+      // REMAINING FEE DUE status the RSR path's Work Completed also sets,
+      // since Action 8 is explicitly common to both branches.
+      Status:"REMAINING FEE DUE",
+      // Action 7c mock: "Capture Time of click of 'DROPPED' button as the
+      // 'work complete time'" — reusing the same shared RSP_Completion_Time
+      // as RSR's Work Completed/Cx Reject and TOW Loading's own Cx Reject.
+      RSP_Completion_Time: fmtDateTime(new Date())
+    });
+    await uploadPendingPhotos(r.ID);
+    toast("Dropped — routed to payment","ok");
+    goToStatus("REMAINING FEE DUE");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("droppedBtn",false); }
+}
+
+/* ===== Action 8: Final Payment Collection (shared RSR & TOW) ===== */
+function renderPaymentScreen(){
+  const r=state.current;
+  const remaining=Number(r.Remaining_Fee)||0;
+  const alreadySuccess=String(r.Payment_Status||"").toLowerCase()==="success";
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
+      <div class="fld"><label>Payment Method</label>
+        <select id="paymentMethod1">
+          <option value="Payment Gateway" selected>Payment Gateway</option>
+          <option value="Direct">Direct</option>
+          <option value="Cash">Cash</option>
+        </select>
+      </div>
+      <div id="qrBlock" style="text-align:center;margin:10px 0">
+        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
+      </div>
+      <div id="receiptBlock" style="display:none">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
+      <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"Success":"Pending"}" readonly></div>
+    </div>
+    <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
+  wirePhotoField("Upload_Photo_of_receipt",1);
+  const methodEl=$("paymentMethod1");
+  function syncMethod(){
+    const gateway=methodEl.value==="Payment Gateway";
+    $("qrBlock").style.display=gateway?"":"none";
+    $("receiptBlock").style.display=gateway?"none":"";
+    refreshPayButton();
+  }
+  methodEl.onchange=syncMethod; syncMethod();
+  function refreshPayButton(){
+    const gateway=methodEl.value==="Payment Gateway";
+    const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
+    // See technicianTicket's own comment on this exact block — same
+    // Payment_Status Pending/Success logic, not repeated here.
+    const success = alreadySuccess || (!gateway && receiptOk);
+    $("paymentStatusDisplay").value = success ? "Success" : "Pending";
+    $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
+  }
+  document.getElementById("ascreenBody").addEventListener("click", refreshPayButton);
+  $("paymentReceivedBtn").onclick=confirmPaymentReceived;
+}
+async function confirmPaymentReceived(){
+  setDisabled("paymentReceivedBtn",true);
+  try{
+    const r=state.current;
+    // See technicianTicket's own comment — Payment_Status always written
+    // "Success" here since clicking this button is itself the attestation.
+    await apiUpdate(r.ID, { Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"Success", Status:"RSP CLOSED" });
+    await uploadPendingPhotos(r.ID);
+    toast("Payment recorded — job closed","ok");
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
+}
+
+function photoFieldHtml(fieldName,label,min,max){
+  return `<div class="photo-field" id="pf_${fieldName}">
+    <div class="lab"><span class="l">${esc(label)}</span><span class="cnt" id="pf_${fieldName}_cnt">0 / ${min>0?("min "+min):("up to "+max)}</span></div>
+    <div class="photo-grid" id="pf_${fieldName}_grid"></div>
+  </div>`;
+}
+function wirePhotoField(fieldName,max){ renderPhotoGrid(fieldName,max); }
+function renderPhotoGrid(fieldName,max){
+  const files=state.photos[fieldName]||[];
+  const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
+  let html="";
+  files.forEach(function(f,i){
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
+  });
+  if(files.length<max){ html+=`<div class="photo-slot add" id="pf_${fieldName}_add">📷</div>`; }
+  grid.innerHTML=html;
+  const addEl=$("pf_"+fieldName+"_add");
+  if(addEl) addEl.onclick=function(){ openCamera(fieldName,max); };
+  grid.querySelectorAll(".rm").forEach(function(btn){
+    btn.onclick=function(){ files.splice(Number(btn.dataset.i),1); renderPhotoGrid(fieldName,max); };
+  });
+  const cntEl=$("pf_"+fieldName+"_cnt");
+  const minLabel=cntEl?cntEl.textContent.split("/")[1]:"";
+  if(cntEl) cntEl.textContent=files.length+" /"+minLabel;
+}
+async function uploadPendingPhotos(recordId){
+  for(const fieldName in state.photos){
+    const files=state.photos[fieldName]||[];
+    for(let i=0;i<files.length;i++){ await apiUpload(recordId, fieldName, files[i]); }
+  }
+}
+
+let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
+function getPositionSafe(){
+  return new Promise(function(res){
+    if(!navigator.geolocation){ res(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      // Real bug fixed (2026-08-03) — see technicianTicket's own comment on
+      // this same function. Rounded to 15 decimal places via toFixed() (the
+      // fields were widened to 15 places the same day) — not Math.round(x*1e15),
+      // which can exceed Number.MAX_SAFE_INTEGER for lat/lon-sized values.
+      function(pos){ res({lat:Number(pos.coords.latitude.toFixed(15)), lon:Number(pos.coords.longitude.toFixed(15))}); },
+      function(){ res(null); },
+      { enableHighAccuracy:true, timeout:8000 }
+    );
+  });
+}
+async function openCamera(fieldName,max){
+  currentPhotoField=fieldName; currentPhotoMax=max;
+  try{
+    cameraStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:"environment"}, audio:false });
+    $("cameraVideo").srcObject=cameraStream;
+    $("cameraModal").classList.add("on");
+  }catch(e){
+    toast("Camera unavailable — pick a photo instead","err");
+    $("cameraFallbackInput").onchange=function(){
+      const f=$("cameraFallbackInput").files[0]; if(!f) return;
+      state.photos[fieldName]=state.photos[fieldName]||[];
+      state.photos[fieldName].push(f);
+      renderPhotoGrid(fieldName,max);
+      $("cameraFallbackInput").value="";
+    };
+    $("cameraFallbackInput").click();
+  }
+}
+function closeCamera(){
+  if(cameraStream){ cameraStream.getTracks().forEach(function(t){ t.stop(); }); cameraStream=null; }
+  $("cameraModal").classList.remove("on");
+}
+async function capturePhoto(){
+  const video=$("cameraVideo");
+  const canvas=document.createElement("canvas");
+  canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
+  const ctx=canvas.getContext("2d");
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const pos=await getPositionSafe();
+  const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
+  const lonText = pos ? pos.lon.toFixed(6) : "";
+  const barH=56, pad=14;
+  ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,canvas.height-barH,canvas.width,barH);
+  ctx.fillStyle="#fff"; ctx.font="16px monospace";
+  ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, canvas.height-barH+22);
+  ctx.fillText(new Date().toLocaleString(), pad, canvas.height-barH+42);
+  canvas.toBlob(function(blob){
+    if(!blob) return;
+    const file=new File([blob], currentPhotoField+"_"+Date.now()+".jpg", {type:"image/jpeg"});
+    state.photos[currentPhotoField]=state.photos[currentPhotoField]||[];
+    state.photos[currentPhotoField].push(file);
+    closeCamera();
+    renderPhotoGrid(currentPhotoField,currentPhotoMax);
+  }, "image/jpeg", 0.85);
+}
+$("cameraCancel").onclick=closeCamera;
+$("cameraShutter").onclick=capturePhoto;
+
+let currentTechRecord=null;
+async function loadAvailability(){
+  if(!LOGIN_EMAIL) return;
+  // max_records only accepts 200/500/1000 (Zoho error 9250) — was passing 1,
+  // which broke boot() for every driver (loadAvailability runs before
+  // loadDashboard). Fixed 2026-07-31.
+  const recs=await apiGetReport(CONFIG.techReport, '('+CONFIG.techEmailField+' == "'+LOGIN_EMAIL+'")', 200);
+  if(!recs.length) return;
+  currentTechRecord={ id:recs[0].ID, data:recs[0] };
+  MY_TECH_NAME=recs[0][CONFIG.techNameField]||"";
+  $("techName").textContent=MY_TECH_NAME||"Driver";
+  const isOnline=String(recs[0][CONFIG.techStatusField])==="Online";
+  $("availToggle").classList.toggle("on", isOnline);
+}
+async function onToggleClick(){
+  if(!currentTechRecord) return;
+  const el=$("availToggle");
+  const wantOnline=!el.classList.contains("on");
+  el.classList.toggle("on", wantOnline);
+  el.classList.add("locked");
+  try{
+    const fn=resolve("updateRecordById"); if(!fn) throw new Error("unavailable");
+    const payload={}; payload[CONFIG.techStatusField]=wantOnline?"Online":"Offline";
+    await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
+    toast(wantOnline?"You're online":"You're offline","ok");
+  }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
+  finally{ el.classList.remove("locked"); }
+}
+$("availToggle").onclick=onToggleClick;
+
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function pad(n){ return n<10?"0"+n:""+n; }
+function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":00"; }
+
+$("backBtn").onclick=backToDashboard;
+async function boot(){
+  try{
+    const params=await ZOHO.CREATOR.UTIL.getInitParams();
+    LOGIN_EMAIL=(params&&params.loginUser)||"";
+  }catch(e){ console.warn("getInitParams failed", e); }
+  await loadAvailability();
+  await loadDashboard();
+}
+function waitForSDK(attempt){
+  attempt=attempt||0;
+  if(sdkReady()){ SDK_READY=true; boot(); return; }
+  if(attempt>50){ console.error("ZOHO.CREATOR not ready — running with no live data"); loadDashboard(); return; }
+  setTimeout(function(){ waitForSDK(attempt+1); }, 200);
+}
+waitForSDK();
+</script>
+</body>
+</html>

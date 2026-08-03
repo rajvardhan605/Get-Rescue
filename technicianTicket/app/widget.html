@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Get-Rescue · Technician</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Same design tokens as getRescueTicket/toggleGetRescue — kept identical
+   across every Get-Rescue widget on purpose (2026-07-31: "the theme will be
+   same"), not re-derived here. */
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA; --purple:#7A5AF8; --purple-soft:#ECE7FE;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:520px;margin:0 auto;padding:14px 14px 100px}
+img,svg{max-width:100%}
+
+/* ---------- topbar: brand + online/offline toggle (folded in, 2026-07-31 —
+   no separate toggle widget for these three profiles) ---------- */
+.topbar{display:flex;align-items:center;gap:12px;background:var(--ink);border-radius:16px;padding:12px 14px;box-shadow:var(--sh-1);position:sticky;top:8px;z-index:30;margin-bottom:14px}
+.brand{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
+.brand .mk{width:32px;height:32px;border-radius:9px;background:var(--signal);display:grid;place-items:center;flex:none;box-shadow:0 3px 10px rgba(241,90,34,.4)}
+.brand .mk svg{width:18px;height:18px}
+.brand b{font-family:var(--f-disp);font-weight:900;font-size:16px;color:#fff;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand span{display:block;font-family:var(--f-mono);font-size:9.5px;color:rgba(255,255,255,.55);letter-spacing:.06em;text-transform:uppercase;margin-top:1px}
+.toggle{flex:none;position:relative;width:96px;height:32px;border-radius:999px;background:var(--stop);box-shadow:inset 0 1px 3px rgba(20,22,28,.2);cursor:pointer;transition:background .25s}
+.toggle.on{background:var(--ok)}
+.toggle .lab{position:absolute;top:50%;transform:translateY(-50%);font-family:var(--f-disp);font-weight:700;font-size:11px;color:#fff;pointer-events:none}
+.toggle .lab.off{right:11px} .toggle .lab.on{left:11px;display:none}
+.toggle.on .lab.on{display:block} .toggle.on .lab.off{display:none}
+.toggle .knob{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(20,22,28,.3);transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
+.toggle.on .knob{transform:translateX(64px)}
+.toggle.locked{opacity:.6;pointer-events:none}
+
+/* ---------- section headings / cards ---------- */
+.sec-head{display:flex;align-items:center;gap:8px;margin:6px 2px 10px}
+.sec-head h2{font-family:var(--f-disp);font-size:18px;font-weight:800}
+.sec-head .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted);background:var(--worktop);padding:3px 9px;border-radius:999px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);padding:16px;margin-bottom:12px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);padding:14px 16px;margin-bottom:11px;cursor:pointer;transition:.12s}
+.tcard:active{background:var(--worktop)}
+.tcard .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px}
+.tcard .cid{font-family:var(--f-mono);font-size:11px;color:var(--muted);background:var(--worktop);padding:3px 9px;border-radius:999px;flex:none}
+.tcard h3{font-family:var(--f-disp);font-size:17px;font-weight:800;margin:2px 0 3px}
+.tcard .meta{font-size:12.5px;color:var(--muted)}
+.st{display:inline-flex;align-items:center;gap:5px;font-family:var(--f-mono);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:4px 9px;border-radius:999px;white-space:nowrap}
+.st::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.st.invite{background:var(--purple-soft);color:#5a3fd6}
+.st.otw{background:var(--info-soft);color:#1d5fc0}
+.st.wip{background:var(--signal-soft);color:var(--signal-deep)}
+.st.pay{background:var(--wait-soft);color:#a85a06}
+.empty-state{text-align:center;padding:50px 16px;color:var(--muted)}
+.empty-state h3{font-family:var(--f-disp);font-size:17px;color:var(--text);margin:10px 0 4px}
+.spin{width:30px;height:30px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);animation:spin .7s linear infinite;margin:30px auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- action screen ---------- */
+#actionScreen.off{display:none}
+.ascreen-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.back-x{border:0;background:var(--worktop);width:34px;height:34px;border-radius:9px;cursor:pointer;color:var(--muted);display:grid;place-items:center;flex:none}
+.ascreen-top h2{font-family:var(--f-disp);font-size:19px;font-weight:900;flex:1}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;margin-bottom:6px}
+.info-grid .full{grid-column:1/-1}
+.info-grid .k{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:2px}
+.info-grid .v{font-size:14px;font-weight:600}
+.nav-link{display:flex;align-items:center;justify-content:center;gap:9px;background:var(--info-soft);color:#1d5fc0;border-radius:11px;padding:12px;font-family:var(--f-disp);font-weight:800;font-size:14px;text-decoration:none;margin:6px 0}
+
+/* ---------- photo grid (multi-capture with min/max) ---------- */
+.photo-field{margin:12px 0}
+.photo-field .lab{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.photo-field .lab .l{font-family:var(--f-disp);font-weight:800;font-size:13.5px}
+.photo-field .lab .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
+.photo-field .lab .cnt.ok{color:var(--ok)}
+.photo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.photo-slot{aspect-ratio:1;border-radius:10px;overflow:hidden;position:relative;background:var(--worktop)}
+.photo-slot img{width:100%;height:100%;object-fit:cover;display:block}
+.photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
+.photo-slot.add:active{background:var(--worktop)}
+.photo-slot .rm{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(20,22,28,.65);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:11px}
+
+/* ---------- form fields (radio/select/input reused) ---------- */
+.fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.fld label{font-family:var(--f-disp);font-weight:700;font-size:13.5px}
+.fld input,.fld select,.fld textarea{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;font-family:var(--f-body);color:var(--text);background:#fff;outline:0;width:100%}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+.fld textarea{min-height:70px;resize:vertical}
+.radio-set{display:flex;flex-wrap:wrap;gap:8px}
+.radio-set .opt{border:1.5px solid var(--line-strong);border-radius:9px;padding:10px 15px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;background:#fff;user-select:none}
+.radio-set .opt.sel{border-color:var(--signal);background:var(--signal-soft);color:var(--signal-deep)}
+
+/* ---------- buttons ---------- */
+.btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:15px;letter-spacing:.02em;padding:14px 18px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;transition:.15s}
+.btn svg{width:18px;height:18px}
+.btn.primary{background:var(--signal);color:#fff;box-shadow:0 4px 12px rgba(241,90,34,.34)}
+.btn.primary:active{background:var(--signal-deep)}
+.btn.ok{background:var(--ok);color:#fff}
+.btn.danger{background:#fff;color:var(--stop);border:1.5px solid var(--stop)}
+.btn.ghost{background:transparent;color:var(--text);border:1.5px solid var(--line-strong)}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.btn-row{display:flex;gap:9px;margin-top:16px}
+.btn-row .btn{flex:1}
+
+/* ---------- camera modal ---------- */
+.modal{position:fixed;inset:0;background:rgba(10,11,14,.92);display:none;align-items:center;justify-content:center;z-index:70;flex-direction:column}
+.modal.on{display:flex}
+#cameraVideo{width:100%;max-width:520px;flex:1;object-fit:cover;background:#000}
+.camera-bar{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;width:100%;max-width:520px}
+.cam-btn{width:56px;height:56px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.35);cursor:pointer}
+.cam-x{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.15);color:#fff;border:0;cursor:pointer;font-size:18px}
+.cam-hint{color:rgba(255,255,255,.7);font-family:var(--f-mono);font-size:11px;text-align:center;padding:8px 20px}
+
+/* ---------- toast ---------- */
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mk"><svg viewBox="0 0 24 24" fill="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="#fff"/></svg></span>
+      <span><b id="techName">Technician</b><span>Get-Rescue</span></span>
+    </div>
+    <div class="toggle" id="availToggle" role="switch" aria-label="Toggle availability">
+      <span class="lab off">Offline</span><span class="lab on">Online</span>
+      <span class="knob"></span>
+    </div>
+  </div>
+
+  <div id="dashboard">
+    <div class="sec-head"><h2>My Tickets</h2><span class="cnt" id="ticketCount">0</span></div>
+    <div id="ticketList"></div>
+  </div>
+
+  <div id="actionScreen" class="off">
+    <div class="ascreen-top">
+      <button class="back-x" id="backBtn" type="button" aria-label="Back to my tickets"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <h2 id="ascreenTitle">—</h2>
+    </div>
+    <div class="card">
+      <div class="info-grid" id="ticketInfo"></div>
+    </div>
+    <div id="ascreenBody"></div>
+  </div>
+</div>
+
+<!-- camera modal: getUserMedia preview + GPS/timestamp-watermarked capture.
+     Falls back to a plain <input type=file capture> if the camera/permission
+     isn't available (see openCamera()) — best-effort, per the spec's own
+     "error handling and fallback prompts" requirement. Only verifiable on a
+     real device/browser with camera+location permissions; not exercised by
+     the isolated Node logic tests used elsewhere in this build. -->
+<div class="modal" id="cameraModal">
+  <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="cam-hint" id="cameraHint">Center the shot, then tap to capture</div>
+  <div class="camera-bar">
+    <button class="cam-x" id="cameraCancel" type="button" aria-label="Cancel">✕</button>
+    <button class="cam-btn" id="cameraShutter" type="button" aria-label="Capture photo"></button>
+    <span style="width:40px"></span>
+  </div>
+</div>
+<input type="file" id="cameraFallbackInput" accept="image/*" capture="environment" style="display:none">
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   GET-RESCUE · TECHNICIAN WIDGET (RSR field flow)
+   Built 2026-07-31 from a "PROMPT FOR WIDGET CODE GENERATION" spec, the same
+   session's Screen-by-Screen Flow Atlas, and the confirmed answers below.
+   User-confirmed decisions this build relies on:
+   - Data source is Create_Case ONLY (the prompt's own "Invites" form is
+     NOT used — user explicitly said "no only use create case form only").
+   - No Google Maps API key yet — calcDistanceETA() below is a Haversine
+     straight-line stand-in (same approach getRescueTicket already uses
+     everywhere else), clearly marked for a real Distance Matrix API swap
+     once a key is provided.
+   - Every field here mirrors what the agent-facing getRescueTicket widget
+     already reads/writes for the SAME Create_Case fields (Status values,
+     ETA/Distance/Image_Upload* names) so both widgets stay consistent.
+   Same theme/design tokens as every other Get-Rescue widget, same
+   resolve()/apiGet/apiUpdate/apiUpload data-layer pattern as getRescueTicket
+   (not reinvented) plus toggleGetRescue's own toggle logic folded directly
+   into this widget (per explicit request — no separate toggle widget for
+   Vendor/Technician/Driver).
+   ===================================================================== */
+const CONFIG = {
+  appName: "get-rescue",
+  formName: "Create_Case",
+  reportName: "Agent_Ticket_Report",
+  stageField: "Status",
+  caseIdField: "Case_ID",
+  serviceTypeField: "Service_Type",
+  nameField: "Customer_Name",
+  phoneField: "Phone_Number",
+  vehicleField: "Vehicle",
+  /* "assigned to me" — tries every field name this role's email could
+     plausibly be stored under across the stages that set it (assignment
+     vs. acceptance) — NOT confirmed live, same defensive multi-candidate
+     pattern CONFIG.vendorFieldCandidates already uses in getRescueTicket. */
+  myEmailFieldCandidates: ["Assigned_Technician_Email","Technician_Email"],
+  /* toggle target — same report/field toggleGetRescue already reads/writes,
+     folded directly into this widget per explicit request. */
+  techReport: "technicians_Report",
+  techStatusField: "Availability_Status",
+  techEmailField: "Email",
+  techNameField: "technician_name",
+  // Invites (2026-08-03, user-confirmed — "invite covers all"): the same
+  // Invites/Invites_Report mechanism getRescueTicket uses for vendor invites
+  // is reused for technicians too, via vendorTicket's own fleet hand-off
+  // (assignTechnician) creating one Invites record with Vendor -> this
+  // technician's own technicians_Report record. Used here to find "my
+  // tickets" the same way vendorTicket does — see loadDashboard().
+  invitesReport: "Invites_Report"
+};
+/* Statuses this dashboard shows — RSR-only, and only the ones a technician
+   still has an open action for. "REMAINING FEE DUE" (Work Completed's own
+   target status per the flow-generation prompt) does NOT match either of
+   getRescueTicket's own two guesses for the `payment` stage ("RSP COMPLETE"
+   was the working guess, "RSP CLOSED" the flagged alternative) — this is
+   new, better evidence and is used here as given; see QUESTIONS_TO_ASK.md
+   for reconciling it back into getRescueTicket's own STAGES table. */
+const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","WORK IN PROGRESS","REMAINING FEE DUE"];
+const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228; // same static office coords as getRescueTicket — see its own README caveat
+
+/* ---------- SDK boot (no ZOHO.CREATOR.init in this SDK build) ---------- */
+let SDK_READY=false, LOGIN_EMAIL="", MY_TECH_NAME="";
+function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams==="function"; }
+function resolve(method){
+  const C=window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces=[C.DATA,C.PUBLISH,C.META,C.UTIL,C.FILE];
+  for(let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function apiGetReport(report, criteria, max){
+  const fn=resolve("getRecords"); if(!fn) return [];
+  const cfg={ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||200 };
+  if(criteria) cfg.criteria=criteria;
+  try{ const r=await fn(cfg); return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : []; } catch(e){ return []; }
+}
+async function apiUpdate(id, data){ return apiUpdateReport(CONFIG.reportName, id, data); }
+async function apiUpdateReport(report, id, data){
+  const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
+  const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
+  if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
+  return true;
+}
+// Writes to THIS technician's own Invites record for a given ticket — see
+// vendorTicket's own updateMyInvite() for the fuller comment (same pattern).
+async function updateMyInvite(ticketId, data){
+  const invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
+  if(!invite || invite.ID==null) return;
+  try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
+  catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
+}
+async function apiUpload(id, fieldName, file){
+  const fn=resolve("uploadFile"); if(!fn || !file) return false;
+  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
+  catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
+}
+
+/* ---------- distance/ETA — Haversine stand-in for Google Maps Distance
+   Matrix API (see this file's header comment) ---------- */
+function haversineKm(lat1,lon1,lat2,lon2){
+  const toRad=function(d){ return d*Math.PI/180; };
+  const R=6371;
+  const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+const ASSUMED_SPEED_KMH=30; // crude flat-average-road-speed guess, purely to turn a straight-line distance into *some* ETA number until the real API is wired in
+function calcDistanceETA(fromLat,fromLon,toLat,toLon){
+  if([fromLat,fromLon,toLat,toLon].some(function(n){ return n==null || isNaN(n); })) return null;
+  const distanceKm=Math.round(haversineKm(fromLat,fromLon,toLat,toLon)*10)/10;
+  const etaMins=Math.max(1, Math.round((distanceKm/ASSUMED_SPEED_KMH)*60));
+  return { distanceKm:distanceKm, etaMins:etaMins };
+}
+function calcRoundTripKm(bLat,bLon,dLat,dLon){
+  let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
+  if(dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon)){
+    total+=haversineKm(bLat,bLon,dLat,dLon);
+    total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON);
+  } else {
+    total+=haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON);
+  }
+  return Math.round(total*10)/10;
+}
+
+/* ---------- helpers ---------- */
+const $=(id)=>document.getElementById(id);
+// Real bug fixed (2026-08-03) — see vendorTicket's own comment on this same
+// helper. Guards against "Cannot set properties of null (setting 'disabled')"
+// when an action's `finally` block runs after navigation already destroyed
+// that button's DOM element.
+function setDisabled(id,val){ const el=$(id); if(el) el.disabled=val; }
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
+function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
+// Lookup fields (RSID/Vendor on Invites) come back from Creator as objects.
+function unwrapLookup(v){
+  if(v==null) return v;
+  if(Array.isArray(v)) return v.map(unwrapLookup);
+  if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||v.ID||"";
+  return v;
+}
+function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
+let toastT=null;
+function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
+/* find whichever candidate field on a record matches the logged-in user's
+   email — case-insensitive, first match wins */
+function isMine(rec){
+  if(!LOGIN_EMAIL) return true; // no login context (e.g. demo/preview) — show everything rather than nothing
+  if(CONFIG.myEmailFieldCandidates.some(function(f){ return String(rec[f]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); })) return true;
+  // Technician_Emails (2026-07-31, per user request): hidden, comma-separated
+  // field vendorTicket's fleet hand-off now populates alongside Assigned_Technician_Email.
+  const emails=String(rec.Technician_Emails||"").split(",").map(function(e){ return e.trim().toLowerCase(); });
+  return emails.indexOf(LOGIN_EMAIL.trim().toLowerCase())>=0;
+}
+
+/* ---------- state ---------- */
+const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{} };
+
+/* ---------- dashboard ---------- */
+// Invites-based matching (2026-08-03) — same pattern as vendorTicket's own
+// loadMyInvites(): vendorTicket's fleet hand-off creates an Invites record
+// (Vendor -> this technician's own technicians_Report ID) when assigning a
+// technician. Kept as a fallback alongside the older email-match (isMine())
+// so nothing that used to show up silently disappears.
+async function loadMyInvites(){
+  const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+  console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; MY_TECH_NAME="+MY_TECH_NAME);
+  const mine = all.filter(function(inv){
+    const vName=String(unwrapLookup(inv.Vendor)||"").trim().toLowerCase();
+    return MY_TECH_NAME && vName===MY_TECH_NAME.trim().toLowerCase();
+  });
+  console.log("[Get-Rescue] loadMyInvites: "+mine.length+" match MY_TECH_NAME", mine);
+  const map={};
+  mine.forEach(function(inv){ const tid=lookupId(inv.RSID); if(tid!=null) map[String(tid)]=inv; });
+  return map;
+}
+async function loadDashboard(){
+  $("ticketList").innerHTML='<div class="spin"></div>';
+  let inviteMap={};
+  try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[Get-Rescue] loadMyInvites failed (falling back to email match only)", e); }
+  state.inviteByTicketId = inviteMap;
+  const criteria = '(Service_Type == "RSR")';
+  const recs = await apiGetReport(CONFIG.reportName, criteria, 200);
+  state.tickets = recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; })
+    .filter(function(r){ return inviteMap[String(r.ID)]!=null || isMine(r); });
+  renderDashboard();
+}
+const STATUS_PILL = {
+  "RSP IRA (INVITE RESPONSE AWAITED)": {cls:"invite", label:"New Invite"},
+  "RSP ON THE WAY": {cls:"otw", label:"On The Way"},
+  "WORK IN PROGRESS": {cls:"wip", label:"In Progress"},
+  "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"}
+};
+function renderDashboard(){
+  $("ticketCount").textContent=state.tickets.length;
+  if(!state.tickets.length){
+    $("ticketList").innerHTML='<div class="empty-state"><h3>No open tickets</h3><p>New invites and active jobs will show up here.</p></div>';
+    return;
+  }
+  $("ticketList").innerHTML = state.tickets.map(function(r){
+    const st = String(r[CONFIG.stageField]||"").trim().toUpperCase();
+    const pill = STATUS_PILL[st] || {cls:"", label:st};
+    return `<div class="tcard" data-id="${esc(r.ID)}">
+      <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
+      <h3>${esc(readVal(r,CONFIG.vehicleField)||"Vehicle")}</h3>
+      <div class="meta">${esc(readVal(r,"Vehicle_Issue")||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll(".tcard").forEach(function(el){
+    el.onclick=function(){ openTicket(el.dataset.id); };
+  });
+}
+function openTicket(id){
+  const rec = state.tickets.find(function(r){ return String(r.ID)===String(id); });
+  if(!rec) return;
+  state.current = Object.assign({}, rec);
+  state.photos = {}; state.files = {};
+  $("dashboard").classList.add("off"); $("dashboard").style.display="none";
+  $("actionScreen").classList.remove("off");
+  renderActionScreen();
+}
+function backToDashboard(){
+  $("actionScreen").classList.add("off");
+  $("dashboard").style.display=""; $("dashboard").classList.remove("off");
+  loadDashboard();
+}
+/* Moves straight into the next action screen for the SAME ticket, instead of
+   dropping back to the dashboard list — matches the Action 5 flow spec's own
+   "navigate to X page" wording (2026-07-31), e.g. Accept explicitly navigates
+   to "Reach Breakdown Location", not back to "My Tickets". Only used for
+   transitions where this technician's own involvement continues on the next
+   screen; Reject/Cancel/Payment-Received still call backToDashboard() since
+   the job is over (or handed elsewhere) at that point. */
+function goToStatus(newStatus){
+  state.current[CONFIG.stageField]=newStatus;
+  renderActionScreen();
+}
+function renderTicketInfo(){
+  const r=state.current;
+  const loc = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? (r.Latitude+", "+r.Longitude) : "");
+  const rows=[
+    ["Case ID", caseLabel(r)],
+    ["Customer", readVal(r,CONFIG.nameField)],
+    ["Phone", r[CONFIG.phoneField]||""],
+    ["Vehicle", readVal(r,CONFIG.vehicleField)],
+    ["Location", loc],
+    ["Issue", readVal(r,"Vehicle_Issue")]
+  ].filter(function(p){ return p[1]; });
+  $("ticketInfo").innerHTML = rows.map(function(p){ return `<div><span class="k">${esc(p[0])}</span><span class="v">${esc(p[1])}</span></div>`; }).join("");
+}
+
+/* ---------- per-status action screen router ---------- */
+function renderActionScreen(){
+  renderTicketInfo();
+  const st=String(state.current[CONFIG.stageField]||"").trim().toUpperCase();
+  if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance"; renderAcceptScreen(); }
+  else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown Location"; renderReachScreen(); }
+  else if(st==="WORK IN PROGRESS"){ $("ascreenTitle").textContent="Work In Progress"; renderWipScreen(); }
+  else if(st==="REMAINING FEE DUE"){ $("ascreenTitle").textContent="Final Payment"; renderPaymentScreen(); }
+  else { $("ascreenBody").innerHTML='<div class="empty-state"><p>Nothing to do on this ticket right now.</p></div>'; }
+}
+
+/* ===== Action 5: Service Acceptance & Rejection ===== */
+function renderAcceptScreen(){
+  $("ascreenBody").innerHTML = `
+    <div class="btn-row">
+      <button class="btn danger" id="rejectBtn" type="button">Reject</button>
+      <button class="btn ok" id="acceptBtn" type="button">Accept Service</button>
+    </div>
+    <div class="card" id="rejectPanel" style="display:none;margin-top:12px">
+      <div class="fld"><label>Reject Reason<span style="color:var(--stop)">*</span></label>
+        <select id="rejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromRejectBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmRejectBtn" type="button">RSP Reject</button>
+      </div>
+    </div>`;
+  $("acceptBtn").onclick=acceptService;
+  $("rejectBtn").onclick=()=>{ $("rejectPanel").style.display="block"; };
+  $("backFromRejectBtn").onclick=()=>{ $("rejectPanel").style.display="none"; };
+  $("confirmRejectBtn").onclick=rejectService;
+}
+async function acceptService(){
+  setDisabled("acceptBtn",true);
+  try{
+    const pos = await getPositionSafe();
+    const r=state.current;
+    const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+    const dist = pos ? calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
+    const payload={
+      Service_Acceptance: fmtDateTime(new Date()),
+      Status: "RSP ON THE WAY"
+    };
+    if(dist){ payload.ETA=dist.etaMins; payload.Distance_To_Breakdown=dist.distanceKm; }
+    // Persisted so Action 6's Cancel flow can later compute "distance from RSP
+    // Start location to present location" (per its own flow spec, 2026-07-31)
+    // — this technician's own location was previously only used transiently
+    // to compute the breakdown ETA/distance above, never saved anywhere.
+    // Field names guessed, not confirmed — see FIELDS.md/QUESTIONS_TO_ASK.md.
+    // Set on both the payload (persisted) AND state.current (r) itself — the
+    // ticket stays open in-session (goToStatus, not a re-fetch), so Cancel
+    // needs to read this back off r without requiring a reopen.
+    if(pos){ payload.RSP_Start_Latitude=pos.lat; payload.RSP_Start_Longitude=pos.lon; r.RSP_Start_Latitude=pos.lat; r.RSP_Start_Longitude=pos.lon; }
+    // Diagnostic logging (2026-08-03, user still seeing "exceeded its maximum
+    // digits" after the toFixed(15) fix) — logs the exact values/types being
+    // sent, including their raw string form, so the actual digit count is
+    // visible (typeof/JSON.stringify can hide trailing zeros or reveal if a
+    // value is a string vs. a number, either of which could matter here).
+    console.log("[Get-Rescue] acceptService payload:", JSON.stringify(payload), "| pos:", pos, "| RSP_Start_Latitude raw:", payload.RSP_Start_Latitude, typeof payload.RSP_Start_Latitude, String(payload.RSP_Start_Latitude), "| RSP_Start_Longitude raw:", payload.RSP_Start_Longitude, typeof payload.RSP_Start_Longitude, String(payload.RSP_Start_Longitude));
+    await apiUpdate(r.ID, payload);
+    // Invites (2026-08-03) — see vendorTicket's own acceptService() comment.
+    // 2026-08-03: see vendorTicket's own comment on this same call — a
+    // boolean `true` was confirmed rejected live, switched to "Yes".
+    updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes" });
+    toast("Service accepted","ok");
+    // Navigates straight to "Reach Breakdown Location" per the flow spec —
+    // see goToStatus()'s own comment.
+    goToStatus("RSP ON THE WAY");
+  }catch(e){ console.error("[Get-Rescue] acceptService error:", e); toast((e&&e.message)||"Could not accept","err"); }
+  finally{ setDisabled("acceptBtn",false); }
+}
+async function rejectService(){
+  const reason=$("rejectReason").value;
+  if(!reason){ toast("Please pick a reject reason","err"); return; }
+  setDisabled("confirmRejectBtn",true);
+  try{
+    const r=state.current;
+    // "Service_Reject_Time" is its own distinct timestamp per the Action 5
+    // flow spec (2026-07-31) — was previously (incorrectly) reusing
+    // Service_Acceptance for both accept and reject; kept unconfirmed (❓ in
+    // FIELDS.md) since this field name hasn't been independently verified.
+    await apiUpdate(r.ID, { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP REJECT" });
+    // Invites (2026-08-03) — see vendorTicket's own rejectService() comment.
+    updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
+    // best-effort duplicate into Task_Rejections — RSP name + task details,
+    // per the Action 5 flow spec's own instruction ("create a copy of the
+    // rejection with RSP name, times & Task details in Task rejections
+    // table"). Report/field names unconfirmed; deliberately non-blocking (a
+    // logging failure must never block the actual rejection).
+    try{
+      const fn=resolve("addRecords");
+      // Case_ID/Vehicle are real Lookup fields on Task_Rejections (confirmed
+      // 2026-07-31 from the user's own Zoho Studio build) — Lookups need the
+      // linked record's own ID, not a display string. Case_ID -> this
+      // ticket's own Create_Case record ID (r.ID, same ID apiUpdate targets).
+      // Vehicle -> whatever raw value Create_Case's own Vehicle lookup field
+      // came back as on this record, passed through unconverted (this widget
+      // never needed its ID before) — best-effort, verify live. 2026-07-31:
+      // briefly tried wrapping both as {"ID":...} objects, but that broke
+      // saving (see getRescueTicket's idsFor() comment) — reverted.
+      if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
+        Case_ID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
+      } } });
+    }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
+    toast("Rejected","ok");
+    // "navigate to home page of app user" per the flow spec — unlike Accept,
+    // this technician's involvement with this ticket ends here.
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not reject","err"); }
+  finally{ setDisabled("confirmRejectBtn",false); }
+}
+
+/* ===== Action 6: Reach Breakdown Location & Cancel ===== */
+function renderReachScreen(){
+  const r=state.current;
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  $("ascreenBody").innerHTML = `
+    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : ""}
+    <div class="card">
+      <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA||"")}" placeholder="Enter manually if blank"></div>
+      ${photoFieldHtml("Image_Upload2","Arrival Photo",1,1)}
+    </div>
+    <div class="btn-row">
+      <button class="btn ghost" id="cancelTaskBtn" type="button">Cancel Task</button>
+      <button class="btn primary" id="reachedBtn" type="button">Reached Location</button>
+    </div>
+    <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
+      ${photoFieldHtml("Image_Upload2","Cancel Photo",1,1)}
+      <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
+        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmCancelBtn" type="button">RSP Cancel</button>
+      </div>
+    </div>`;
+  wirePhotoField("Image_Upload2",1);
+  $("reachedBtn").onclick=markReached;
+  $("cancelTaskBtn").onclick=()=>{ $("cancelPanel").style.display="block"; };
+  $("backFromCancelBtn").onclick=()=>{ $("cancelPanel").style.display="none"; };
+  $("confirmCancelBtn").onclick=confirmCancel;
+}
+async function markReached(){
+  if((state.photos.Image_Upload2||[]).length<1){ toast("Arrival photo is required","err"); return; }
+  setDisabled("reachedBtn",true);
+  try{
+    const r=state.current;
+    const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+    const rt=calcRoundTripKm(bLat,bLon,Number(r.DropLocationLat),Number(r.DropLocationLong));
+    // ETA: captured automatically at Accept, but the flow spec allows manual
+    // entry here too "if null" — only overrides what's already saved if the
+    // tech actually typed something in.
+    const payload={ Reach_Time: fmtDateTime(new Date()), Roundtrip_Distance: rt, Status:"WORK IN PROGRESS" };
+    const etaVal=$("etaField").value;
+    if(etaVal!=="") payload.ETA=Number(etaVal);
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Marked as reached","ok");
+    goToStatus("WORK IN PROGRESS");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("reachedBtn",false); }
+}
+async function confirmCancel(){
+  const reason=$("cancelReason").value;
+  if(!reason){ toast("Please pick a cancel reason","err"); return; }
+  if((state.photos.Image_Upload2||[]).length<1){ toast("Cancel photo is required","err"); return; }
+  setDisabled("confirmCancelBtn",true);
+  try{
+    const r=state.current;
+    // "Cancellation time" = the click itself; "cancel location" = a fresh GPS
+    // fix at that moment; "RSP distance" = distance from wherever this tech
+    // was at Accept time (RSP_Start_Latitude/Longitude) to right now — per the Action 6
+    // flow spec (2026-07-31). Field names guessed (Cancellation_Time,
+    // Cancel_Location_Lat/Lon, Cancel_Distance) — flagged, not confirmed; kept
+    // distinct from Step 5's own "RSP distance" (Distance_To_Breakdown) since
+    // they're computed from different start/end points, not the same value.
+    const payload={ Cancel_Reason:reason, Status:"RSP CANCELLED", Cancellation_Time: fmtDateTime(new Date()) };
+    const pos = await getPositionSafe();
+    if(pos){
+      payload.Cancel_Location_Lat=pos.lat; payload.Cancel_Location_Lon=pos.lon;
+      const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
+      const dist = !isNaN(startLat) && !isNaN(startLon) ? calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
+      if(dist) payload.Cancel_Distance=dist.distanceKm;
+    }
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Task cancelled","ok");
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not cancel","err"); }
+  finally{ setDisabled("confirmCancelBtn",false); }
+}
+
+/* ===== Action 7: WIP - On Road / RSR ===== */
+function renderWipScreen(){
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      ${photoFieldHtml("Image_Upload3","Pre-service Photos",2,4)}
+      ${photoFieldHtml("Image_Upload4","Post-service Photos",2,4)}
+    </div>
+    <div class="card">
+      <div class="fld"><label>Issue Resolved?<span style="color:var(--stop)">*</span></label>
+        <div class="radio-set" id="issueResolved">
+          <div class="opt" data-value="Yes">Yes</div>
+          <div class="opt" data-value="No">No</div>
+        </div>
+      </div>
+      <!-- The mock's own "Issue not resolved – add voice note?" is phrased as
+           a question (client themselves unsure) — implemented as a plain text
+           note for now rather than real audio recording (a much bigger,
+           unconfirmed feature: mic permission, MediaRecorder, audio upload).
+           Flagged in QUESTIONS_TO_ASK.md, not silently built as real voice
+           capture. -->
+      <div class="fld" id="unresolvedNoteWrap" style="display:none">
+        <label>Issue Not Resolved — Notes</label>
+        <textarea id="unresolvedNote" placeholder="What's still outstanding?"></textarea>
+      </div>
+      <div class="fld"><label>Expense Amount</label><input type="number" id="expenseAmount"></div>
+      ${photoFieldHtml("Expense_Photo","Expense Photo",0,2)}
+    </div>
+    <div class="btn-row">
+      <button class="btn ghost" id="cxRejectBtn" type="button">Customer Reject</button>
+      <button class="btn primary" id="workDoneBtn" type="button">Work Completed</button>
+    </div>
+    <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
+      <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
+        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
+        <button class="btn danger" id="confirmCxRejectBtn" type="button">Service Reject</button>
+      </div>
+    </div>`;
+  wirePhotoField("Image_Upload3",4); wirePhotoField("Image_Upload4",4); wirePhotoField("Expense_Photo",2);
+  document.querySelectorAll("#issueResolved .opt").forEach(function(o){
+    o.onclick=function(){
+      document.querySelectorAll("#issueResolved .opt").forEach(function(x){x.classList.remove("sel");});
+      o.classList.add("sel");
+      $("unresolvedNoteWrap").style.display = o.dataset.value==="No" ? "block" : "none";
+    };
+  });
+  $("workDoneBtn").onclick=workCompleted;
+  $("cxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="block"; };
+  $("backFromCxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="none"; };
+  $("confirmCxRejectBtn").onclick=confirmCxReject;
+}
+async function workCompleted(){
+  const resolved=document.querySelector("#issueResolved .opt.sel");
+  if(!resolved){ toast("Please select whether the issue was resolved","err"); return; }
+  if((state.photos.Image_Upload3||[]).length<2){ toast("At least 2 pre-service photos required","err"); return; }
+  if((state.photos.Image_Upload4||[]).length<2){ toast("At least 2 post-service photos required","err"); return; }
+  setDisabled("workDoneBtn",true);
+  try{
+    const r=state.current;
+    // "RSP_Completion_Time" — per the Action 7 flow spec, BOTH Work Completed
+    // and Service Reject stamp the SAME completion-time field (was
+    // Work_Completed_Time, only ever set from this one button before this
+    // round — renamed/shared 2026-07-31, guessed name, see FIELDS.md).
+    const payload={ RSP_Completion_Time: fmtDateTime(new Date()), Issue_Resolved:resolved.dataset.value, Status:"REMAINING FEE DUE" };
+    if(resolved.dataset.value==="No"){ const note=$("unresolvedNote").value.trim(); if(note) payload.Unresolved_Note=note; }
+    const expenseVal=$("expenseAmount").value;
+    if(expenseVal!=="") payload.Expense_Amount=Number(expenseVal);
+    // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
+    console.log("[Get-Rescue] workCompleted payload:", JSON.stringify(payload));
+    await apiUpdate(r.ID, payload);
+    await uploadPendingPhotos(r.ID);
+    toast("Marked as completed","ok");
+    goToStatus("REMAINING FEE DUE");
+  }catch(e){ console.error("[Get-Rescue] workCompleted error:", e); toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("workDoneBtn",false); }
+}
+async function confirmCxReject(){
+  const reason=$("cxRejectReason").value;
+  if(!reason){ toast("Please pick a rejection reason","err"); return; }
+  setDisabled("confirmCxRejectBtn",true);
+  try{
+    const r=state.current;
+    // Same shared "RSP_Completion_Time" as Work Completed above — per the
+    // flow spec, this button's own click also counts as the completion
+    // moment (nothing else here is mandatory per the mock, just the reason).
+    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Status:"REMAINING FEE DUE" });
+    toast("Saved","ok");
+    goToStatus("REMAINING FEE DUE");
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); }
+  finally{ setDisabled("confirmCxRejectBtn",false); }
+}
+
+/* ===== Action 8: Final Payment Collection (shared RSR & TOW) ===== */
+function renderPaymentScreen(){
+  const r=state.current;
+  const remaining=Number(r.Remaining_Fee)||0;
+  const alreadySuccess=String(r.Payment_Status||"").toLowerCase()==="success";
+  $("ascreenBody").innerHTML = `
+    <div class="card">
+      <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
+      <div class="fld"><label>Payment Method</label>
+        <select id="paymentMethod1">
+          <option value="Payment Gateway" selected>Payment Gateway</option>
+          <option value="Direct">Direct</option>
+          <option value="Cash">Cash</option>
+        </select>
+      </div>
+      <div id="qrBlock" style="text-align:center;margin:10px 0">
+        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
+      </div>
+      <div id="receiptBlock" style="display:none">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
+      <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"Success":"Pending"}" readonly></div>
+    </div>
+    <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
+  wirePhotoField("Upload_Photo_of_receipt",1);
+  const methodEl=$("paymentMethod1");
+  function syncMethod(){
+    const gateway=methodEl.value==="Payment Gateway";
+    $("qrBlock").style.display=gateway?"":"none";
+    $("receiptBlock").style.display=gateway?"none":"";
+    refreshPayButton();
+  }
+  methodEl.onchange=syncMethod; syncMethod();
+  function refreshPayButton(){
+    const gateway=methodEl.value==="Payment Gateway";
+    const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
+    // "Payment Status Pending / Success – Autoupdated if from PG" (Action 8
+    // flow spec, 2026-07-31): non-gateway auto-flips to Success the moment a
+    // receipt photo is attached (a legitimate agent/tech attestation); the
+    // gateway path can only truly flip to Success via a real payment-gateway
+    // webhook, which doesn't exist in this app yet — so `alreadySuccess`
+    // (read from the record itself) is what lets the button enable if some
+    // OTHER real integration already set it, without this code ever having
+    // to fake a completion it can't actually confirm.
+    const success = alreadySuccess || (!gateway && receiptOk);
+    $("paymentStatusDisplay").value = success ? "Success" : "Pending";
+    $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
+  }
+  document.getElementById("ascreenBody").addEventListener("click", refreshPayButton);
+  $("paymentReceivedBtn").onclick=confirmPaymentReceived;
+}
+async function confirmPaymentReceived(){
+  setDisabled("paymentReceivedBtn",true);
+  try{
+    const r=state.current;
+    // Clicking this button IS the payment attestation, so Payment_Status is
+    // always written as "Success" here (whether it got there via a receipt
+    // photo, an already-successful gateway status, or a zero balance) —
+    // see renderPaymentScreen()'s own comment for the non-gateway/gateway
+    // distinction this mirrors. Transaction_ID/Time_Of_Receipt (the mock's
+    // own "transaction ID, time of receipt... captured in their respective
+    // fields" for a real gateway "success") are NOT set here — there's no
+    // real payment-gateway integration in this app yet to source them from
+    // honestly; see QUESTIONS_TO_ASK.md.
+    await apiUpdate(r.ID, { Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"Success", Status:"RSP CLOSED" });
+    await uploadPendingPhotos(r.ID);
+    toast("Payment recorded — job closed","ok");
+    backToDashboard();
+  }catch(e){ toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
+}
+
+/* ---------- multi-photo capture (min/max, camera+GPS watermark) ---------- */
+function photoFieldHtml(fieldName,label,min,max){
+  return `<div class="photo-field" id="pf_${fieldName}">
+    <div class="lab"><span class="l">${esc(label)}</span><span class="cnt" id="pf_${fieldName}_cnt">0 / ${min>0?("min "+min):("up to "+max)}</span></div>
+    <div class="photo-grid" id="pf_${fieldName}_grid"></div>
+  </div>`;
+}
+function wirePhotoField(fieldName,max){
+  renderPhotoGrid(fieldName,max);
+}
+function renderPhotoGrid(fieldName,max){
+  const files=state.photos[fieldName]||[];
+  const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
+  let html="";
+  files.forEach(function(f,i){
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
+  });
+  if(files.length<max){ html+=`<div class="photo-slot add" id="pf_${fieldName}_add">📷</div>`; }
+  grid.innerHTML=html;
+  const addEl=$("pf_"+fieldName+"_add");
+  if(addEl) addEl.onclick=function(){ openCamera(fieldName,max); };
+  grid.querySelectorAll(".rm").forEach(function(btn){
+    btn.onclick=function(){ files.splice(Number(btn.dataset.i),1); renderPhotoGrid(fieldName,max); };
+  });
+  const cntEl=$("pf_"+fieldName+"_cnt");
+  const minLabel=cntEl?cntEl.textContent.split("/")[1]:"";
+  if(cntEl) cntEl.textContent=files.length+" /"+minLabel;
+}
+async function uploadPendingPhotos(recordId){
+  for(const fieldName in state.photos){
+    const files=state.photos[fieldName]||[];
+    for(let i=0;i<files.length;i++){ await apiUpload(recordId, fieldName, files[i]); }
+  }
+}
+
+/* ---------- camera modal: capture -> canvas GPS/timestamp watermark ---------- */
+let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
+function getPositionSafe(){
+  return new Promise(function(res){
+    if(!navigator.geolocation){ res(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      // Real bug fixed (2026-08-03, user-reported live: "RSP_Start_Lon has
+      // exceeded its maximum digits"): the browser's own GPS coordinates can
+      // come back with 17 decimal places, which overflowed the Decimal
+      // fields these get saved into. RSP_Start_Lat/Lon have since been
+      // changed to plain Text fields and renamed RSP_Start_Latitude/
+      // Longitude (2026-08-03, same day) — no digit limit applies to those
+      // two anymore — but Cancel_Location_Lat/Lon and RSP_Drop_Location_Lat/
+      // Lon are still Decimal, so this rounding still matters for those.
+      // Widened to 15 decimal places that same day — rounded to match here
+      // via toFixed() (not Math.round(x*1e15), which can exceed
+      // Number.MAX_SAFE_INTEGER for lat/lon-sized values and silently lose
+      // precision) — same approach getRescueTicket's own roundCoord() uses.
+      function(pos){ res({lat:Number(pos.coords.latitude.toFixed(15)), lon:Number(pos.coords.longitude.toFixed(15))}); },
+      function(){ res(null); },
+      { enableHighAccuracy:true, timeout:8000 }
+    );
+  });
+}
+async function openCamera(fieldName,max){
+  currentPhotoField=fieldName; currentPhotoMax=max;
+  try{
+    cameraStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:"environment"}, audio:false });
+    $("cameraVideo").srcObject=cameraStream;
+    $("cameraModal").classList.add("on");
+  }catch(e){
+    toast("Camera unavailable — pick a photo instead","err");
+    $("cameraFallbackInput").onchange=function(){
+      const f=$("cameraFallbackInput").files[0]; if(!f) return;
+      state.photos[fieldName]=state.photos[fieldName]||[];
+      state.photos[fieldName].push(f);
+      renderPhotoGrid(fieldName,max);
+      $("cameraFallbackInput").value="";
+    };
+    $("cameraFallbackInput").click();
+  }
+}
+function closeCamera(){
+  if(cameraStream){ cameraStream.getTracks().forEach(function(t){ t.stop(); }); cameraStream=null; }
+  $("cameraModal").classList.remove("on");
+}
+async function capturePhoto(){
+  const video=$("cameraVideo");
+  const canvas=document.createElement("canvas");
+  canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
+  const ctx=canvas.getContext("2d");
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const pos=await getPositionSafe();
+  const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
+  const lonText = pos ? pos.lon.toFixed(6) : "";
+  const barH=56, pad=14;
+  ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,canvas.height-barH,canvas.width,barH);
+  ctx.fillStyle="#fff"; ctx.font="16px monospace";
+  ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, canvas.height-barH+22);
+  ctx.fillText(new Date().toLocaleString(), pad, canvas.height-barH+42);
+  canvas.toBlob(function(blob){
+    if(!blob) return;
+    const file=new File([blob], currentPhotoField+"_"+Date.now()+".jpg", {type:"image/jpeg"});
+    state.photos[currentPhotoField]=state.photos[currentPhotoField]||[];
+    state.photos[currentPhotoField].push(file);
+    closeCamera();
+    renderPhotoGrid(currentPhotoField,currentPhotoMax);
+  }, "image/jpeg", 0.85);
+}
+$("cameraCancel").onclick=closeCamera;
+$("cameraShutter").onclick=capturePhoto;
+
+/* ---------- online/offline toggle (folded in from toggleGetRescue) ---------- */
+let currentTechRecord=null;
+async function loadAvailability(){
+  if(!LOGIN_EMAIL) return;
+  // max_records only accepts 200/500/1000 (Zoho error 9250) — was passing 1,
+  // which broke boot() for every technician (loadAvailability runs before
+  // loadDashboard). Fixed 2026-07-31.
+  const recs=await apiGetReport(CONFIG.techReport, '('+CONFIG.techEmailField+' == "'+LOGIN_EMAIL+'")', 200);
+  if(!recs.length) return;
+  currentTechRecord={ id:recs[0].ID, data:recs[0] };
+  MY_TECH_NAME=recs[0][CONFIG.techNameField]||"";
+  $("techName").textContent=MY_TECH_NAME||"Technician";
+  const isOnline=String(recs[0][CONFIG.techStatusField])==="Online";
+  $("availToggle").classList.toggle("on", isOnline);
+}
+async function onToggleClick(){
+  if(!currentTechRecord) return;
+  const el=$("availToggle");
+  const wantOnline=!el.classList.contains("on");
+  el.classList.toggle("on", wantOnline);
+  el.classList.add("locked");
+  try{
+    const fn=resolve("updateRecordById"); if(!fn) throw new Error("unavailable");
+    const payload={}; payload[CONFIG.techStatusField]=wantOnline?"Online":"Offline";
+    await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
+    toast(wantOnline?"You're online":"You're offline","ok");
+  }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
+  finally{ el.classList.remove("locked"); }
+}
+$("availToggle").onclick=onToggleClick;
+
+/* ---------- date formatting (same 24h format getRescueTicket uses for
+   generic datetime fields) ---------- */
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function pad(n){ return n<10?"0"+n:""+n; }
+function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":00"; }
+
+/* ---------- wiring + boot ---------- */
+$("backBtn").onclick=backToDashboard;
+async function boot(){
+  try{
+    const params=await ZOHO.CREATOR.UTIL.getInitParams();
+    LOGIN_EMAIL=(params&&params.loginUser)||"";
+  }catch(e){ console.warn("getInitParams failed", e); }
+  await loadAvailability();
+  await loadDashboard();
+}
+function waitForSDK(attempt){
+  attempt=attempt||0;
+  if(sdkReady()){ SDK_READY=true; boot(); return; }
+  if(attempt>50){ console.error("ZOHO.CREATOR not ready — running with no live data"); loadDashboard(); return; }
+  setTimeout(function(){ waitForSDK(attempt+1); }, 200);
+}
+waitForSDK();
+</script>
+</body>
+</html>

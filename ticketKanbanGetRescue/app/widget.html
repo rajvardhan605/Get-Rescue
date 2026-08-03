@@ -566,7 +566,8 @@ const STAGES = [
     statuses:["RSP IRA (INVITE RESPONSE AWAITED)"], status:"RSP IRA (INVITE RESPONSE AWAITED)",
     fields:[
     { n:"Preferred_Vendor", l:"Preferred Vendor?", t:"radio", o:["Yes","No"] },
-    { n:"Vendors", l:"Vendors", t:"multiselect", o:"@vendors", full:true },
+    // Real Zoho field API name is "Vendors1" (confirmed 2026-07-31 by the user).
+    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendors", full:true, useId:true }, // real Lookup, confirmed 2026-07-31
     { n:"Vendor_Email", l:"Vendor Email", t:"text" },
     { n:"Assignment_Sent", l:"Assignment Sent?", t:"radio", o:["Yes","No"] },
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
@@ -1062,14 +1063,17 @@ function hasLocFlag(r){
   if(lat==null||lat===""||lon==null||lon==="") return false;
   return !isNaN(Number(lat)) && !isNaN(Number(lon));
 }
-/* Vendors' saved shape is a composite "[priority] Name | Phone | Status"
-   string (see §3 in README) — cards should show just the name, not the
-   priority/phone/status riding along with it. */
+/* Vendors1 is a real Lookup (confirmed 2026-07-31, same as getRescueTicket's
+   own copy of this field) — a raw fetch returns each selection as a lookup
+   object. The composite-string stripping below only matters for any ticket
+   saved under the old (pre-2026-07-31) plain-text format; it's a no-op on a
+   plain lookup display_value. */
 function vendorDisplayName(v){
-  return String(v||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
+  const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
+  return String(plain||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
 }
 function vendorNamesFor(r){
-  const v=r.Vendors; const arr=Array.isArray(v)?v:(v?[v]:[]);
+  const v=r.Vendors1; const arr=Array.isArray(v)?v:(v?[v]:[]);
   return arr.map(vendorDisplayName).filter(Boolean).join(", ");
 }
 /* one Kanban card per ticket — same fields the old row-style dashboard showed,
@@ -1426,7 +1430,7 @@ function summaryHtml(){
     ["Total Fee", r.Total_Service_Fee||r.Total_Service_Fee1||""],
     ["Booking Fee", r.Booking_Fee||""],
     ["Remaining Fee", r.Remaining_Fee||""],
-    ["Vendor", readVal(r,"Vendors")||r.Vendor_Email||""],
+    ["Vendor", readVal(r,"Vendors1")||r.Vendor_Email||""],
     ["Technician", r.Assigned_Technician||r.Assigned_Technician_Email||""]
   ].filter(x=>x[1]!=="" && x[1]!=null);
   return `<div class="summary">`+rows.map(x=>`<div class="srow"><span class="k">${esc(x[0])}</span><span class="v">${esc(x[1])}</span></div>`).join("")+`</div>`;
@@ -1468,12 +1472,16 @@ function collectStep(validate){
   });
   return {ok,missing};
 }
-/* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a live
-   record) — Creator's API rejects display text for those and wants the linked
-   record's ID instead. Vehicle_Issue/Vendors/Assigned_Technician are confirmed
-   plain multiselect/text, NOT lookups — don't re-add useId to those without new
-   evidence. Falls back to the raw value if no matching option is loaded yet
-   (better a failed save you can see than a silent drop). */
+/* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a
+   live record, and for "Vendors1" 2026-07-31 by the user directly). Vehicle_Issue
+   is confirmed plain multiselect text, NOT a lookup. Assigned_Technician is
+   assumed plain text by analogy (not independently confirmed) — don't re-add
+   useId to either without new evidence. Falls back to the raw value if no
+   matching option is loaded yet (better a failed save you can see than a
+   silent drop). */
+// 2026-07-31: reverted — sending Lookup fields as an {"ID":"..."} object
+// broke saving entirely (see getRescueTicket's own copy of this function).
+// Back to the plain bare-ID value, which is what was actually working.
 function idsFor(field, value){
   const list = optionsListFor(field);
   const findId = (val)=>{ const m=list.find(o=>String(o.v)===String(val)); return (m && m.id!=null) ? m.id : val; };
