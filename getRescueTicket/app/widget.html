@@ -515,13 +515,17 @@ const CONFIG = {
   // Vehicle_Master_Report, vendors_Report -> Vendors_Report (this single
   // Vendors form now also absorbs what used to be the separate
   // My_Availability_Vendor form — one Vendors master, not two, see
-  // FIELDS.md), technicians_Report -> Technicians_Report. Field names on the
-  // master records themselves are also now confirmed/fixed (Vendor_Name,
-  // Technician_Name — no more lowercase technician_name/vendor_name guesses).
+  // FIELDS.md), technicians_Report -> Technicians_Report.
+  // 2026-08-04, confirmed live via the user's own console dump of a real
+  // Vendors_Report record (keys: service_type, Vehicle_Issue, Email, Address,
+  // Vendor_Priority, Vendor_Type, vendor_name, Availability_Status, ID): the
+  // real name field is lowercase "vendor_name", NOT "Vendor_Name" — same class
+  // of "the planned rename never actually landed on the real form" surprise
+  // as Vehicle_Issue's VEHICLE_TYPE earlier. "vendor_name" tried first now.
   optionReports: {
     vehicles:    { report:"Vehicle_Master_Report", label:["Name"], max:1000 },
     issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
-    vendors:     { report:"Vendors_Report",        label:["Vendor_Name","Name"] },
+    vendors:     { report:"Vendors_Report",        label:["vendor_name","Vendor_Name","Name"] },
     technicians: { report:"Technicians_Report",    label:["Technician_Name","Name"], emailField:"Email" },
     clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
   },
@@ -531,14 +535,21 @@ const CONFIG = {
   // "8 km geofence... for RSR Tasks and... 20km geofence for TOW Tasks") —
   // was a single flat 8km for both.
   vendorDistanceKm: { RSR:8, TOW:20 },
-  // Vendors_Report's own field names for phone/priority/online-offline/location —
-  // 2026-08-03: these used to be defensive multi-candidate guesses
-  // (CONFIG.vendorFieldCandidates) since the real form didn't exist yet; now
-  // that the Vendors form is being built fresh, each is a single confirmed
-  // field name (see vendorInfo(), FIELDS.md). "status" holds "Online"/"Offline".
-  vendorPhoneField: "Phone",
-  vendorPriorityField: "Priority",
+  // Vendors_Report's own field names for phone/priority/online-offline/location.
+  // 2026-08-04, corrected from the user's own live console dump (see above):
+  // - Priority is really "Vendor_Priority", not "Priority".
+  // - Phone is "Mobile_Number_01", not "Phone" — user-confirmed 2026-08-04
+  //   (the earlier "no phone field exists" finding was correct as far as it
+  //   went — there's just no field literally named "Phone"; the real one
+  //   uses this app's own "Mobile_Number_NN" naming convention instead).
+  // - Latitude/Longitude are NOT flat top-level fields — they live nested
+  //   inside Zoho's own composite "Address" field (Address.latitude /
+  //   Address.longitude) — see vendorLatLon() below, which reads that first
+  //   and only falls back to flat Latitude/Longitude fields if that's absent.
+  vendorPhoneField: "Mobile_Number_01",
+  vendorPriorityField: "Vendor_Priority",
   vendorStatusField: "Availability_Status",
+  vendorAddressField: "Address",
   vendorLatField: "Latitude",
   vendorLonField: "Longitude",
   vendorEmailField: "Email"
@@ -1227,7 +1238,15 @@ async function loadOptions(){
     return recs.map(function(r){
       let label="";
       for(const f of spec.label){ if(r[f]){ label = (typeof r[f]==="object")?(r[f].display_value||r[f].zc_display_value||""):String(r[f]); if(label) break; } }
-      if(!label) label = r.ID;
+      if(!label){
+        label = r.ID;
+        // Diagnostic logging (2026-08-04, user-reported live: the Vendors
+        // dropdown showed raw record IDs instead of names). Dumps the exact
+        // field keys this record actually has, so a naming mismatch (vs. a
+        // simply-not-filled-in field) can be told apart at a glance — check
+        // this list against spec.label ("tried") before assuming anything.
+        console.warn("[Get-Rescue] pull(",spec.report,"): none of", spec.label, "resolved on this record — falling back to its ID. Record's own keys:", Object.keys(r), "| full record:", r);
+      }
       return { v:label, label:label, id:r.ID, raw:r };
     });
   }
@@ -1345,85 +1364,12 @@ function parseCoord(v){
   const n=Number(v);
   return isNaN(n) ? null : n;
 }
-// Google Maps Distance Matrix API (2026-08-04, client-provided key) — see
-// technicianTicket/driverTicket/vendorTicket's own matching comment for the
-// full design note. Used here only for the Assignment-step vendor-distance
-// column (see VENDOR_DISTANCE_CACHE/refreshVendorDistances below) — NOT for
-// calcRoundTripKm's RT_KM fee calc above, which stays on Haversine (out of
-// scope for this round; ask if that should switch too).
-const GOOGLE_MAPS_API_KEY="AIzaSyAVVbr5XJ9mSNLMUBNa2JD7mkwkSF0e-UM";
-let mapsApiReady=null;
-function loadGoogleMaps(){
-  if(mapsApiReady) return mapsApiReady;
-  mapsApiReady=new Promise(function(res){
-    if(window.google && window.google.maps && window.google.maps.DistanceMatrixService){ res(true); return; }
-    const cb="__gmapsReady"+Date.now();
-    window[cb]=function(){ res(true); };
-    const s=document.createElement("script");
-    s.src="https://maps.googleapis.com/maps/api/js?key="+GOOGLE_MAPS_API_KEY+"&callback="+cb;
-    s.async=true;
-    s.onerror=function(){ console.warn("[Get-Rescue] Google Maps script failed to load — falling back to Haversine"); res(false); };
-    document.head.appendChild(s);
-  });
-  return mapsApiReady;
-}
-let dmService=null;
-function googleDistanceMatrix(origins,destinations){
-  return loadGoogleMaps().then(function(ok){
-    if(!ok || !window.google || !window.google.maps) return null;
-    if(!dmService) dmService=new google.maps.DistanceMatrixService();
-    return new Promise(function(res){
-      try{
-        dmService.getDistanceMatrix({
-          origins: origins.map(function(o){ return new google.maps.LatLng(o.lat,o.lon); }),
-          destinations: destinations.map(function(d){ return new google.maps.LatLng(d.lat,d.lon); }),
-          travelMode: "DRIVING"
-        }, function(resp,status){
-          if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status); res(null); return; }
-          res(resp.rows);
-        });
-      }catch(e){ console.warn("[Get-Rescue] DistanceMatrix threw",e); res(null); }
-    });
-  });
-}
-/* Vendor-distance cache — vendorDistanceKm() itself MUST stay synchronous:
-   it's called from render-time code (typing in the "Search to add…" combo
-   re-renders the option list on every keystroke via resolveOptions() ->
-   vendorsFor() -> vendorDistanceKm(), same as every other multiselect field
-   here), so making it async would fire a fresh Distance Matrix request per
-   vendor on every keystroke. Instead: one batched request (this breakdown
-   point -> every vendor with a location, in a single API call) whenever
-   vendorsFor() is asked for a breakdown location it hasn't already fetched
-   for; results land in this cache, and a re-render is triggered once they're
-   in — vendorDistanceKm() reads straight-line Haversine in the meantime so
-   the picker never has to wait on a network round trip to show something. */
-let VENDOR_DISTANCE_CACHE={}, vendorDistanceCacheKey=null, vendorDistanceFetchInFlight=false;
-async function refreshVendorDistances(record){
-  const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
-  if(bLat==null||bLon==null) return;
-  const key=bLat+","+bLon;
-  if(key===vendorDistanceCacheKey || vendorDistanceFetchInFlight) return;
-  vendorDistanceFetchInFlight=true;
-  try{
-    const withLoc=OPTIONS.vendors.map(function(o){ return {o:o, vinfo:vendorInfo(o)}; }).filter(function(x){ return x.vinfo.lat!=null && x.vinfo.lon!=null; });
-    if(!withLoc.length){ vendorDistanceCacheKey=key; return; }
-    const rows=await googleDistanceMatrix([{lat:bLat,lon:bLon}], withLoc.map(function(x){ return {lat:x.vinfo.lat,lon:x.vinfo.lon}; }));
-    const elements=rows && rows[0] && rows[0].elements;
-    if(!elements) return; // API unavailable/failed — leave the cache/key alone, stay on Haversine, try again next call
-    const newCache={};
-    withLoc.forEach(function(x,i){
-      const el=elements[i];
-      if(el && el.status==="OK") newCache[x.o.id]=Math.round((el.distance.value/1000)*10)/10;
-    });
-    VENDOR_DISTANCE_CACHE=newCache;
-    vendorDistanceCacheKey=key;
-    // Real distances are in — refresh the picker if it's still open on the
-    // Assignment step (guarded so a callback landing after the agent
-    // navigated elsewhere doesn't force a wizard render over another view).
-    if(state.view==="wizard" && state.path[state.stepIndex] && state.path[state.stepIndex].key==="assignment") rerenderCurrentView();
-  }catch(e){ console.warn("[Get-Rescue] refreshVendorDistances failed, staying on Haversine", e); }
-  finally{ vendorDistanceFetchInFlight=false; }
-}
+// Google Maps Distance Matrix integration REMOVED (2026-08-04, user request —
+// "without using google map api key... calculate using lat long"). The
+// Assignment-step vendor picker's distance column is straight-line Haversine
+// only, computed directly from Vendors_Report's own Latitude/Longitude and
+// this ticket's own breakdown Latitude/Longitude (Create_Case) — see
+// vendorDistanceKm() below. No API key, no network call, no async fetch.
 function calcRoundTripKm(r){
   const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
   if(bLat==null||bLon==null) return 0;
@@ -1454,15 +1400,45 @@ function rawValue(raw, field){
   if(v==null || v==="") return "";
   return (typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
 }
+/* Vendor lat/lon (2026-08-04, confirmed live): NOT flat Latitude/Longitude
+   fields on Vendors_Report — they live nested inside Zoho's own composite
+   "Address" field, as Address.latitude/Address.longitude (confirmed from the
+   user's own console dump: Address:{country:'', district_city:'',
+   latitude:'', ...}). Reads that first; falls back to flat top-level
+   Latitude/Longitude fields (CONFIG.vendorLatField/vendorLonField) only if
+   the Address field itself is absent, in case a future form change moves
+   them back out. */
+function vendorLatLon(raw){
+  const addr=raw && raw[CONFIG.vendorAddressField];
+  if(addr && typeof addr==="object"){
+    const lat=parseCoord(addr.latitude!=null?addr.latitude:addr.Latitude);
+    const lon=parseCoord(addr.longitude!=null?addr.longitude:addr.Longitude);
+    if(lat!=null && lon!=null) return {lat:lat, lon:lon};
+  }
+  return { lat:parseCoord(rawValue(raw,CONFIG.vendorLatField)), lon:parseCoord(rawValue(raw,CONFIG.vendorLonField)) };
+}
 function vendorInfo(opt){
   const raw=(opt&&opt.raw)||{};
   const phone=rawValue(raw,CONFIG.vendorPhoneField);
   const priority=rawValue(raw,CONFIG.vendorPriorityField);
   const status=String(rawValue(raw,CONFIG.vendorStatusField)||"").trim(); // expected "Online"/"Offline"
-  const lat=parseCoord(rawValue(raw,CONFIG.vendorLatField)), lon=parseCoord(rawValue(raw,CONFIG.vendorLonField));
+  const ll=vendorLatLon(raw);
+  const lat=ll.lat, lon=ll.lon;
   const hasLoc=lat!=null&&lon!=null;
   const email=rawValue(raw,CONFIG.vendorEmailField);
-  if(opt.label===opt.id) console.warn("[Get-Rescue] vendorInfo: vendor label fell back to its own record ID — none of", CONFIG.optionReports.vendors.label, "resolved on this Vendors_Report record:", raw);
+  // Diagnostic logging (2026-08-04) — warns whenever the label, phone,
+  // priority, or lat/lon still comes back empty, which means either a
+  // genuine field-name mismatch or a test record that's missing that
+  // specific data (all of Vendors_Report's own field names are now
+  // confirmed live — see CONFIG's own comment above each one).
+  if(opt.label===opt.id || !phone || !priority || !hasLoc){
+    console.warn("[Get-Rescue] vendorInfo: incomplete data for vendor record", opt.id,
+      "— label:", JSON.stringify(opt.label), "(tried", CONFIG.optionReports.vendors.label, ")",
+      "| phone ("+CONFIG.vendorPhoneField+"):", JSON.stringify(phone),
+      "| priority ("+CONFIG.vendorPriorityField+"):", JSON.stringify(priority),
+      "| lat/lon ("+CONFIG.vendorAddressField+".latitude/longitude, or flat "+CONFIG.vendorLatField+"/"+CONFIG.vendorLonField+"):", lat, lon,
+      "| this record's own keys:", Object.keys(raw), "| full raw record:", raw);
+  }
   return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:status.toUpperCase()==="ONLINE", lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email };
 }
 /* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
@@ -1522,8 +1498,11 @@ async function syncInvites(recordId, vendorNames){
 }
 /* straight-line distance from the ticket's own Latitude/Longitude (set on the
    locations stage) to a vendor's own lat/lon — null if either side is missing */
-function vendorDistanceKm(record, vInfo, vendorId){
-  if(vendorId!=null && VENDOR_DISTANCE_CACHE[vendorId]!=null) return VENDOR_DISTANCE_CACHE[vendorId];
+function vendorDistanceKm(record, vInfo){
+  // Straight-line Haversine only (2026-08-04, user request — no Google Maps,
+  // no API key) — record.Latitude/Longitude is this ticket's own breakdown
+  // location (Create_Case, Decimal fields), vInfo.lat/lon comes from the
+  // vendor's own Latitude/Longitude on Vendors_Report (see vendorInfo()).
   const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
   if(bLat==null||bLon==null||vInfo.lat==null||vInfo.lon==null) return null;
   return Math.round(haversineKm(bLat,bLon,vInfo.lat,vInfo.lon)*10)/10;
@@ -1561,10 +1540,9 @@ function sortVendors(list){
   });
 }
 function vendorsFor(record){
-  refreshVendorDistances(record); // fire-and-forget — see its own header comment
   const all=OPTIONS.vendors.map(function(o){
     const info=vendorInfo(o);
-    return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info,o.id) }) });
+    return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info) }) });
   });
   if(record.Preferred_Vendor==="Yes") return sortVendors(all);
   const withLoc=all.filter(function(o){ return o.vinfo.distanceKm!=null; });
@@ -1578,12 +1556,10 @@ function vendorPickerHint(record){
   if(bLat==null||bLon==null) return "Breakdown location not captured yet — showing all vendors. Capture it on the Locations step to filter by distance.";
   const anyVendorHasLoc=OPTIONS.vendors.some(function(o){ return vendorInfo(o).lat!=null; });
   if(!anyVendorHasLoc) return "Vendor location data unavailable — showing all vendors.";
-  // Distance is real driving distance (Google Maps Distance Matrix) once
-  // refreshVendorDistances() has fetched it for this breakdown point;
-  // straight-line Haversine only briefly, while that fetch is in flight.
-  const key=bLat+","+bLon;
-  const liveDistance = key===vendorDistanceCacheKey;
-  return "Showing vendors within "+radiusKmFor(record)+" km of the breakdown location ("+(liveDistance?"driving distance":"straight-line distance, updating…")+"), sorted by priority & distance.";
+  // Straight-line Haversine distance only (2026-08-04) — no Google Maps API,
+  // no network round trip, computed instantly from each vendor's own
+  // Latitude/Longitude vs. this ticket's own breakdown Latitude/Longitude.
+  return "Showing vendors within "+radiusKmFor(record)+" km of the breakdown location (straight-line distance), sorted by priority & distance.";
 }
 /* rich option row for the Vendors "+ Add…" dropdown — name, priority,
    distance, phone, plus an Online/Offline flag (reuses the same .flag chip

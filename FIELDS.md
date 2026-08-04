@@ -180,12 +180,12 @@ One record per invited vendor **and** per assigned technician/driver, per ticket
 
 | API Name | Label | Zoho Field Type | Options | Notes |
 |---|---|---|---|---|
-| `Vendor_Name` | Vendor Name | Single Line | — | Display label everywhere (**renamed from lowercase `vendor_name`**) |
+| `vendor_name` | Vendor Name | Single Line | — | **Corrected 2026-08-04, confirmed live via console dump**: the real field is lowercase `vendor_name` — the planned rename to `Vendor_Name` never actually landed on the real form (same class of surprise as `Vehicle_Issue`'s `VEHICLE_TYPE`). Display label everywhere |
 | `Email` | Email | Single Line | — | Matches the logged-in vendor to their own record in `vendorTicket` |
-| `Phone` | Phone | Single Line | — | **Collapsed 2026-08-03** from a 6-way name-guess (`Vendor_Phone`/`Phone`/`phone_number`/`Contact_Number`/`Mobile`/`Mobile_Number`) into this one confirmed field |
-| `Priority` | Priority | Number | — | Lower = higher priority in the Assignment-step sort |
-| `Availability_Status` | Availability Status | Dropdown | `Online`, `Offline` | |
-| `Latitude` / `Longitude` | Latitude / Longitude | Decimal | — | Vendor's own location, used for the geofence filter |
+| `Mobile_Number_01` | Phone | Single Line | — | **Corrected 2026-08-04, user-confirmed**: the real field is `Mobile_Number_01` (this app's own `Mobile_Number_NN` naming convention), not a plain `Phone` field |
+| `Vendor_Priority` | Priority | Number | — | **Corrected 2026-08-04, confirmed live**: the real field is `Vendor_Priority`, not `Priority`. Lower = higher priority in the Assignment-step sort |
+| `Availability_Status` | Availability Status | Dropdown | `Online`, `Offline` | Confirmed live — matches as originally specified |
+| `Address` | Address | Address (Zoho's composite field type) | — | **Corrected 2026-08-04, confirmed live**: the vendor's own location is NOT flat `Latitude`/`Longitude` fields — it's `Address.latitude`/`Address.longitude`, nested inside Zoho's own composite Address field (which also carries `country`, `district_city`, `address_line_1`, etc.). The Assignment-step distance calc reads `Address.latitude`/`Address.longitude` first, falling back to flat `Latitude`/`Longitude` fields only if `Address` itself is absent |
 | `Vendor_Type` | Vendor Type | Dropdown | `Individual`, `Fleet` | Individual vendors do the job themselves; Fleet vendors hand off to one of their own Technicians after accepting |
 
 ## Form 5 — `Technicians` (report: `Technicians_Report`)
@@ -468,12 +468,12 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 ### `Vendors_Report` (vendor master — unified 2026-08-03, absorbs the old separate `My_Availability_Vendor`)
 | Field | Purpose | Widgets | Status |
 |---|---|---|---|
-| `Vendor_Name` | Display label (renamed from lowercase `vendor_name`) | Agent, Vendor | ✅ |
+| `vendor_name` | Display label — **corrected 2026-08-04, confirmed live**: real field is lowercase, the planned `Vendor_Name` rename never landed | Agent, Vendor | ✅ (confirmed live 2026-08-04) |
 | `Email` | Match to logged-in vendor | Vendor | ✅ (mechanism), 🟡 (exact field) |
-| `Phone` | Phone (collapsed from a 6-way guess 2026-08-03) | Agent | 🟡 |
-| `Priority` | Assignment sort priority (collapsed from a 3-way guess 2026-08-03) | Agent | 🟡 |
-| `Availability_Status` | `Online`/`Offline` (collapsed from a 3-way guess 2026-08-03) | Agent, Vendor | 🟡 |
-| `Latitude` / `Longitude` | Vendor's own location (collapsed from a 3-way/4-way guess 2026-08-03) | Agent | 🟡 |
+| `Mobile_Number_01` | Phone — **corrected 2026-08-04, user-confirmed**: real field is `Mobile_Number_01`, not `Phone` | Agent | ✅ (confirmed live 2026-08-04) |
+| `Vendor_Priority` | Assignment sort priority — **corrected 2026-08-04, confirmed live**: real field is `Vendor_Priority`, not `Priority` | Agent | ✅ (confirmed live 2026-08-04) |
+| `Availability_Status` | `Online`/`Offline` | Agent, Vendor | ✅ (confirmed live 2026-08-04) |
+| `Address` (composite) | Vendor's own location — **corrected 2026-08-04, confirmed live**: NOT flat `Latitude`/`Longitude` fields, lives nested as `Address.latitude`/`Address.longitude` inside Zoho's own composite Address field type | Agent | ✅ (confirmed live 2026-08-04) |
 | `Vendor_Type` | Individual vs. Fleet | Vendor | 🟡 (drives `IS_FLEET`) |
 
 ### `Technicians_Report` (technician/driver master)
