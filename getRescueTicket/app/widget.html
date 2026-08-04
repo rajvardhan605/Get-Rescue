@@ -545,6 +545,7 @@ const CONFIG = {
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
+let LOGIN_EMAIL = ""; // the logged-in agent's own email — see boot(), used to attribute new Remarks entries
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
 function resolve(method){
   const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -572,6 +573,24 @@ async function apiGetReport(report, criteria, max){
   if(criteria) cfg.criteria = criteria;
   try{ const r = await fn(cfg); return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : []; } catch(e){ return []; }
 }
+/* Single-record fetch, used by openTicket() (2026-08-03) to harden against a
+   known Zoho Creator quirk: bulk getRecords() responses can return long
+   Multi-line fields truncated/incomplete, while a direct single-record fetch
+   returns the full value — the likeliest explanation for the previously
+   unresolved "Remarks shows real entries in the native Zoho record but blank
+   in this widget" report. Best-effort: if this API isn't available or the
+   call fails, openTicket() just falls back to whatever record it was already
+   given (the old behavior), so this can only make things more correct, never
+   worse. */
+async function apiGetById(id){
+  const fn = resolve("getRecordById"); if(!fn || !id) return null;
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id });
+    const rec = r && r.code===3000 ? (Array.isArray(r.data)?r.data[0]:r.data) : null;
+    console.log("[Get-Rescue] apiGetById(", id, ") <- ", rec ? "ok" : "unavailable/failed", r);
+    return rec || null;
+  }catch(e){ console.warn("[Get-Rescue] apiGetById failed (falling back to the record already in hand):", e); return null; }
+}
 async function apiAdd(data){
   const fn = resolve("addRecords") || resolve("addRecord"); if(!fn) throw new Error("addRecords unavailable");
   const r = await fn({ app_name:CONFIG.appName, form_name:CONFIG.formName, payload:{ data:data } });
@@ -593,11 +612,13 @@ async function apiUpload(id, fieldName, file){
 
 /* ---------- reusable option lists ---------- */
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
-/* half-hour slots, 9:00 AM through 5:00 PM */
+/* Half-hour slots covering the full 24-hour day (2026-08-04, user request —
+   was wrongly limited to 9:00 AM-5:00 PM, so a customer scheduling an
+   evening/overnight breakdown had no valid slot to pick at all). */
 const SERVICE_TIMES = (function(){
-  function fmt(mins){ const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
+  function fmt(mins){ mins=((mins%1440)+1440)%1440; const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
   const out=[];
-  for(let mins=9*60; mins<17*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
+  for(let mins=0; mins<24*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
   return out;
 })();
 
@@ -645,7 +666,13 @@ const STAGES = [
     // (it's earlier in STAGES' order, so if `create` also listed it,
     // stageIndexForStatus would wrongly resume every such ticket back at
     // `create` instead of `quote`).
-    statuses:[], status:"SERVICE FEE QUOTE",
+    // 2026-08-04 (user request): a ticket scheduled for later ("Time_of_service"
+    // = LATER) now writes "SCHEDULED" instead of "SERVICE FEE QUOTE" — makes
+    // it visually distinct on the dashboard (the "SCHEDULED" status was
+    // already wired into the "Ready & Invited" bucket, just never actually
+    // written by anything). Still resumes at `quote` next either way — see
+    // that stage's own `statuses` list, which now also accepts "SCHEDULED".
+    statuses:[], status:(r)=> r.Time_of_service==="LATER" ? "SCHEDULED" : "SERVICE FEE QUOTE",
     /* Create_Case has a required "Phone_Number" field separate from the one
        shown in this form ("Phone_Number1"). Mirror the value the agent types
        rather than showing a duplicate box. Confirmed via a live "Enter a value
@@ -702,7 +729,10 @@ const STAGES = [
     // Status is "Location Request", so a ticket at either "waiting on
     // location" status should always reopen there, not back here on Quote —
     // quoteStatus() itself is UNCHANGED and can still return either value.
-    statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING"], status:quoteStatus,
+    // "SCHEDULED" added 2026-08-04 — a ticket the `create` step marked
+    // SCHEDULED (Time_of_service = LATER) still resumes here next, same as
+    // an immediate "SERVICE FEE QUOTE" ticket; only the display status differs.
+    statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING","SCHEDULED"], status:quoteStatus,
     // can't advance to Capture Locations until the required action for this
     // ticket's fee situation has actually been done (see quoteStatus above)
     // not a hard block anymore — Save & Continue always saves. If the required
@@ -1747,7 +1777,16 @@ function renderReportLists(recs){
   // the new sibling action opens the Final Closure screen instead — stops
   // propagation defensively even though it's not actually nested inside .rrow
   document.querySelectorAll("#columns .rrow-close-btn").forEach(el=>{
-    el.onclick=(e)=>{ e.stopPropagation(); const rec=recs.find(r=>String(r.ID)===el.dataset.closeId); if(rec) openClosure(rec); };
+    // Fresh single-record fetch first (2026-08-04) — same reasoning as
+    // openTicket()'s own fix: `rec` here is the dashboard's bulk-fetched
+    // copy, which can carry a truncated Remarks value. Falls back to the
+    // bulk copy if the fetch is unavailable/fails.
+    el.onclick=async (e)=>{
+      e.stopPropagation();
+      const rec=recs.find(r=>String(r.ID)===el.dataset.closeId); if(!rec) return;
+      const fresh=await apiGetById(rec.ID);
+      openClosure(fresh||rec);
+    };
   });
 }
 function initials(name){
@@ -1917,7 +1956,7 @@ function unwrapLookup(v){
   if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||"";
   return v;
 }
-function openTicket(rec){
+async function openTicket(rec){
   // Diagnostic logging (2026-07-31, user-reported "fields show empty when
   // reopening a saved ticket") — logs the RAW record exactly as Zoho
   // returned it, before anything in this widget touches it. If a field that
@@ -1926,12 +1965,22 @@ function openTicket(rec){
   // name (see FIELDS.md's own ❓/🟡-marked, not-independently-confirmed
   // fields for the likeliest suspects) — if it's present HERE but still
   // renders blank, the bug is in this widget's own display code instead.
-  console.log("[Get-Rescue] openTicket raw record from Zoho:", rec);
+  console.log("[Get-Rescue] openTicket raw record from Zoho (bulk/list copy):", rec);
+  // Real bug fixed (2026-08-04): `rec` here was always whatever the dashboard's
+  // own bulk getRecords() call last fetched. Zoho Creator's bulk report APIs
+  // can return long Multi-line fields (like an accumulated Remarks log)
+  // truncated compared to a direct single-record fetch — matching the
+  // previously-unresolved "Remarks shows real entries in the native Zoho
+  // record but blank in this widget" report exactly. Re-fetch this one record
+  // fresh before opening it; falls back to the bulk copy already in hand if
+  // that's not available (never worse than before).
+  const fresh = await apiGetById(rec.ID);
+  if(fresh) rec = fresh;
   // Targeted log (2026-08-03) — pulls out exactly the fields the user
   // reported as blank-on-reopen (Phone_Number/Phone_Number1, Remarks) as
   // their OWN console line, so they're visible without expanding the big
   // collapsed object above.
-  console.log("[Get-Rescue] openTicket key fields — Phone_Number:", JSON.stringify(rec.Phone_Number), "| Phone_Number1:", JSON.stringify(rec.Phone_Number1), "| Remarks:", JSON.stringify(rec.Remarks));
+  console.log("[Get-Rescue] openTicket key fields (after fresh re-fetch) — Phone_Number:", JSON.stringify(rec.Phone_Number), "| Phone_Number1:", JSON.stringify(rec.Phone_Number1), "| Remarks:", JSON.stringify(rec.Remarks));
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
   // Real bug fixed (2026-08-03, user-reported): Create_Case has a required
   // "Phone_Number" field (real, always populated) separate from the one this
@@ -2133,7 +2182,14 @@ function buildField(f){
     // focusable by default).
     const allOpts=resolveOptions(f);
     const selIdx=Math.max(0, allOpts.findIndex(o=>sel===String(o.v)));
-    const opts=allOpts.map((o,idx)=>`<div class="opt ${sel===String(o.v)?"sel":""}" data-value="${esc(o.v)}" tabindex="${f.readonly?"-1":(idx===selIdx?"0":"-1")}" role="radio" aria-checked="${sel===String(o.v)}">${esc(o.label)}</div>`).join("");
+    // Real bug fixed (2026-08-03): these ".opt" divs had no `id` at all, so
+    // preservingFocus() (which restores focus by looking up
+    // document.activeElement.id) could never find them again after a
+    // RERENDER-triggering change re-built the DOM — focus silently fell back
+    // to <body>, so the next Tab press restarted from the very first
+    // focusable field instead of continuing from this radio group. Every
+    // option now gets a stable, deterministic id so it round-trips.
+    const opts=allOpts.map((o,idx)=>`<div class="opt ${sel===String(o.v)?"sel":""}" id="${id}_opt_${idx}" data-value="${esc(o.v)}" tabindex="${f.readonly?"-1":(idx===selIdx?"0":"-1")}" role="radio" aria-checked="${sel===String(o.v)}">${esc(o.label)}</div>`).join("");
     wrap.innerHTML=lab+`<div class="radio-set${f.readonly?" locked":""}" id="${id}" role="radiogroup">${opts}</div>`;
   } else if(f.t==="check"){
     const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
@@ -2230,7 +2286,11 @@ function wireField(f,id){
     if(!addBtn||!newEl||!logEl) return;
     const addEntry=()=>{
       const text=newEl.value.trim(); if(!text) return;
-      const stamped=fmtDateTime(new Date())+" — "+text;
+      // Author attribution (2026-08-04, user request): prefix each new entry
+      // with whoever's actually adding it (LOGIN_EMAIL, set at boot — see its
+      // own comment) so a Remarks log with multiple agents editing the same
+      // ticket over time shows who said what, not just when.
+      const stamped=fmtDateTime(new Date())+" — "+(LOGIN_EMAIL||"Agent")+": "+text;
       const existing=String(state.record[f.n]||"").trim();
       state.record[f.n]=existing?(existing+"\n"+stamped):stamped;
       logEl.innerHTML=esc(state.record[f.n]).replace(/\n/g,"<br>");
@@ -2472,7 +2532,13 @@ function afterMultiselectChange(f){
   }
   collectStep(false); // snapshot everything else on screen before we rebuild it
   setPath();
-  renderWizard();
+  // Real bug fixed (2026-08-03): this called plain renderWizard() instead of
+  // rerenderCurrentView(), so adding/removing a Vehicle_Issue chip never went
+  // through preservingFocus() — the newly-rebuilt DOM lost focus entirely,
+  // and the next Tab press restarted from the very first field instead of
+  // continuing from the Issue picker. Same class of bug as the radio ".opt"
+  // fix above, different cause (missing preservingFocus wrap, not a missing id).
+  rerenderCurrentView();
 }
 /* ---------- Final Closure screen's read-only display sections ----------
    Renders Customer Details / Service Summary / Fee Collected / Photos /
@@ -2930,7 +2996,13 @@ $("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
 $("clearSearch").onclick=()=>{ $("q").value=""; $("clearSearch").style.display="none"; closeSearchDropdown(); };
 
 async function boot(){
-  try{ await ZOHO.CREATOR.UTIL.getInitParams(); }catch(e){}
+  // LOGIN_EMAIL (2026-08-03): needed to attribute new Remarks entries to
+  // whoever actually added them (see wireField's "remarks" branch) — this
+  // widget never tracked the logged-in agent's own identity before now,
+  // unlike the vendor/technician/driver widgets, which already fetch their
+  // own profile record. There's no "Agents" master report to look up a
+  // display name from, so the login email itself is used as the stand-in.
+  try{ const params=await ZOHO.CREATOR.UTIL.getInitParams(); LOGIN_EMAIL=(params&&params.loginUser)||""; }catch(e){}
   await loadOptions();
   loadDashboard();
 }

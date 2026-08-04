@@ -50,7 +50,7 @@ The single ticket record. Every profile reads/writes through `Agent_Ticket_Repor
 | `Vehicle_Status` | Vehicle Status | Dropdown | `ONROAD`, `SAFE PARKING` | Required |
 | `Time_of_service` | Time of Service | Radio | `NOW`, `LATER` | Required |
 | `Schedule_Date` | Schedule Date | Date | — | Required when `Time_of_service = LATER` |
-| `Service_Time` | Service Time | Dropdown | Half-hour slots, 9:00 AM–5:00 PM (e.g. `9:00 AM`, `9:30 AM`, … `5:00 PM`) | Required when `Time_of_service = LATER` |
+| `Service_Time` | Service Time | Dropdown | Half-hour slots covering the full 24-hour day (e.g. `12:00 AM - 12:30 AM`, `12:30 AM - 1:00 AM`, … `11:30 PM - 12:00 AM`) — **widened 2026-08-04** from the earlier 9:00 AM–5:00 PM-only window | Required when `Time_of_service = LATER` |
 | `Computed_Service_Time` | Computed Service Time | Date-Time | — | Hidden; auto-computed (NOW → +30 min from save time; LATER → picked Schedule_Date + Service_Time) |
 | `Lead_Source` | Lead Source | Dropdown | `Call`, `Website`, `WhatsApp`, `App`, default `Call` | Always written as `Call` by this agent-facing widget; hidden from the UI |
 | `Remarks` | Remarks | Multi-line | — | Append-only in the widget (past entries read-only, only new timestamped lines addable) — same physical field reused at every step below, not a separate field per step |
@@ -515,7 +515,8 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 
 | Value | Written by (step) | Resumes at (reopening a ticket) |
 |---|---|---|
-| `SERVICE FEE QUOTE` | Step 1 (Create Case, on save) | Step 2 |
+| `SERVICE FEE QUOTE` | Step 1 (Create Case, on save, when `Time_of_service = NOW`) | Step 2 |
+| `SCHEDULED` | Step 1 (Create Case, on save, when `Time_of_service = LATER`) — **added 2026-08-04** | Step 2 |
 | `BOOKING FEE PENDING` | Step 2 | Step 2 |
 | `LOCATION REQUEST` | Step 2 (fee-free, link not yet sent) or Step 3 (own default) | Step 3 |
 | `LOCATION PENDING` | Step 2 (once link sent / paid) | Step 3 |

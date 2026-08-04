@@ -443,11 +443,12 @@ async function apiUpload(id, fieldName, file){
 
 /* ---------- reusable option lists ---------- */
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
-/* half-hour slots, 9:00 AM through 5:00 PM */
+/* Half-hour slots covering the full 24-hour day (2026-08-04, same fix as
+   getRescueTicket — was wrongly limited to 9:00 AM-5:00 PM). */
 const SERVICE_TIMES = (function(){
-  function fmt(mins){ const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
+  function fmt(mins){ mins=((mins%1440)+1440)%1440; const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
   const out=[];
-  for(let mins=9*60; mins<17*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
+  for(let mins=0; mins<24*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
   return out;
 })();
 
