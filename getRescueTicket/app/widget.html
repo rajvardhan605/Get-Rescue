@@ -596,7 +596,14 @@ async function apiGetReport(report, criteria, max){
 async function apiGetById(id){
   const fn = resolve("getRecordById"); if(!fn || !id) return null;
   try{
-    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id });
+    // Real bug fixed (2026-08-04, user-reported live screenshot: every File
+    // Upload field showed "Not uploaded" on reopen even when the field-facing
+    // widgets had genuinely uploaded photos). This call was missing the same
+    // field_config:"all" apiGet()/apiGetReport() already pass — without it,
+    // Zoho Creator's single-record fetch omits File Upload (and apparently
+    // some Lookup) field data, so this "fresher copy" silently overwrote the
+    // bulk copy's real file/lookup values with blanks.
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, field_config:"all", id:id });
     const rec = r && r.code===3000 ? (Array.isArray(r.data)?r.data[0]:r.data) : null;
     console.log("[Get-Rescue] apiGetById(", id, ") <- ", rec ? "ok" : "unavailable/failed", r);
     return rec || null;
@@ -818,9 +825,17 @@ const STAGES = [
     // "READY" -> "READY FOR ASSIGNMENT" (moved to `assignment`'s own resume
     // list, matching its name — see that stage), "LOCATION PENDING" (as this
     // stage's OWN written value, not `quote`'s) -> "LOCATION REQUEST".
-    statuses:["LOCATION REQUEST","LOCATION PENDING"], status:(r)=> hasLocFlag(r) ? "READY FOR ASSIGNMENT" : "LOCATION REQUEST",
-    canAdvance:(r)=> hasLocFlag(r),
-    blockedMessage:"Saved. This ticket will wait here until a breakdown location is actually captured — reopen it from the dashboard to continue.",
+    // 2026-08-04: now requires the DROP location too for a TOW ticket, not
+    // just the breakdown one (see locationReady()'s own comment) — a TOW
+    // ticket used to advance past this step with no drop point at all,
+    // guaranteed to get permanently stuck at the vendor's own "Vehicle
+    // Picked" button later, with no way back to this step to fix it short of
+    // reopening the ticket from the dashboard.
+    statuses:["LOCATION REQUEST","LOCATION PENDING"], status:(r)=> locationReady(r) ? "READY FOR ASSIGNMENT" : "LOCATION REQUEST",
+    canAdvance:(r)=> locationReady(r),
+    blockedMessage:(r)=> hasLocFlag(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
+      ? "Saved. This TOW ticket also needs a drop location before it can move on — reopen it from the dashboard to add one."
+      : "Saved. This ticket will wait here until a breakdown location is actually captured — reopen it from the dashboard to continue.",
     // Stamps the exact moment a real breakdown location first exists — only
     // set once (never overwritten on a later re-save of this same step) so it
     // stays "time of receipt", not "time of most recent save". Field name/type
@@ -859,7 +874,15 @@ const STAGES = [
        office location -> breakdown -> drop -> office each time; repeatable
        since coordinates might get corrected after a first calculation. */
     { n:"Calculate_Distance", l:"Calculate Round-Trip Distance", t:"button", full:true, repeatable:true, when:(s)=>s.Service_Type==="TOW",
-      buttonLabel:"Calculate Round-Trip Distance", action:(r)=>{ r.RT_KM=calcRoundTripKm(r); } },
+      buttonLabel:"Calculate Round-Trip Distance", action:(r)=>{
+        // Diagnostic logging (2026-08-04, user-reported live: "not
+        // calculating distance") — dumps the exact inputs/output so a
+        // genuinely-missing breakdown location can be told apart from a
+        // real bug in calcRoundTripKm() itself.
+        const before=r.RT_KM;
+        r.RT_KM=calcRoundTripKm(r);
+        console.log("[Get-Rescue] Calculate_Distance clicked — Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude), "| DropLocationLat:", JSON.stringify(r.DropLocationLat), "| DropLocationLong:", JSON.stringify(r.DropLocationLong), "| RT_KM before:", before, "-> after:", r.RT_KM);
+      } },
     { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW" },
     // "Remarks [Text Area – optional]" — same shared field as create/quote's
     // own copies (2026-07-31 flow spec shows it here too), editable on all three.
@@ -943,7 +966,7 @@ const STAGES = [
     // the Action 4 mock) — these are outcome fields, shown once someone's
     // actually accepted, not something the agent fills in upfront.
     { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true },
     { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
     // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
     // OWN Accept action once they accept — not written by this widget at
@@ -961,7 +984,10 @@ const STAGES = [
     fields:[
     // ETA/Distance_To_Breakdown moved to Final Closure's own "Distance & ETA
     // Metrics" group 2026-08-04 (per user request) — see DISTANCE_METRICS_FIELDS.
-    { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
+    // Was a plain textarea nothing ever wrote to (always blank) — now a real
+    // clickable link, same source/fallback as the field-facing widgets' own
+    // nav-link (2026-08-04, per user request).
+    { n:"Navigation_Link", l:"Navigation Link", t:"navlink", full:true },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
     { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true }
   ]},
@@ -1003,7 +1029,7 @@ const STAGES = [
     { n:"Technician_Email1", l:"Driver Email", t:"text" },
     // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
     { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true },
     { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
     // See `acceptance`'s own comment on this same new field.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true }
@@ -1019,7 +1045,8 @@ const STAGES = [
     fields:[
     { n:"Odometer_reading_at_Reached_Location", l:"Odometer at Reached", t:"number" },
     { n:"Toll_Charges", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
-    { n:"Navigate_To_Breakdown_Link", l:"Navigate to Breakdown Link", t:"textarea", full:true },
+    // See reach's own matching comment — same fix, TOW's copy of this field.
+    { n:"Navigate_To_Breakdown_Link", l:"Navigate to Breakdown Link", t:"navlink", full:true },
     { n:"Image_Upload5", l:"Arrival Photo", t:"file" },
     { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason2, full:true }
   ]},
@@ -1057,9 +1084,16 @@ const STAGES = [
     { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
     // Action 7b mock, added 2026-07-31 — driver's own live GPS + timestamp
     // captured when "Reached Drop Location" is tapped (guessed names).
-    { n:"Drop_Location_Arrival_Time", l:"Drop Arrival Time", t:"text" },
-    { n:"RSP_Drop_Location_Lat", l:"RSP Drop Location (Lat)", t:"text" },
-    { n:"RSP_Drop_Location_Lon", l:"RSP Drop Location (Lon)", t:"text" }
+    { n:"Drop_Location_Arrival_Time", l:"Drop Arrival Time", t:"text" }
+    // "RSP_Drop_Location_Lat"/"Lon" removed here 2026-08-04 (user request) —
+    // that pair was never a confirmed field (guessed name, Decimal type, same
+    // "exceeded maximum digits" risk RSP_Start_Latitude/Longitude was
+    // renamed to dodge). The driver/vendor widgets' own "Reached Drop
+    // Location" action now writes this same live GPS fix into the already-
+    // confirmed RSP_Start_Latitude/Longitude Text fields instead (reused,
+    // same one-field-not-two pattern as Odometer_Reading above) — see that
+    // field's own entry in FIELD_ACTIVITY_LOG_FIELDS below, which is where
+    // it displays for both branches instead of a second copy here.
   ]},
   { key:"wipUnloadingTow", branch:"tow", bucket:2, short:"Unload", title:"Unloading & Handover",
     desc:"Unload, handover details and return journey.", save:"Save Handover",
@@ -1203,6 +1237,36 @@ const DISTANCE_METRICS_FIELDS=[
   { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   { n:"Return_Journey_ETA", l:"Return ETA (mins, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }
+];
+/* Field-activity timestamps/GPS (2026-08-04, per user audit request — "all
+   data we are saving through process should be visible in Final Closure").
+   These are written by technicianTicket/driverTicket/vendorTicket's own
+   Accept/Reject/Reach/Cancel actions but never showed up ANYWHERE in this
+   widget before — not in a wizard stage, not in Final Closure — so the agent
+   had no way to see them at all. Field names are guessed by those widgets'
+   own comments (not independently confirmed against a live record), same
+   confidence level as everything else still marked ❓ in FIELDS.md; shown
+   here regardless so at least the agent can SEE whatever did get saved,
+   which also doubles as a way to notice if one of these names turns out to
+   be wrong (it'll just show "—" forever instead of a real value). */
+const FIELD_ACTIVITY_LOG_FIELDS=[
+  { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Service_Reject_Time", l:"Reject Time", t:"text", readonly:true },
+  { n:"Reach_Time", l:"Reached Breakdown Time", t:"text", readonly:true },
+  { n:"Pickup_Time", l:"Vehicle Picked Up Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Cancellation_Time", l:"Cancellation Time", t:"text", readonly:true },
+  { n:"Cancel_Location_Lat", l:"Cancel Location (Lat)", t:"decimal", readonly:true },
+  { n:"Cancel_Location_Lon", l:"Cancel Location (Lon)", t:"decimal", readonly:true },
+  // Relabeled 2026-08-04 (user request) — this field is now reused for a
+  // second GPS fix: TOW's own "Reached Drop Location" action overwrites it
+  // with the driver/vendor's live position at drop, same field, not a
+  // separate RSP_Drop_Location_Lat/Lon pair (see wipReachedTow's own removal
+  // comment above). So this row shows whichever fix was written most
+  // recently — Accept-time for RSR and for TOW tickets that haven't reached
+  // their drop location yet, Drop-time after they have.
+  { n:"RSP_Start_Latitude", l:"RSP Location — Accept/Drop (Lat)", t:"text", readonly:true },
+  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text", readonly:true }
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -1810,6 +1874,23 @@ function hasLocFlag(r){
   if(lat==null||lat===""||lon==null||lon==="") return false;
   return !isNaN(Number(lat)) && !isNaN(Number(lon));
 }
+// Real bug fixed (2026-08-04, user-reported live: a TOW ticket reached
+// Vehicle Picked with all Loading photos uploaded, but the button stayed
+// disabled — that button is gated on a real drop location existing, which
+// the Locations step here never actually required for TOW; only the
+// breakdown location was checked. Same Latitude/Longitude-style presence
+// check, just for DropLocationLat/DropLocationLong.
+function hasDropLocFlag(r){
+  const lat=r.DropLocationLat, lon=r.DropLocationLong;
+  if(lat==null||lat===""||lon==null||lon==="") return false;
+  return !isNaN(Number(lat)) && !isNaN(Number(lon));
+}
+// A ticket's location requirement is "just breakdown" for RSR, "breakdown AND
+// drop" for TOW — used by the locations stage's own canAdvance/status below.
+function locationReady(r){
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  return hasLocFlag(r) && (!isTow || hasDropLocFlag(r));
+}
 /* Vendors1 is a real Lookup (confirmed 2026-07-31) — a raw fetch returns
    each selection as a lookup object (display_value/zc_display_value), same
    shape unwrapLookup() already handles elsewhere. The "[priority] Name |
@@ -2232,6 +2313,18 @@ function buildField(f){
   } else if(f.t==="file"){
     const has = state.files[f.n];
     wrap.innerHTML=lab+`<input type="file" id="${id}" accept="image/*"${f.readonly?" disabled":""}>`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(cur?`<span class="hint">Already uploaded</span>`:""));
+  } else if(f.t==="navlink"){
+    // Clickable maps link, computed (not stored) — matches technicianTicket/
+    // driverTicket/vendorTicket's own "Navigate to Breakdown" nav-link
+    // exactly (2026-08-04, per user request). Replaces the never-populated
+    // Navigation_Link/Navigate_To_Breakdown_Link textareas — nothing ever
+    // wrote to those (see FIELDS.md's own 🟡 note), so they always rendered
+    // blank here even though the field-facing widgets show a working link.
+    const r=state.record;
+    const href = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+    wrap.innerHTML = href
+      ? lab+`<a href="${esc(href)}" target="_blank" rel="noopener" class="btn ghost" style="width:100%;justify-content:center;text-decoration:none">🧭 Navigate to Breakdown</a>`
+      : lab+`<span class="hint">Breakdown location not captured yet — capture it on the Locations step.</span>`;
   } else {
     const map={tel:"tel",email:"email",number:"number",decimal:"number",date:"date",datetime:"datetime-local",time:"time",text:"text"};
     const step2 = (f.t==="decimal")?' step="any"':"";
@@ -2573,7 +2666,7 @@ function closureFieldGroups(){
     keys.forEach(function(k){
       const st=byKey[k]; if(!st) return;
       st.fields.forEach(function(f){
-        if(f.t==="button"||f.t==="badge"||f.t==="summary") return; // no meaningful value to show/edit here
+        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink") return; // no meaningful value to show/edit here
         if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
         fields.push(f);
       });
@@ -2596,6 +2689,12 @@ function closureFieldGroups(){
     (function(){
       const fields=DISTANCE_METRICS_FIELDS.filter(function(f){ return !f.when || f.when(state.record); });
       return fields.length ? {title:"Distance & ETA Metrics", fields:fields} : null;
+    })(),
+    // Field-activity timestamps/GPS (2026-08-04) — see
+    // FIELD_ACTIVITY_LOG_FIELDS' own header comment for why these live only here.
+    (function(){
+      const fields=FIELD_ACTIVITY_LOG_FIELDS.filter(function(f){ return !f.when || f.when(state.record); });
+      return fields.length ? {title:"Field Activity Log", fields:fields} : null;
     })()
   ].filter(Boolean);
 }
@@ -2604,13 +2703,24 @@ function closureFieldGroups(){
    screen; the delegated click handler (see WIRING) looks fields up here
    instead of re-deriving closureFieldGroups() on every single click. */
 let CLOSURE_FIELD_INDEX={};
+// Real bug fixed (2026-08-04, user-reported live screenshot): "Assigned
+// Technician" rendered as a literal "[object Object]" — its value is a real
+// Lookup object ({display_value/zc_display_value/...}), same shape unwrapLookup()
+// already handles for Vehicle/Vendors1/Vehicle_Issue, but this function fell
+// straight through to String(v) for anything not file/array/check/remarks.
+// Unwraps any object value the same way, so an unconfirmed field turning out
+// to be a Lookup (like Assigned_Technician just did) degrades to a sensible
+// name/blank instead of ever showing "[object Object]" again.
+function unwrapLookupDisplay(v){
+  return (v && typeof v==="object") ? (v.display_value||v.zc_display_value||(v.first_name&&((v.first_name||"")+" "+(v.last_name||"")).trim())||v.value||"") : v;
+}
 function closureFieldValueDisplay(f){
   const v=state.record[f.n];
   if(f.t==="file"){
     if(state.files[f.n]) return {text:"Selected: "+state.files[f.n].name, empty:false};
     return v ? {text:"Uploaded", empty:false} : {text:"Not uploaded", empty:true};
   }
-  if(Array.isArray(v)) return v.length ? {text:v.join(", "), empty:false} : {text:"None selected", empty:true};
+  if(Array.isArray(v)) return v.length ? {text:v.map(unwrapLookupDisplay).join(", "), empty:false} : {text:"None selected", empty:true};
   if(f.t==="check") return {text:(v===true||v==="Yes")?"Yes":"No", empty:false};
   if(v==null||v==="") return {text:"—", empty:true};
   if(f.t==="remarks"){
@@ -2619,6 +2729,7 @@ function closureFieldValueDisplay(f){
     const lines=String(v).split("\n"); const last=lines[lines.length-1];
     return {text: lines.length>1 ? "… "+last : last, empty:false};
   }
+  if(typeof v==="object"){ const s=unwrapLookupDisplay(v); return s ? {text:String(s), empty:false} : {text:"—", empty:true}; }
   return {text:String(v), empty:false};
 }
 const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -2760,6 +2871,7 @@ function collectStep(validate){
     if(f.t==="file") return; // handled via state.files
     if(f.t==="badge") return; // read-only, value already set by Vehicle_Issue handler
     if(f.t==="button") return; // no DOM value to read — its own onclick sets state.record directly
+    if(f.t==="navlink") return; // computed display only, nothing stored — see buildField's own comment
     if(f.t==="remarks") return; // state.record kept current by the Add-button handler (see wireField) — nothing to scrape from the DOM
     let v;
     if(f.t==="multiselect"){
@@ -2792,11 +2904,13 @@ function collectStep(validate){
 /* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a
    live record, for "Vendors1" 2026-07-31 by the user directly — sending its
    old composite-string format was why vendor assignment silently saved
-   nothing — and for "Vehicle_Issue" 2026-08-04, also user-confirmed, reversing
-   the earlier "plain text" assumption) — Creator's API rejects display text
-   for those and wants the linked record's ID instead. Assigned_Technician is
-   still assumed plain text by analogy (not independently confirmed) — don't
-   re-add useId to it without new evidence. Falls back to the raw value if no
+   nothing — for "Vehicle_Issue" 2026-08-04, also user-confirmed, reversing
+   the earlier "plain text" assumption — and for "Assigned_Technician"
+   2026-08-04, confirmed by a live closure-screen screenshot showing a raw
+   "[object Object]" instead of a name, i.e. a genuine Lookup value, not the
+   plain text this was previously assumed to be by analogy) — Creator's API
+   rejects display text for those and wants the linked record's ID instead.
+   Falls back to the raw value if no
    matching option is loaded yet (better a failed save you can see than a
    silent drop). */
 // 2026-07-31: briefly tried sending Lookup fields as an {"ID":"..."} object
@@ -2911,7 +3025,11 @@ async function saveStep(advance){
     // resumes on this same step (stageIndexForStatus).
     const blocked = typeof step.canAdvance==="function" && !step.canAdvance(state.record);
     if(blocked){
-      toast(step.blockedMessage||"Saved — required action still pending","ok");
+      // blockedMessage can be a plain string or, since 2026-08-04 (see
+      // `locations`'s own TOW-vs-RSR wording), a function of state.record —
+      // supports both so existing plain-string steps didn't need touching.
+      const msg = typeof step.blockedMessage==="function" ? step.blockedMessage(state.record) : step.blockedMessage;
+      toast(msg||"Saved — required action still pending","ok");
       return backToDash();
     } else if(advance && state.stepIndex<state.path.length-1){
       state.stepIndex++;

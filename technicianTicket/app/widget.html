@@ -654,8 +654,11 @@ async function rejectService(){
 function renderReachScreen(){
   const r=state.current;
   const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  // Diagnostic (2026-08-04, user-reported live: nav link missing on this
+  // screen) — see vendorTicket's own matching comment, not repeated here.
+  if(!navHref) console.warn("[Get-Rescue] renderReachScreen: no nav link for ticket", r.ID, "— Break_Down_Location1:", JSON.stringify(r.Break_Down_Location1), "| Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude));
   $("ascreenBody").innerHTML = `
-    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : ""}
+    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : `<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="card">
       <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA||"")}" placeholder="Enter manually if blank"></div>
       ${photoFieldHtml("Image_Upload2","Arrival Photo",1,1)}
@@ -978,8 +981,12 @@ function getPositionSafe(){
       // fields these get saved into. RSP_Start_Lat/Lon have since been
       // changed to plain Text fields and renamed RSP_Start_Latitude/
       // Longitude (2026-08-03, same day) — no digit limit applies to those
-      // two anymore — but Cancel_Location_Lat/Lon and RSP_Drop_Location_Lat/
-      // Lon are still Decimal, so this rounding still matters for those.
+      // two anymore — but Cancel_Location_Lat/Lon is still Decimal, so this
+      // rounding still matters for that pair. (RSP_Drop_Location_Lat/Lon,
+      // also still Decimal, is no longer used at all as of 2026-08-04 — TOW's
+      // own "Reached Drop Location" action now reuses RSP_Start_Latitude/
+      // Longitude instead, same field as this Accept-time fix; see
+      // driverTicket/vendorTicket's own reachedDrop().)
       // Widened to 15 decimal places that same day — rounded to match here
       // via toFixed() (not Math.round(x*1e15), which can exceed
       // Number.MAX_SAFE_INTEGER for lat/lon-sized values and silently lose

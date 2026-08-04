@@ -96,7 +96,7 @@ The single ticket record. Every profile reads/writes through `Agent_Ticket_Repor
 | `Reach_Time` | Reach Time | Date-Time | — | Shared by both branches |
 | `Roundtrip_Distance` | Round-Trip Distance (km) | Number | — | RSR's 3-leg total; TOW's 4-point total (Step 7b) |
 | `Odometer_reading_at_Reached_Location` | Odometer at Reached | Number | — | TOW |
-| `RSP_Start_Latitude` / `RSP_Start_Longitude` | RSP Start Latitude / Longitude | Single Line | — | **Text, not Decimal** — sidesteps a real "exceeded maximum digits" error raw GPS coordinates (up to 17 decimal places) hit on a Decimal field |
+| `RSP_Start_Latitude` / `RSP_Start_Longitude` | RSP Start Latitude / Longitude | Single Line | — | **Text, not Decimal** — sidesteps a real "exceeded maximum digits" error raw GPS coordinates (up to 17 decimal places) hit on a Decimal field. Reused 2026-08-04 for TOW's own drop-side GPS fix too (see `RSP_Drop_Location_Lat`/`Lon`'s own row below) — one field, not two |
 | `Cancellation_Time` | Cancellation Time | Date-Time | — | |
 | `Cancel_Location_Lat` / `Cancel_Location_Lon` | Cancel Location Lat / Lon | Decimal | — | |
 | `Cancel_Distance` | Cancel Distance (km) | Number | — | Distance from `RSP_Start_Latitude`/`Longitude` to `Cancel_Location_Lat`/`Lon` — deliberately a different field from `Distance_To_Breakdown` |
@@ -122,7 +122,7 @@ The single ticket record. Every profile reads/writes through `Agent_Ticket_Repor
 | `Drop_Location_Photo` | Drop Location Photo | File Upload | — | TOW, 4 mandatory |
 | `Drop_To_Office_Distance` | Drop → Office (km) | Number | — | |
 | `Drop_Location_Arrival_Time` | Drop Arrival Time | Date-Time | — | |
-| `RSP_Drop_Location_Lat` / `RSP_Drop_Location_Lon` | RSP Drop Location Lat / Lon | Decimal | — | Field widget's own live GPS fix — separate from the customer's static `DropLocationLat`/`Long` |
+| ~~`RSP_Drop_Location_Lat` / `RSP_Drop_Location_Lon`~~ | — | Decimal | — | **Removed 2026-08-04 (user request)** — never a confirmed field; consolidated into `RSP_Start_Latitude`/`RSP_Start_Longitude` (Text) above, reused for this same live GPS fix |
 | `Unloaded_Images` | Unloaded Photo | File Upload | — | 4 mandatory |
 | `VCRF_Image` | VCRF Image | File Upload | — | 1 mandatory |
 | `Handover_Image` | Handover Photo | File Upload | — | 1 mandatory |
@@ -306,6 +306,8 @@ The tables below repeat much of Part 1's information but organized by the ticket
 
 ## Step 3 — Capture Locations (Agent)
 
+**Real bug fixed 2026-08-04**: this step's own advance-gate (`canAdvance`) only ever checked that a *breakdown* location existed — a TOW ticket could advance to Assignment (and all the way to the vendor's own Loading screen) with **no drop location at all**, at which point the vendor's "Vehicle Picked" button stayed permanently disabled with no way back to this step to fix it short of reopening the ticket from the dashboard. Now requires both `Latitude`/`Longitude` AND `DropLocationLat`/`DropLocationLong` for a TOW ticket before advancing (RSR is unaffected — it never has a drop location).
+
 | Field | Label | Type | Widgets | Status |
 |---|---|---|---|---|
 | `Send_Link_For_The_Breakdown_Location` | Send Breakdown Location Link (same field as Step 2's copy) | button | Agent | 🟡 |
@@ -359,8 +361,8 @@ The tables below repeat much of Part 1's information but organized by the ticket
 
 | Field | Label | Type | Widgets | Status |
 |---|---|---|---|---|
-| `Navigation_Link` | Navigation Link (RSR, free text) | textarea | Agent (view-only) | 🟡 |
-| `Navigate_To_Breakdown_Link` | Navigate to Breakdown Link (TOW) | textarea | Agent (view-only) | 🟡 |
+| `Navigation_Link` | Navigation Link (RSR) | textarea (no writer — see below) | Agent (view-only) | 🟡 |
+| `Navigate_To_Breakdown_Link` | Navigate to Breakdown Link (TOW) | textarea (no writer — see below) | Agent (view-only) | 🟡 |
 | `Image_Upload2` | Arrival Photo (RSR) / also reused as the RSR Cancel photo | file | Agent (view-only), Technician, Vendor | 🟡 |
 | `Image_Upload5` | Arrival Photo (TOW) / also reused as the TOW Cancel photo | file | Agent (view-only), Driver, Vendor | 🟡 |
 | `Cancel_Reason` | Cancel Reason (RSR) | select | Agent (view-only), Technician, Vendor | 🟡 |
@@ -368,11 +370,13 @@ The tables below repeat much of Part 1's information but organized by the ticket
 | `Reach_Time` | Reach/arrival timestamp (both branches) | datetime | Technician, Driver, Vendor | ❓ |
 | `Roundtrip_Distance` | Round-trip distance in km — set here for RSR (office→breakdown→office Haversine), set again at Step 7b for TOW's 4-point version | number | Agent (view-only), Technician, Driver, Vendor | 🟡 |
 | `Odometer_reading_at_Reached_Location` | Odometer at Reached (TOW) | number | Agent (view-only), Driver, Vendor | 🟡 |
-| `RSP_Start_Latitude` / `RSP_Start_Longitude` | The tech/driver/vendor's own GPS position at Accept time (Step 5), used to compute the Step 6 Cancel distance. Text (not Decimal) to sidestep a real "exceeded maximum digits" error on raw GPS coordinates | text | Technician, Driver, Vendor | 🟡 (user-renamed 2026-08-03) |
+| `RSP_Start_Latitude` / `RSP_Start_Longitude` | The tech/driver/vendor's own GPS position at Accept time (Step 5), used to compute the Step 6 Cancel distance. Text (not Decimal) to sidestep a real "exceeded maximum digits" error on raw GPS coordinates. Reused 2026-08-04 (user request) at Step 7b's own "Reached Drop Location" for TOW — see that step's own row below, now removed in favor of this same field | text | Technician, Driver, Vendor | 🟡 (user-renamed 2026-08-03) |
 | `Cancellation_Time` | Timestamp of the Cancel Task click | datetime | Technician, Driver, Vendor | ❓ |
 | `Cancel_Location_Lat` / `Cancel_Location_Lon` | GPS position at the moment Cancel is confirmed | decimal | Technician, Driver, Vendor | ❓ |
 | `Cancel_Distance` | Distance in km from `RSP_Start_Latitude`/`Longitude` to `Cancel_Location_Lat`/`Lon` — deliberately a different field from Step 5's own `Distance_To_Breakdown` | number | Technician, Driver, Vendor | ❓ |
 | `Toll_Charges` | Toll Charges? (TOW Reach step) | radio | Agent (view-only), Driver, Vendor | 🟡 |
+
+**`Navigation_Link`/`Navigate_To_Breakdown_Link` fixed 2026-08-04**: neither field ever had a writer — no widget populates them, so `getRescueTicket`'s own Reach screen always showed them blank even though the field-facing widgets show a working "🧭 Navigate to Breakdown" link. `getRescueTicket` now renders these as an actual clickable link too (new `navlink` field type), built the same way the field-facing widgets already do: `Break_Down_Location1` if present, else a `maps.google.com` URL from the ticket's own `Latitude`/`Longitude`. Computed, not stored — nothing is written back to `Navigation_Link`/`Navigate_To_Breakdown_Link` themselves.
 
 ## Step 7 — Work In Progress (Technician, RSR only)
 
@@ -414,7 +418,7 @@ The tables below repeat much of Part 1's information but organized by the ticket
 | `Office_To_Mechanic` / `Mechanic_To_Breakdown` / `Breakdown_To_Drop_Distance` / `Drop_To_Office_Distance` | The 4-point roundtrip's individual legs — really a 3-leg Office→Breakdown→Drop→Office trip (no separate "Mechanic" waypoint exists), `Mechanic_To_Breakdown` is hardcoded `0` — field *names* kept as-is to avoid an unnecessary rename of already-shipped, cross-referenced fields | number | Agent (view-only), Driver, Vendor | 🟡 |
 | `Roundtrip_Distance` | Total of the 4 legs | number | Agent (view-only), Driver, Vendor | 🟡 |
 | `Drop_Location_Arrival_Time` | Timestamp when "Reached Drop Location" is tapped | datetime | Agent (view-only), Driver, Vendor | ❓ (guessed name) |
-| `RSP_Drop_Location_Lat` / `RSP_Drop_Location_Lon` | The driver/vendor's own live GPS fix at that same click — separate from the ticket's static `DropLocationLat`/`DropLocationLong` (the customer-specified drop point, still used for the roundtrip calc) | decimal | Agent (view-only), Driver, Vendor | ❓ (guessed name) |
+| ~~`RSP_Drop_Location_Lat` / `RSP_Drop_Location_Lon`~~ | **Removed 2026-08-04 (user request)** — the driver/vendor's own live GPS fix at that same click now reuses `RSP_Start_Latitude`/`RSP_Start_Longitude` (Step 5's own row above) instead of this separate, never-confirmed pair. Still separate from the ticket's static `DropLocationLat`/`DropLocationLong` (the customer-specified drop point, still used for the roundtrip calc) | — | — | — |
 
 ## Step 7c — WIP: Unloading & Handover (Driver / Vendor, TOW only)
 
@@ -447,6 +451,8 @@ The tables below repeat much of Part 1's information but organized by the ticket
 Reachable at any point in a ticket's timeline (dashboard row action + a permanent wizard button), not gated by the stepper. Every field from every step above is also shown here (read-only display, or click-to-edit — see `getRescueTicket/README.md`'s Final Closure entries for the full mechanism). Fields unique to this screen:
 
 **"Distance & ETA Metrics" group (added 2026-08-04, per user request)**: `ETA`, `Distance_To_Breakdown`, `ETA_TOW`, `Distance_To_Breakdown_TOW`, `Cancel_Distance`, `Office_To_Mechanic`, `Mechanic_To_Breakdown`, `Breakdown_To_Office`, `Roundtrip_Distance`, `Breakdown_To_Drop_Distance`, `Drop_To_Office_Distance`, `Return_Journey_ETA` — all removed from their previous per-stage wizard display (`reach`/`wip`/`wipUnloadingTow`) and shown **only** in this dedicated, read-only Final Closure group, not tied to any wizard step. These are all Google Maps/Haversine-computed by the vendor/technician/driver widgets, not agent input — see each field's own Step-N row above for where it's written.
+
+**"Field Activity Log" group (added 2026-08-04, per a user audit request — "all data we are saving through process should be visible in Final Closure")**: `Service_Acceptance`, `Service_Acceptance_For_Tow`, `Service_Reject_Time`, `Reach_Time`, `Pickup_Time`, `Cancellation_Time`, `Cancel_Location_Lat`/`Lon`, `RSP_Start_Latitude`/`Longitude`. An agent-facing audit turned up these 8 fields being written by `technicianTicket`/`driverTicket`/`vendorTicket`'s own Accept/Reject/Reach/Cancel actions but never shown *anywhere* in `getRescueTicket` before — not in a wizard stage, not in Final Closure. Read-only, shown regardless of confirmation status (all 8 are still guessed field names per the writing widgets' own comments, same ❓ confidence as everything else unconfirmed in this file) — if a name turns out wrong, the row will just always read "—", which is itself a useful signal. `RSP_Start_Latitude`/`Longitude`'s own row was relabeled "RSP Location — Accept/Drop" the same day, once it started being reused for TOW's own drop-side GPS fix too (see its Step 5 row above) — this one row now shows whichever of the two fixes was written most recently.
 
 | Field | Label | Type | Widgets | Status |
 |---|---|---|---|---|

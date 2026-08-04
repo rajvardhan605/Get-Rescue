@@ -77,6 +77,12 @@ img,svg{max-width:100%}
 .photo-field .lab .l{font-family:var(--f-disp);font-weight:800;font-size:13.5px}
 .photo-field .lab .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
 .photo-field .lab .cnt.ok{color:var(--ok)}
+/* Collapsible photo section (2026-08-04, per user request — "accordion as we
+   do for RSR ticket") — see vendorTicket's own matching comment. */
+.photo-field.collapsible .lab{cursor:pointer;user-select:none}
+.photo-field.collapsible .lab .chev{color:var(--muted);vertical-align:middle;margin-right:4px;transition:transform .2s}
+.photo-field.collapsible.collapsed .lab .chev{transform:rotate(-90deg)}
+.photo-field.collapsible.collapsed .photo-grid{display:none}
 .photo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
 .photo-slot{aspect-ratio:1;border-radius:10px;overflow:hidden;position:relative;background:var(--worktop)}
 .photo-slot img{width:100%;height:100%;object-fit:cover;display:block}
@@ -478,12 +484,14 @@ function renderActionScreen(){
 /* ===== Action 5a: Service Acceptance & Rejection (Tow) ===== */
 function renderAcceptScreen(){
   const r=state.current;
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : "";
+  // Same fallback as renderLoadingScreen()/renderReachedDropScreen() — this
+  // is just an informational row (no button gating here), lower priority,
+  // but kept consistent with the fields those two actually depend on.
+  const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? ("https://maps.google.com/?q="+dropLat+","+dropLon) : "");
   $("ascreenBody").innerHTML = `
+    ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
     <div class="card">
-      <div class="info-grid">
-        ${dropHref?`<div class="full"><span class="k">Drop Location</span><span class="v">${esc(dropHref)}</span></div>`:""}
-      </div>
       <div class="fld"><label>Start Odometer</label><input type="number" id="startOdometer"></div>
     </div>
     <div class="btn-row">
@@ -563,8 +571,11 @@ async function rejectService(){
 function renderReachScreen(){
   const r=state.current;
   const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  // Diagnostic (2026-08-04, user-reported live: nav link missing on this
+  // screen) — see vendorTicket's own matching comment, not repeated here.
+  if(!navHref) console.warn("[Get-Rescue] renderReachScreen: no nav link for ticket", r.ID, "— Break_Down_Location1:", JSON.stringify(r.Break_Down_Location1), "| Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude));
   $("ascreenBody").innerHTML = `
-    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : ""}
+    ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : `<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="card">
       <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA_TOW||"")}" placeholder="Enter manually if blank"></div>
       <div class="fld"><label>Odometer at Reached</label><input type="number" id="odoReached"></div>
@@ -659,13 +670,19 @@ async function confirmCancel(){
 /* ===== Action 7a: WIP - Loading / Cx Reject (Tow) ===== */
 function renderLoadingScreen(){
   const r=state.current;
-  const dropReady=!!r.Navigate_To_Drop_Link;
+  // Real bug fixed (2026-08-04, user-reported: TOW tickets checking) —
+  // Navigate_To_Drop_Link has no confirmed writer anywhere in this app (see
+  // FIELDS.md's own ❓ note), so if nothing ever populates it, "Vehicle
+  // Picked" would stay permanently disabled for every TOW ticket. Now also
+  // ready once the real DropLocationLat/DropLocationLong coordinates exist
+  // (captured on the agent's own Locations step), same fallback pattern as
+  // the breakdown nav-link's Break_Down_Location1-or-Latitude/Longitude check.
+  const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
+  const dropReady=!!r.Navigate_To_Drop_Link || (dropLat!=null && dropLon!=null);
   $("ascreenBody").innerHTML = `
-    <div class="card">
-      ${photoFieldHtml("Pre_service_Photo","Pre-service Photos",4,4)}
-      ${photoFieldHtml("Image_Upload_On_truck","On-truck Photos",3,3)}
-      ${photoFieldHtml("VCRF","VCRF Form",1,1)}
-    </div>
+    <div class="card">${photoFieldHtml("Pre_service_Photo","Pre-service Photos",4,4,true)}</div>
+    <div class="card">${photoFieldHtml("Image_Upload_On_truck","On-truck Photos",3,3,true)}</div>
+    <div class="card">${photoFieldHtml("VCRF","VCRF Form",1,1,true)}</div>
     <div class="btn-row">
       <button class="btn ghost" id="cxRejectBtn" type="button">Customer Rejected</button>
       <button class="btn primary" id="vehiclePickedBtn" type="button" ${dropReady?"":"disabled"}>Vehicle Picked</button>
@@ -681,6 +698,7 @@ function renderLoadingScreen(){
       </div>
     </div>`;
   wirePhotoField("Pre_service_Photo",4); wirePhotoField("Image_Upload_On_truck",3); wirePhotoField("VCRF",1);
+  wireCollapsibleField("Pre_service_Photo"); wireCollapsibleField("Image_Upload_On_truck"); wireCollapsibleField("VCRF");
   $("vehiclePickedBtn").onclick=vehiclePicked;
   $("cxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="block"; };
   $("backFromCxRejectBtn").onclick=()=>{ $("cxRejectPanel").style.display="none"; };
@@ -734,9 +752,15 @@ async function confirmCxRejectLoading(){
 /* ===== Action 7b: WIP - Reached Drop Location (Tow) ===== */
 function renderReachedDropScreen(){
   const r=state.current;
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : "";
+  // Same fallback fix as renderLoadingScreen()'s own dropReady, and the same
+  // pattern the breakdown nav-link already used (Break_Down_Location1, else
+  // a maps.google.com link built from real coordinates) — Navigate_To_Drop_Link
+  // has no confirmed writer, so this link would otherwise never show at all.
+  const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? ("https://maps.google.com/?q="+dropLat+","+dropLon) : "");
+  if(!dropHref) console.warn("[Get-Rescue] renderReachedDropScreen: no drop nav link for ticket", r.ID, "— Navigate_To_Drop_Link:", JSON.stringify(r.Navigate_To_Drop_Link), "| DropLocationLat:", JSON.stringify(r.DropLocationLat), "| DropLocationLong:", JSON.stringify(r.DropLocationLong));
   $("ascreenBody").innerHTML = `
-    ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : ""}
+    ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
     <div class="card">
       <div class="fld"><label>Odometer Reading</label><input type="number" id="odoDrop"></div>
       <div class="fld"><label>Toll Charges?</label>
@@ -772,11 +796,16 @@ async function reachedDrop(){
       // "Location is captured as 'RSP Drop Location'" — the driver's own live
       // GPS fix at click time, separate from the ticket's static
       // DropLocationLat/Long (which is the customer-specified drop point
-      // already used above for the roundtrip calc). Both guessed names.
+      // already used above for the roundtrip calc).
       Drop_Location_Arrival_Time: fmtDateTime(new Date())
     };
     const pos=await getPositionSafe();
-    if(pos){ payload.RSP_Drop_Location_Lat=pos.lat; payload.RSP_Drop_Location_Lon=pos.lon; }
+    // Reused 2026-08-04 (user request) — writes into the same confirmed Text
+    // fields Accept already uses for the start-of-service GPS fix, instead of
+    // the separate unconfirmed RSP_Drop_Location_Lat/Lon (guessed, Decimal —
+    // same "exceeded max digits" risk RSP_Start_Latitude/Longitude was
+    // renamed to dodge). Same one-field-not-two pattern as Odometer_Reading.
+    if(pos){ payload.RSP_Start_Latitude=pos.lat; payload.RSP_Start_Longitude=pos.lon; }
     if(toll) payload.Toll_Charges1=toll.dataset.value;
     if(odo!=="") payload.Odometer_Reading=Number(odo);
     await apiUpdate(r.ID, payload);
@@ -790,10 +819,10 @@ async function reachedDrop(){
 /* ===== Action 7c: WIP - Unloading (Tow) ===== */
 function renderUnloadingScreen(){
   $("ascreenBody").innerHTML = `
+    <div class="card">${photoFieldHtml("Unloaded_Images","Unloaded Photos",4,4,true)}</div>
+    <div class="card">${photoFieldHtml("Handover_Image","Handover Photo",1,1,true)}</div>
+    <div class="card">${photoFieldHtml("VCRF_Image","VCRF Image",1,1,true)}</div>
     <div class="card">
-      ${photoFieldHtml("Unloaded_Images","Unloaded Photos",4,4)}
-      ${photoFieldHtml("Handover_Image","Handover Photo",1,1)}
-      ${photoFieldHtml("VCRF_Image","VCRF Image",1,1)}
       <div class="fld"><label>Handover to (Name)</label><input type="text" id="handoverName"></div>
       <div class="fld"><label>Handover Number</label><input type="number" id="handoverNumber"></div>
       <div class="fld"><label>Handover Location</label>
@@ -802,6 +831,7 @@ function renderUnloadingScreen(){
     </div>
     <button class="btn primary" id="droppedBtn" type="button">Dropped</button>`;
   wirePhotoField("Unloaded_Images",4); wirePhotoField("Handover_Image",1); wirePhotoField("VCRF_Image",1);
+  wireCollapsibleField("Unloaded_Images"); wireCollapsibleField("Handover_Image"); wireCollapsibleField("VCRF_Image");
   $("droppedBtn").onclick=confirmDropped;
 }
 async function confirmDropped(){
@@ -889,11 +919,18 @@ async function confirmPaymentReceived(){
   }catch(e){ console.error("[Get-Rescue] confirmPaymentReceived error:", e); toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
 }
 
-function photoFieldHtml(fieldName,label,min,max){
-  return `<div class="photo-field" id="pf_${fieldName}">
-    <div class="lab"><span class="l">${esc(label)}</span><span class="cnt" id="pf_${fieldName}_cnt">0 / ${min>0?("min "+min):("up to "+max)}</span></div>
+// Chevron icon for the optional collapsible photo-field header — see
+// vendorTicket's own matching comment, not repeated here.
+const CHEV_ICON='<svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function photoFieldHtml(fieldName,label,min,max,collapsible){
+  return `<div class="photo-field${collapsible?" collapsible":""}" id="pf_${fieldName}">
+    <div class="lab"><span class="l">${collapsible?CHEV_ICON:""}${esc(label)}</span><span class="cnt" id="pf_${fieldName}_cnt">0 / ${min>0?("min "+min):("up to "+max)}</span></div>
     <div class="photo-grid" id="pf_${fieldName}_grid"></div>
   </div>`;
+}
+function wireCollapsibleField(fieldName){
+  const wrap=$("pf_"+fieldName); const lab=wrap&&wrap.querySelector(".lab");
+  if(lab) lab.onclick=function(){ wrap.classList.toggle("collapsed"); };
 }
 function wirePhotoField(fieldName,max){ renderPhotoGrid(fieldName,max); }
 // See vendorTicket's own matching comment.
