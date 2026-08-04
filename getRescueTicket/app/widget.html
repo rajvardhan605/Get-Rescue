@@ -274,6 +274,13 @@ img,svg{max-width:100%}
 .crow .edit-ic{flex:none;color:var(--muted-2);margin-top:2px}
 .crow:hover .edit-ic,.crow:focus-visible .edit-ic{color:var(--signal)}
 .cgroup-empty{padding:9px 6px;font-size:12.5px;color:var(--muted-2);font-family:var(--f-mono)}
+/* Uploaded-photo thumbnail (2026-08-04) — small preview on a closure row,
+   bigger one in the field-edit popup; async-hydrated by hydrateFilePreviewsIn()
+   after render (see its own comment), starts as a placeholder icon. */
+.crow-thumb{flex:none;width:40px;height:40px;border-radius:8px;overflow:hidden;background:var(--worktop);display:flex;align-items:center;justify-content:center}
+.crow-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.crow-thumb .thumb-ph{font-size:16px;opacity:.5}
+.crow-thumb.big{width:140px;height:140px;border-radius:10px;margin-bottom:10px}
 
 /* wide variant of the shared confirm modal — hosts a single buildField()
    editor instead of a Yes/No prompt (see openFieldEditor/#fieldModal) */
@@ -626,6 +633,34 @@ async function apiUpload(id, fieldName, file){
   const fn = resolve("uploadFile"); if(!fn || !file) return false;
   try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
+}
+// Added 2026-08-04 (user request — "image not previewing in Final Closure
+// which I have uploaded"): File Upload fields only ever showed plain
+// "Uploaded"/"Not uploaded" text, no actual thumbnail, anywhere in this
+// widget. Counterpart to apiUpload() above, same resolve() namespace-probing
+// pattern. Response shape guessed (not independently confirmed against a
+// live widget) — different Creator SDK versions are known to return either
+// a raw Blob, a wrapped {code,data:Blob}, or a plain URL string, so all three
+// are handled; if the real shape (or even the method name itself) turns out
+// different, this just returns null and the caller leaves the placeholder
+// icon in place — never worse than the current text-only display.
+let DOWNLOAD_FILE_UNAVAILABLE_WARNED=false;
+async function apiDownloadFile(id, fieldName){
+  const fn = resolve("downloadFile");
+  if(!fn){
+    // Logged once, not per-field — if "downloadFile" isn't the real SDK
+    // method name, every thumbnail on screen would otherwise warn separately.
+    if(!DOWNLOAD_FILE_UNAVAILABLE_WARNED){ DOWNLOAD_FILE_UNAVAILABLE_WARNED=true; console.warn("[Get-Rescue] apiDownloadFile: no \"downloadFile\" method found on ZOHO.CREATOR.{DATA,PUBLISH,META,UTIL,FILE} — photo thumbnails will stay as placeholder icons. If the SDK exposes file download under a different method name, update resolve(\"downloadFile\") in apiDownloadFile()."); }
+    return null;
+  }
+  if(!id) return null;
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName });
+    if(r instanceof Blob) return r;
+    if(r && r.data instanceof Blob) return r.data;
+    if(typeof r==="string" && r) return r; // treated as a ready-to-use URL by the caller
+    return null;
+  }catch(e){ console.warn("[Get-Rescue] downloadFile failed for "+fieldName, e); return null; }
 }
 
 /* ---------- reusable option lists ---------- */
@@ -2098,10 +2133,22 @@ async function openTicket(rec){
    click handler runs collectStep(false) first to snapshot them). Either way
    this clones rec fresh, same pattern as openTicket. */
 function openClosure(rec){
+  // Diagnostic logging (2026-08-04, user-reported live: Customer Name/Client/
+  // Vehicle Issue/Vendors/photos still blank here even after the field_config
+  // fix on apiGetById() and the id->label mapping on Vehicle/Client/Assigned
+  // Vendor). Same "dump the raw record before this widget touches it" pattern
+  // as openTicket's own comment — if a field that was definitely filled in
+  // shows blank here too, its `n:` name doesn't match the real Zoho API name
+  // (check this against FIELDS.md's ❓/🟡 markers); if it's present HERE but
+  // still renders blank/wrong on screen, the bug is in this widget's display
+  // code instead, not the field name.
+  console.log("[Get-Rescue] openClosure raw record (before unwrap):", rec, "| Customer_Name:", JSON.stringify(rec.Customer_Name), "| Client:", JSON.stringify(rec.Client), "| Vehicle:", JSON.stringify(rec.Vehicle), "| Vehicle_Issue:", JSON.stringify(rec.Vehicle_Issue), "| Vendors1:", JSON.stringify(rec.Vendors1), "| Assigned_Vendor:", JSON.stringify(rec.Assigned_Vendor));
+  console.log("[Get-Rescue] openClosure OPTIONS loaded so far — vehicles:", OPTIONS.vehicles.length, "clients:", OPTIONS.clients.length, "vendors:", OPTIONS.vendors.length, "technicians:", OPTIONS.technicians.length);
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
   // Vendors1's own display-name unwrapping happens for free below — see
   // openTicket()'s own comment on this same pattern.
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  console.log("[Get-Rescue] openClosure state.record after unwrap — Client:", JSON.stringify(state.record.Client), "| Vehicle:", JSON.stringify(state.record.Vehicle), "| Vehicle_Issue:", JSON.stringify(state.record.Vehicle_Issue));
   showView("closure"); renderClosure(); scrollToTop();
 }
 function renderClosure(){
@@ -2116,6 +2163,11 @@ function renderClosure(){
       box.classList.toggle("collapsed");
     };
   });
+  // Photo thumbnails (2026-08-04, user request) — see hydrateFilePreviewsIn's
+  // own comment. Fires for every uploaded-file row regardless of its group's
+  // collapsed state, since the rows are already in the DOM either way (just
+  // CSS-hidden) — simpler than wiring a fetch into the expand click above.
+  hydrateFilePreviewsIn("#closureFields");
 }
 function setPath(){
   const t=(state.record[CONFIG.serviceTypeField]||"").toUpperCase();
@@ -2312,7 +2364,14 @@ function buildField(f){
     }
   } else if(f.t==="file"){
     const has = state.files[f.n];
-    wrap.innerHTML=lab+`<input type="file" id="${id}" accept="image/*"${f.readonly?" disabled":""}>`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(cur?`<span class="hint">Already uploaded</span>`:""));
+    // Preview thumbnail (2026-08-04, user request) — same placeholder/hydrate
+    // pattern as closureFieldRowHtml's own comment, just the bigger ".big"
+    // size for this popup. Only for an already-saved photo, not a freshly-
+    // picked local file (that has no server URL to fetch yet).
+    const showThumb = !has && cur;
+    wrap.innerHTML=lab
+      +(showThumb?`<span class="crow-thumb big" data-thumb-field="${esc(f.n)}"><span class="thumb-ph">🖼</span></span>`:"")
+      +`<input type="file" id="${id}" accept="image/*"${f.readonly?" disabled":""}>`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(cur?`<span class="hint">Already uploaded</span>`:""));
   } else if(f.t==="navlink"){
     // Clickable maps link, computed (not stored) — matches technicianTicket/
     // driverTicket/vendorTicket's own "Navigate to Breakdown" nav-link
@@ -2714,13 +2773,39 @@ let CLOSURE_FIELD_INDEX={};
 function unwrapLookupDisplay(v){
   return (v && typeof v==="object") ? (v.display_value||v.zc_display_value||(v.first_name&&((v.first_name||"")+" "+(v.last_name||"")).trim())||v.value||"") : v;
 }
+// Real bug fixed (2026-08-04, user-reported live: "Vehicle"/"Assigned Vendor"
+// etc. showed a raw Zoho record ID like "444881000000221408" instead of a
+// name). useId:true fields save/read back the bare linked-record ID — that
+// was never the problem, but this display code never mapped it back to a
+// name the way the picker itself does (see idsFor()'s own forward mapping).
+// Reuses the SAME already-loaded OPTIONS list (optionsListFor) the picker
+// populates from, just matched by id instead of by label. Returns null (not
+// the id) when no match is found in the loaded list, so the caller can fall
+// back to whatever it already had — e.g. a genuinely unconfirmed field name,
+// or OPTIONS not finished loading yet — rather than silently hiding a
+// mismatch behind a made-up value.
+function closureLabelFor(f, v){
+  if(!f.useId || v==null || v==="") return null;
+  const list = optionsListFor(f);
+  if(!list || !list.length) return null;
+  const find = (val)=>{ const m=list.find(o=>String(o.id)===String(val)); return m ? m.label : null; };
+  if(Array.isArray(v)){
+    const labels = v.map(find);
+    return labels.every(Boolean) ? labels.join(", ") : null;
+  }
+  return find(v);
+}
 function closureFieldValueDisplay(f){
   const v=state.record[f.n];
   if(f.t==="file"){
     if(state.files[f.n]) return {text:"Selected: "+state.files[f.n].name, empty:false};
     return v ? {text:"Uploaded", empty:false} : {text:"Not uploaded", empty:true};
   }
-  if(Array.isArray(v)) return v.length ? {text:v.map(unwrapLookupDisplay).join(", "), empty:false} : {text:"None selected", empty:true};
+  if(Array.isArray(v)){
+    if(!v.length) return {text:"None selected", empty:true};
+    const label=closureLabelFor(f,v);
+    return {text: label || v.map(unwrapLookupDisplay).join(", "), empty:false};
+  }
   if(f.t==="check") return {text:(v===true||v==="Yes")?"Yes":"No", empty:false};
   if(v==null||v==="") return {text:"—", empty:true};
   if(f.t==="remarks"){
@@ -2729,17 +2814,52 @@ function closureFieldValueDisplay(f){
     const lines=String(v).split("\n"); const last=lines[lines.length-1];
     return {text: lines.length>1 ? "… "+last : last, empty:false};
   }
+  const label=closureLabelFor(f,v);
+  if(label) return {text:label, empty:false};
   if(typeof v==="object"){ const s=unwrapLookupDisplay(v); return s ? {text:String(s), empty:false} : {text:"—", empty:true}; }
   return {text:String(v), empty:false};
 }
 const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 function closureFieldRowHtml(f){
   const d=closureFieldValueDisplay(f);
+  // Thumbnail placeholder for an already-uploaded photo (2026-08-04, user
+  // request) — hydrated to a real <img> after render by
+  // hydrateFilePreviewsIn(), see that function's own comment.
+  const showThumb = f.t==="file" && !state.files[f.n] && state.record[f.n];
   return `<button type="button" class="crow" data-field="${esc(f.n)}">
+    ${showThumb?`<span class="crow-thumb" data-thumb-field="${esc(f.n)}"><span class="thumb-ph">🖼</span></span>`:""}
     <span class="k">${esc(f.l)}</span>
     <span class="v${d.empty?" empty":""}">${esc(d.text)}</span>
     ${EDIT_ICON}
   </button>`;
+}
+// Object-URL cache for already-downloaded photo previews, keyed by
+// "<recordId>|<fieldName>" so reopening the SAME ticket (or re-rendering while
+// it's open) doesn't re-download a photo already fetched this session.
+const FILE_PREVIEW_CACHE={};
+/* Fills in every [data-thumb-field] placeholder currently in containerSelector
+   with a real <img>, fetched via apiDownloadFile() (2026-08-04, user request —
+   see closureFieldRowHtml's/buildField's own comments on where these
+   placeholders come from). Runs after the container's innerHTML is already
+   set — querying fresh elements again once each download resolves, since the
+   agent may have navigated to a different ticket/field by then and the
+   original element would otherwise silently update a screen no longer shown
+   (harmless, just wasted work, but the fresh lookup avoids even that). Errors/
+   unavailable SDK methods just leave the placeholder icon in place. */
+function hydrateFilePreviewsIn(containerSelector){
+  document.querySelectorAll(containerSelector+" [data-thumb-field]").forEach(function(el){
+    const fieldName=el.dataset.thumbField;
+    const key=state.recordId+"|"+fieldName;
+    const cached=FILE_PREVIEW_CACHE[key];
+    if(cached){ el.innerHTML='<img src="'+esc(cached)+'">'; return; }
+    apiDownloadFile(state.recordId, fieldName).then(function(result){
+      if(!result) return;
+      const url=(typeof result==="string") ? result : URL.createObjectURL(result);
+      FILE_PREVIEW_CACHE[key]=url;
+      const fresh=document.querySelector(containerSelector+' [data-thumb-field="'+fieldName+'"]');
+      if(fresh) fresh.innerHTML='<img src="'+esc(url)+'">';
+    });
+  });
 }
 // Collapsed/expanded state persists across re-renders, keyed by group title.
 // 2026-08-03 (user request — "collapsible section-wise, not full at a time"):
@@ -2784,6 +2904,7 @@ function openFieldEditor(fieldName){
   const body=$("fieldModalBody"); body.innerHTML="";
   body.appendChild(buildField(f));
   $("fieldModal").classList.add("on");
+  hydrateFilePreviewsIn("#fieldModalBody");
 }
 function closeFieldEditor(){ $("fieldModal").classList.remove("on"); editingField=null; }
 /* Reads the popup's single rendered field back into state.record — same
