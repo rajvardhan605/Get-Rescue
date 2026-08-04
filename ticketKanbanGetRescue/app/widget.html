@@ -369,14 +369,14 @@ const CONFIG = {
   serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
   nameField:    "Customer_Name",         // composite name field
   vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
-  vehicleCategoryField: "Category",     // 2W/4W field on vehicle_master_Report, matched against Vehicle_Issue_Report's VEHICLE_TYPE
+  vehicleCategoryField: "Category",     // 2W/4W field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's Vehicle_Category
   rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
   // option sources (best-effort; degrade to text/empty if unavailable) — report names are the MASTER tables we pull picker options from, unrelated to the Create_Case field names above
   optionReports: {
-    vehicles:    { report:"vehicle_master_Report", label:["Name"], max:1000 },
+    vehicles:    { report:"Vehicle_Master_Report", label:["Name"], max:1000 },
     issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
-    vendors:     { report:"vendors_Report",        label:["Vendor_Name","Name","vendor_name"] },
-    technicians: { report:"technicians_Report",    label:["technician_name","Name"], emailField:"Email" },
+    vendors:     { report:"Vendors_Report",        label:["Vendor_Name","Name"] },
+    technicians: { report:"Technicians_Report",    label:["Technician_Name","Name"], emailField:"Email" },
     clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
   },
   fetchLatest: 1000   // how many recent tickets to pull for the board — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
@@ -533,7 +533,6 @@ const STAGES = [
       buttonLabel:"Request Location", doneLabel:"Location Requested" },
     { n:"Payment_Method", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"] },
     { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"] },
-    { n:"Total_Service_Fee1", l:"Total Service Fee (Payment Record)", t:"number" },
     { n:"Image_Upload", l:"Receipt Photo", t:"file" },
     { n:"Remarks", l:"Remarks", t:"textarea", full:true }
   ]},
@@ -569,7 +568,9 @@ const STAGES = [
     // Real Zoho field API name is "Vendors1" (confirmed 2026-07-31 by the user).
     { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendors", full:true, useId:true }, // real Lookup, confirmed 2026-07-31
     { n:"Vendor_Email", l:"Vendor Email", t:"text" },
-    { n:"Assignment_Sent", l:"Assignment Sent?", t:"radio", o:["Yes","No"] },
+    // "Assignment_Sent" dropped from the schema 2026-08-03 (forms rebuilt
+    // from scratch) — nothing ever wrote it, same fix already made in
+    // getRescueTicket a while back that this widget hadn't picked up yet.
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
     { n:"Assigned_Technician_Email", l:"Technician Email", t:"text" }
   ]},
@@ -578,25 +579,27 @@ const STAGES = [
   { key:"acceptance", branch:"rsr", bucket:1, short:"Accept", title:"Service Acceptance",
     desc:"Vendor/technician response to the assignment.", save:"Save Acceptance",
     statuses:["RSP ON THE WAY","RSP REJECT"],
-    status:(r)=> r.Service_Request==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    // 2026-08-03: "Service_Request"/"Assign_Technican" dropped from the
+    // schema — neither was ever written by any field widget (they write
+    // Status directly). Same fix getRescueTicket already made; this widget
+    // hadn't picked it up yet.
+    status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
     fields:[
-    { n:"Service_Request", l:"Response", t:"radio", o:["Accepted","Rejected"] },
-    { n:"Assign_Technican", l:"Assign Technician?", t:"radio", o:["Yes","No"] },
-    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request==="Rejected", full:true },
+    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason, full:true },
     { n:"Vendor_Email1", l:"Vendor Email", t:"text" },
     { n:"Technician_Email", l:"Technician Email", t:"text" }
   ]},
   { key:"reach", branch:"rsr", bucket:2, short:"Reach", title:"Reach Breakdown Location",
     desc:"Arrival, ETA and navigation.", save:"Save",
     statuses:["RSP ON THE WAY","RSP CANCELLED"],
-    status:(r)=> r.Action_field==="Cancel" ? "RSP CANCELLED" : "RSP ON THE WAY",
+    // 2026-08-03: "Action_field" dropped — same fix as `acceptance` above.
+    status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
     fields:[
-    { n:"Action_field", l:"Action", t:"radio", o:["Reached","Cancel"] },
     { n:"ETA", l:"ETA (mins)", t:"number" },
     { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", t:"number" },
     { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
-    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field==="Cancel", full:true }
+    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true }
   ]},
   { key:"wip", branch:"rsr", bucket:2, short:"WIP", title:"Work In Progress",
     desc:"On-site repair — photos, expense and resolution.", save:"Save Progress",
@@ -618,11 +621,11 @@ const STAGES = [
   { key:"acceptanceTow", branch:"tow", bucket:1, short:"Accept", title:"Service Acceptance (Tow)",
     desc:"Driver response to the tow assignment.", save:"Save Acceptance",
     statuses:["RSP ON THE WAY","RSP REJECT"],
-    status:(r)=> r.Service_Request1==="Rejected" ? "RSP REJECT" : "RSP ON THE WAY",
+    // 2026-08-03: "Service_Request1"/"Assign_Technican1" dropped — same fix
+    // as `acceptance` (its RSR sibling) above.
+    status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
     fields:[
-    { n:"Service_Request1", l:"Response", t:"radio", o:["Accepted","Rejected"] },
-    { n:"Assign_Technican1", l:"Assign Driver?", t:"radio", o:["Yes","No"] },
-    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Service_Request1==="Rejected", full:true },
+    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason1, full:true },
     { n:"Image_Upload1", l:"Photo", t:"file" },
     { n:"Vendor_Email2", l:"Vendor Email", t:"text" },
     { n:"Technician_Email1", l:"Driver Email", t:"text" }
@@ -639,21 +642,29 @@ const STAGES = [
   ]},
   { key:"wipLoadingTow", branch:"tow", bucket:2, short:"Loading", title:"Loading",
     desc:"On-truck loading photos and VCRF.", save:"Save Loading",
-    statuses:["LOADING","RSP CANCELLED"],
-    status:(r)=> r.Action_field2==="Cancel" ? "RSP CANCELLED" : "LOADING",
+    // "REMAINING FEE DUE" deliberately NOT in this stage's own resume
+    // `statuses` (stays `payment`'s alone) — same reasoning as
+    // `acceptance`'s own comment above, avoids a resume-routing ambiguity.
+    statuses:["LOADING"], status:"LOADING",
     fields:[
     { n:"Pre_service_Photo", l:"Pre-service Photo", t:"file" },
     { n:"Image_Upload_On_truck", l:"On-truck Photo", t:"file" },
     { n:"VCRF", l:"VCRF", t:"file" },
     { n:"Image_Upload6", l:"Additional Photo", t:"file" },
-    { n:"Action_field2", l:"Action", t:"radio", o:["Loaded","Cancel"] },
-    { n:"Rejection_Reason1", l:"Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Action_field2==="Cancel", full:true }
+    // 2026-08-03: "Action_field2" dropped — same fix as `acceptance` above.
+    // This screen's real alternate outcome is "Customer Rejected" ->
+    // Status:"REMAINING FEE DUE" (matches driverTicket/vendorTicket's own
+    // Loading screen), not a synthetic Cancel action.
+    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true },
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" }
   ]},
   { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
     desc:"Odometer and drop-location proof.", save:"Save",
     statuses:["TO DROP LOCATION"], status:"TO DROP LOCATION",
     fields:[
-    { n:"Odometer_Reading", l:"Odometer Reading Photo", t:"file" },
+    // Type corrected 2026-08-03 to match what Driver/Vendor actually send —
+    // a plain number, not a photo (same fix getRescueTicket already made).
+    { n:"Odometer_Reading", l:"Odometer Reading", t:"number" },
     { n:"Drop_Location_Photo", l:"Drop Location Photo", t:"file" },
     { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"] }
   ]},
@@ -665,7 +676,9 @@ const STAGES = [
     { n:"VCRF_Image", l:"VCRF Image", t:"file" },
     { n:"Handover_Image", l:"Handover Photo", t:"file" },
     { n:"Handover_to_Name", l:"Handover to (Name)", t:"text" },
-    { n:"Handover_to_Number", l:"Handover Number", t:"tel" },
+    // Type corrected 2026-08-03 to match the real field (same fix
+    // getRescueTicket already made) — was a tel-type text box.
+    { n:"Handover_to_Number", l:"Handover Number", t:"number" },
     { n:"Handover_to_Designation", l:"Handover Location", t:"select", o:["Home","Office","Work Shop"] },
     { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true },
     { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km)", t:"number" },
@@ -681,7 +694,7 @@ const STAGES = [
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
     // Options corrected 2026-08-03 (user's own Zoho field screenshot): real
     // list is Cash / UPI / Card / Net Banking.
-    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"] },
+    { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"] },
     { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
     { n:"QR_Code", l:"QR / Reference", t:"text" },
     { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },
@@ -795,9 +808,9 @@ function optionsListFor(field){
 function resolveOptions(field){ return optionsListFor(field); }
 
 /* ---------- vehicle_master + Vehicle_Issue_Report → issue derivation ----------
-   Vehicle_Issue_Report holds every issue with a VEHICLE_TYPE (2W/4W, multiselect)
-   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose VEHICLE_TYPE
-   includes the selected vehicle's own Category (2W/4W, from vehicle_master_Report).
+   Vehicle_Issue_Report holds every issue with a Vehicle_Category (2W/4W, multiselect)
+   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose Vehicle_Category
+   includes the selected vehicle's own Category (2W/4W, from Vehicle_Master_Report).
    The chosen issue's Issue_Type then drives Service_Type: TOW -> "TOW", anything
    else -> "RSR". */
 function valuesOf(v){
@@ -813,7 +826,7 @@ function vehicleIssuesFor(vehicleLabel){
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
   if(!category) return [];
   return OPTIONS.issues.filter(function(issue){
-    const types = valuesOf(issue.raw && issue.raw.VEHICLE_TYPE);
+    const types = valuesOf(issue.raw && issue.raw.Vehicle_Category);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
 }
@@ -903,12 +916,12 @@ const DEMO_VEHICLES = [
   { ID:"V3", Name:"BMW 3 Series", Category:"4W", Segment:"D" }
 ];
 const DEMO_ISSUES = [
-  { ID:"I1", Issue_Name:"Battery Jumpstart", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", VEHICLE_TYPE:["4W"], Issue_Type:"REPAIR" },
-  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", VEHICLE_TYPE:["2W"], Issue_Type:"REPAIR" },
-  { ID:"I4", Issue_Name:"Key Lockout", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I5", Issue_Name:"Flatbed Tow", VEHICLE_TYPE:["4W"], Issue_Type:"TOW" },
-  { ID:"I6", Issue_Name:"Mobile Tow", VEHICLE_TYPE:["2W"], Issue_Type:"TOW" }
+  { ID:"I1", Issue_Name:"Battery Jumpstart", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", Vehicle_Category:["4W"], Issue_Type:"REPAIR" },
+  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", Vehicle_Category:["2W"], Issue_Type:"REPAIR" },
+  { ID:"I4", Issue_Name:"Key Lockout", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I5", Issue_Name:"Flatbed Tow", Vehicle_Category:["4W"], Issue_Type:"TOW" },
+  { ID:"I6", Issue_Name:"Mobile Tow", Vehicle_Category:["2W"], Issue_Type:"TOW" }
 ];
 const DEMO_CLIENTS = [
   { ID:"C1", Client_Name:"Ondemand" },
@@ -1334,7 +1347,7 @@ function buildField(f){
   setTimeout(()=>wireField(f,id),0);
   return wrap;
 }
-const RERENDER=["Time_of_service","Action_field","Action_field2","Service_Request","Service_Request1","Vehicle"];
+const RERENDER=["Time_of_service","Vehicle"];
 /* any field change that forces a full re-render must snapshot the DOM into
    state.record FIRST (via collectStep(false)) — otherwise every other field
    on the step (plain text inputs have no live listener of their own) reverts
@@ -1429,7 +1442,7 @@ function summaryHtml(){
     ["Service Type", r[CONFIG.serviceTypeField]||""],
     ["Vehicle", r[CONFIG.vehicleField]||""],
     ["Issue", readVal(r,"Vehicle_Issue")],
-    ["Total Fee", r.Total_Service_Fee||r.Total_Service_Fee1||""],
+    ["Total Fee", r.Total_Service_Fee||""],
     ["Booking Fee", r.Booking_Fee||""],
     ["Remaining Fee", r.Remaining_Fee||""],
     ["Vendor", readVal(r,"Vendors1")||r.Vendor_Email||""],

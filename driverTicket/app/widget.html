@@ -188,10 +188,10 @@ const CONFIG = {
   phoneField: "Phone_Number",
   vehicleField: "Vehicle",
   myEmailFieldCandidates: ["Assigned_Technician_Email","Technician_Email1","Vendor_Email2"],
-  techReport: "technicians_Report",
+  techReport: "Technicians_Report",
   techStatusField: "Availability_Status",
   techEmailField: "Email",
-  techNameField: "technician_name",
+  techNameField: "Technician_Name",
   // Invites (2026-08-03, user-confirmed — "invite covers all") — see
   // technicianTicket's own comment on this same config entry.
   invitesReport: "Invites_Report"
@@ -301,13 +301,14 @@ function isMine(rec){
 const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{} };
 
 // Invites-based matching (2026-08-03) — see technicianTicket's own
-// loadMyInvites() for the fuller comment (identical pattern).
+// loadMyInvites() for the fuller comment (identical pattern, including the
+// 2026-08-03 `Vendor` -> `Technician` field fix).
 async function loadMyInvites(){
   const all = await apiGetReport(CONFIG.invitesReport, null, 200);
   console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; MY_TECH_NAME="+MY_TECH_NAME);
   const mine = all.filter(function(inv){
-    const vName=String(unwrapLookup(inv.Vendor)||"").trim().toLowerCase();
-    return MY_TECH_NAME && vName===MY_TECH_NAME.trim().toLowerCase();
+    const tName=String(unwrapLookup(inv.Technician)||"").trim().toLowerCase();
+    return MY_TECH_NAME && tName===MY_TECH_NAME.trim().toLowerCase();
   });
   console.log("[Get-Rescue] loadMyInvites: "+mine.length+" match MY_TECH_NAME", mine);
   const map={};
@@ -468,11 +469,12 @@ async function rejectService(){
     updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
     try{
       const fn=resolve("addRecords");
-      // Case_ID/Vehicle are real Lookup fields on Task_Rejections (confirmed
-      // 2026-07-31) — see technicianTicket's own comment on this same call.
+      // RSID/Vehicle are real Lookup fields on Task_Rejections — see
+      // technicianTicket's own comment on this same call (incl. the
+      // 2026-08-03 Case_ID -> RSID rename).
       // Reverted the {"ID":...} object-wrapping attempt — broke saving.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
-        Case_ID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
         Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
@@ -741,7 +743,7 @@ function renderPaymentScreen(){
   // config) — see technicianTicket's own comment on this same line. Real
   // options are PAID / PENDING / NOT APPLICABLE, not "Pending"/"Success".
   const alreadySuccess=String(r.Payment_Status||"").toUpperCase()==="PAID";
-  // Payment_Method1's real options confirmed 2026-08-03 (user's own Zoho
+  // Payment_Method_Final's real options confirmed 2026-08-03 (user's own Zoho
   // field screenshot): Cash / UPI / Card / Net Banking — replaces the
   // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
   // is an automatic online gateway, so the QR/auto-pay block is gone —
@@ -779,7 +781,7 @@ async function confirmPaymentReceived(){
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
     // "PAID" here since clicking this button is itself the attestation.
-    const payload={ Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    const payload={ Payment_Method_Final: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);

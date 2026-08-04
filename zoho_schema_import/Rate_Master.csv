@@ -1,0 +1,4 @@
+Vehicle Type,Vehicle Segment,Issue,Rate Type,Fixed Rate,Formula Base Amount,Formula KM Buffer,Formula Per KM Rate,Formula Min Amount
+2W,A,Battery Jumpstart,FIXED,250,,,,
+4W,B,Flatbed Tow,FORMULA,,800,2,25,1000
+2W,A,Mobile Tow,FORMULA,,400,1,15,500

@@ -1,0 +1,4 @@
+Vendor Name,Email,Phone,Priority,Availability Status,Latitude,Longitude,Vendor Type
+Speedy Motors,speedy.motors@example.com,9800011122,1,Online,12.9720,77.5950,Individual
+Metro Towing Fleet,metro.towing@example.com,9800033344,2,Online,19.0765,72.8780,Fleet
+Quick Fix Garage,quickfix.garage@example.com,9800055566,3,Offline,12.9800,77.6000,Individual

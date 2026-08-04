@@ -105,6 +105,15 @@ Same fix as `vendorTicket`'s own matching entry — see its README for the full 
 
 Same fixes as `vendorTicket`'s own matching entry (see its README for the full explanation) — `Payment_Method1` now lists the real `Cash`/`UPI`/`Card`/`Net Banking` options (default `Cash`), the QR-code/"Payment Gateway"-gated logic is gone (every method now requires the receipt photo or a zero balance), and every photo-capture slot offers both a 📷 camera tile and a new 🖼️ gallery tile (`openGallery()` + a new hidden `galleryInput` with no `capture` attribute).
 
+## 2026-08-03 (later still) — All Zoho forms deleted and rebuilt from scratch: schema rebuild, renames, and a real Invites bug fixed
+
+Same schema rebuild as `vendorTicket`'s own matching entry (see its README for the full explanation, and `../FIELDS.md`/`../ACCESS.md` for the complete build spec) — this widget's own relevant changes:
+
+- **`Payment_Method1` renamed to `Payment_Method_Final`** throughout.
+- **`technicians_Report` renamed to `Technicians_Report`**, `technician_name` renamed to `Technician_Name` — `CONFIG.techReport`/`techNameField` updated to match.
+- **`Task_Rejections.Case_ID` renamed to `Task_Rejections.RSID`** — `rejectService()`'s write updated to match.
+- **Real bug fixed: `loadMyInvites()` was matching the wrong Invites field.** It compared `inv.Vendor` against `MY_TECH_NAME`, but `vendorTicket`'s fleet hand-off never actually wrote a technician's name into `Vendor` (a Zoho Lookup can only target one form — see `vendorTicket/README.md`'s own entry). `Invites` now has a separate `Technician` field for exactly this, and this widget matches against that instead.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

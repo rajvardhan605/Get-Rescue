@@ -477,22 +477,33 @@ const CONFIG = {
   serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
   nameField:    "Customer_Name",         // composite name field
   vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
-  vehicleCategoryField: "Category",     // 2W/4W field on vehicle_master_Report, matched against Vehicle_Issue_Report's VEHICLE_TYPE
+  vehicleCategoryField: "Category",     // 2W/4W field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's Vehicle_Category
   rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
   // Invites form/report (2026-08-03, user-confirmed): one record per invited
   // vendor per ticket — RSID (Lookup -> this Create_Case record), Vendor
-  // (Lookup -> vendors_Report). Created by THIS widget's own JS when the
-  // Assignment step is saved (confirmed — not a backend workflow). Vendor/
-  // technician/driver widgets now read their own "my tickets" list from
-  // Invites_Report instead of Agent_Ticket_Report directly — see syncInvites().
+  // (Lookup -> Vendors_Report). Created by THIS widget's own JS when the
+  // Assignment step is saved (confirmed — not a backend workflow). Invites
+  // also has a separate Technician field (Lookup -> Technicians_Report),
+  // written by vendorTicket's own fleet hand-off — this widget never writes
+  // it, only Vendor. Vendor/technician/driver widgets now read their own
+  // "my tickets" list from Invites_Report instead of Agent_Ticket_Report
+  // directly — see syncInvites().
   invitesForm: "Invites",
   invitesReport: "Invites_Report",
-  // option sources (best-effort; degrade to text/empty if unavailable) — report names are the MASTER tables we pull picker options from, unrelated to the Create_Case field names above
+  // option sources — report names are the MASTER tables we pull picker options
+  // from, unrelated to the Create_Case field names above. Renamed 2026-08-03
+  // (forms rebuilt from scratch, old ones deleted): vehicle_master_Report ->
+  // Vehicle_Master_Report, vendors_Report -> Vendors_Report (this single
+  // Vendors form now also absorbs what used to be the separate
+  // My_Availability_Vendor form — one Vendors master, not two, see
+  // FIELDS.md), technicians_Report -> Technicians_Report. Field names on the
+  // master records themselves are also now confirmed/fixed (Vendor_Name,
+  // Technician_Name — no more lowercase technician_name/vendor_name guesses).
   optionReports: {
-    vehicles:    { report:"vehicle_master_Report", label:["Name"], max:1000 },
+    vehicles:    { report:"Vehicle_Master_Report", label:["Name"], max:1000 },
     issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
-    vendors:     { report:"vendors_Report",        label:["Vendor_Name","Name","vendor_name"] },
-    technicians: { report:"technicians_Report",    label:["technician_name","Name"], emailField:"Email" },
+    vendors:     { report:"Vendors_Report",        label:["Vendor_Name","Name"] },
+    technicians: { report:"Technicians_Report",    label:["Technician_Name","Name"], emailField:"Email" },
     clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
   },
   fetchLatest: 1000,  // how many recent tickets to pull for the dashboard — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
@@ -501,22 +512,17 @@ const CONFIG = {
   // "8 km geofence... for RSR Tasks and... 20km geofence for TOW Tasks") —
   // was a single flat 8km for both.
   vendorDistanceKm: { RSR:8, TOW:20 },
-  // Field-name candidates for vendors_Report's phone/priority/online-offline/location —
-  // NOT confirmed live yet (unlike the label candidates above, which are already in
-  // use elsewhere). vendorInfo() tries each in order and degrades gracefully (blank/
-  // unknown) if none match — verify against a real vendors_Report record and correct
-  // these if the real field names differ. "status" is expected to hold "Online"/
-  // "Offline" — the same field name/values the toggleGetRescue widget reads/writes.
-  vendorFieldCandidates: {
-    phone:    ["Vendor_Phone","Phone","phone_number","Contact_Number","Mobile","Mobile_Number"],
-    priority: ["Priority","Vendor_Priority","Rank"],
-    status:   ["Availability_Status","Status","Vendor_Status"],
-    lat:      ["Latitude","Vendor_Latitude","Lat"],
-    lon:      ["Longitude","Vendor_Longitude","Long","Lng"],
-    // added 2026-07-31 — needed to auto-populate the new hidden Vendor_Emails
-    // field whenever Vendors1 is saved, see vendorEmailsFor().
-    email:    ["Email","Vendor_Email","email"]
-  }
+  // Vendors_Report's own field names for phone/priority/online-offline/location —
+  // 2026-08-03: these used to be defensive multi-candidate guesses
+  // (CONFIG.vendorFieldCandidates) since the real form didn't exist yet; now
+  // that the Vendors form is being built fresh, each is a single confirmed
+  // field name (see vendorInfo(), FIELDS.md). "status" holds "Online"/"Offline".
+  vendorPhoneField: "Phone",
+  vendorPriorityField: "Priority",
+  vendorStatusField: "Availability_Status",
+  vendorLatField: "Latitude",
+  vendorLonField: "Longitude",
+  vendorEmailField: "Email"
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
@@ -726,7 +732,6 @@ const STAGES = [
       buttonLabel:"Request Location", doneLabel:"Location Requested" },
     { n:"Payment_Method", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], disabled:true },
     { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"] },
-    { n:"Total_Service_Fee1", l:"Total Service Fee (Payment Record)", t:"number", readonly:true },
     { n:"Image_Upload", l:"Receipt Photo", t:"file", readonly:true },
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
@@ -820,7 +825,7 @@ const STAGES = [
     // Real Zoho field API name is "Vendors1" (confirmed 2026-07-31 by the
     // user — "Vendors" was already taken/renamed on their side). Also
     // confirmed 2026-07-31: this is a real (multi) Lookup field, not a plain
-    // multiselect of text — useId:true added so it saves real vendors_Report
+    // multiselect of text — useId:true added so it saves real Vendors_Report
     // record IDs instead of the composite "[priority] Name | Phone | Status"
     // string this app was previously sending (which a genuine Lookup field
     // silently rejects — this was the root cause of "no vendor is assigned
@@ -864,7 +869,9 @@ const STAGES = [
     // vendor already saved), just can't type into any of these fields here.
     viewOnly:true,
     fields:[
-    { n:"Assign_Technican", l:"Assign Technician?", t:"radio", o:["Yes","No"] },
+    // "Assign_Technican" dropped from the schema 2026-08-03 (forms rebuilt
+    // from scratch) — nothing ever wrote it; it was a display-only guess
+    // with no real data source. See FIELDS.md.
     { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason, full:true },
     { n:"Vendor_Email1", l:"Vendor Email", t:"text" },
     { n:"Technician_Email", l:"Technician Email", t:"text" },
@@ -876,7 +883,7 @@ const STAGES = [
     { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
     // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
     // OWN Accept action once they accept — not written by this widget at
-    // all (viewOnly stage). Assumed to lookup vendors_Report (same target as
+    // all (viewOnly stage). Assumed to lookup Vendors_Report (same target as
     // Vendors1) — not independently confirmed; see QUESTIONS_TO_ASK.md.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true }
   ]},
@@ -925,7 +932,8 @@ const STAGES = [
     status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
     viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
-    { n:"Assign_Technican1", l:"Assign Driver?", t:"radio", o:["Yes","No"] },
+    // "Assign_Technican1" dropped from the schema 2026-08-03 — see
+    // `acceptance`'s own matching comment above.
     { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason1, full:true },
     { n:"Image_Upload1", l:"Photo", t:"file" },
     { n:"Vendor_Email2", l:"Vendor Email", t:"text" },
@@ -1021,11 +1029,16 @@ const STAGES = [
     desc:"Collect the remaining balance.", save:"Save Payment",
     statuses:["REMAINING FEE DUE"], status:"RSP CLOSED",
     fields:[
+    // "Total_Service_Fee1" dropped from the schema 2026-08-03 (forms rebuilt
+    // from scratch) — it was a "likely-duplicate, relationship unconfirmed"
+    // guess with no real writer. This stage just displays the same
+    // `quote`-stage Total_Service_Fee read-only instead of a second field.
+    { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", readonly:true },
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal" },
     // Options corrected 2026-08-03 (user's own Zoho field screenshot): real
     // list is Cash / UPI / Card / Net Banking — same as `quote`'s own
     // Payment_Method, not the earlier guessed "Payment Gateway/Direct/Cash".
-    { n:"Payment_Method1", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], default:"Cash" },
+    { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], default:"Cash" },
     { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"] },
     { n:"QR_Code", l:"QR / Reference", t:"text" },
     { n:"Send_Payment_Link1", l:"Send payment link", t:"check", full:true },
@@ -1070,9 +1083,9 @@ function computeStatus(step, record){
    the stepper. Field link names below (Refund_Due, Refund_Reason,
    Refund_Amount, Closure_Status, Closure_Reason, Cx_Feedback_Score,
    Cx_Feedback_Text, B2B_GST_Invoice_Required, GST_Number, Closure_Extra_Photo)
-   are pattern-matched guesses, NOT confirmed live — same disclaimer as
-   CONFIG.vendorFieldCandidates elsewhere in this file; verify against a real
-   Create_Case record and correct if the real names differ.
+   are the authored names for the freshly-rebuilt Create_Case form (2026-08-03)
+   — not yet exercised against a live save; verify against a real Create_Case
+   record and correct here first if anything needs adjusting.
    Interpretation choices made building this from the mock (flagged here,
    not silently assumed — see README §4 for the fuller writeup):
    - The mock's field list shows a 3-option Closure_Status ("Not Converted"/
@@ -1185,9 +1198,9 @@ function optionsListFor(field){
 function resolveOptions(field){ return optionsListFor(field); }
 
 /* ---------- vehicle_master + Vehicle_Issue_Report → issue derivation ----------
-   Vehicle_Issue_Report holds every issue with a VEHICLE_TYPE (2W/4W, multiselect)
-   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose VEHICLE_TYPE
-   includes the selected vehicle's own Category (2W/4W, from vehicle_master_Report).
+   Vehicle_Issue_Report holds every issue with a Vehicle_Category (2W/4W, multiselect)
+   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose Vehicle_Category
+   includes the selected vehicle's own Category (2W/4W, from Vehicle_Master_Report).
    The chosen issue's Issue_Type then drives Service_Type: TOW -> "TOW", anything
    else -> "RSR". */
 function valuesOf(v){
@@ -1203,7 +1216,7 @@ function vehicleIssuesFor(vehicleLabel){
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
   if(!category) return [];
   return OPTIONS.issues.filter(function(issue){
-    const types = valuesOf(issue.raw && issue.raw.VEHICLE_TYPE);
+    const types = valuesOf(issue.raw && issue.raw.Vehicle_Category);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
 }
@@ -1257,42 +1270,36 @@ function calcRoundTripKm(r){
   return Math.round(total*10)/10;
 }
 
-/* ---------- vendors_Report → Assignment-step vendor picker ----------
+/* ---------- Vendors_Report → Assignment-step vendor picker ----------
    Preferred_Vendor="Yes" shows every vendor (searchable, sorted); "No" (or
    unset) filters to only vendors within radiusKmFor(record)'s radius (8km
    RSR / 20km TOW, CONFIG.vendorDistanceKm) of the ticket's own captured
    breakdown location, using the same plain Haversine great-circle distance
    haversineKm() already provides above — no Google Maps API call. Results are
    always sorted by priority then distance (sortVendors()).
-   vendors_Report's exact field names for phone/priority/online-offline/
-   vendors_Report's exact field names for phone/priority/online-offline/
-   location are NOT confirmed live (unlike the label candidates in
-   CONFIG.optionReports.vendors) — vendorInfo() tries each candidate in
-   CONFIG.vendorFieldCandidates in turn and degrades to ""/unknown if none
-   match, the same defensive pattern pull()'s own label lookup already uses. */
-function firstRawValue(raw, candidates){
+   2026-08-03: Vendors_Report's own field names are now confirmed single
+   fields (CONFIG.vendorPhoneField etc.) instead of the old defensive
+   multi-candidate guessing — see this file's own CONFIG comment. */
+function rawValue(raw, field){
   if(!raw) return "";
-  for(let i=0;i<candidates.length;i++){
-    const v=raw[candidates[i]];
-    if(v!=null && v!==""){ return (typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v; }
-  }
-  return "";
+  const v=raw[field];
+  if(v==null || v==="") return "";
+  return (typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
 }
 function vendorInfo(opt){
   const raw=(opt&&opt.raw)||{};
-  const C=CONFIG.vendorFieldCandidates;
-  const phone=firstRawValue(raw,C.phone);
-  const priority=firstRawValue(raw,C.priority);
-  const status=String(firstRawValue(raw,C.status)||"").trim(); // expected "Online"/"Offline"
-  const lat=Number(firstRawValue(raw,C.lat)), lon=Number(firstRawValue(raw,C.lon));
+  const phone=rawValue(raw,CONFIG.vendorPhoneField);
+  const priority=rawValue(raw,CONFIG.vendorPriorityField);
+  const status=String(rawValue(raw,CONFIG.vendorStatusField)||"").trim(); // expected "Online"/"Offline"
+  const lat=Number(rawValue(raw,CONFIG.vendorLatField)), lon=Number(rawValue(raw,CONFIG.vendorLonField));
   const hasLoc=!isNaN(lat)&&!isNaN(lon);
-  const email=firstRawValue(raw,C.email);
+  const email=rawValue(raw,CONFIG.vendorEmailField);
   return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:status.toUpperCase()==="ONLINE", lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email };
 }
 /* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
    auto-populate a hidden "Vendor_Emails" field with the selected vendors'
    own emails (comma-separated) — resolved from OPTIONS.vendors/vendorInfo()
-   via the same vendors_Report the picker itself pulls from. Not shown as a
+   via the same Vendors_Report the picker itself pulls from. Not shown as a
    field in this widget at all (the user will hide it on the real Zoho form
    too); vendors with no resolvable email are silently skipped. */
 function vendorEmailsFor(names){
@@ -1303,7 +1310,7 @@ function vendorEmailsFor(names){
   }).filter(Boolean).join(", ");
 }
 // Same OPTIONS.vendors cache Vendors1's own picker uses — resolves a display
-// name to its real vendors_Report record ID (bare, not wrapped — see the
+// name to its real Vendors_Report record ID (bare, not wrapped — see the
 // Lookup write-shape revert earlier this session; wrapping broke saving).
 function vendorIdByName(name){
   const opt=OPTIONS.vendors.find(function(o){ return String(o.v)===String(name); });
@@ -1425,7 +1432,7 @@ function vendorOptionHtml(o){
 }
 /* formatVendorForSave() (the old "[priority] Name | Phone | Status" composite
    string builder) was removed 2026-07-31 — Vendors1 is a real Lookup field
-   (confirmed live), so it now just saves plain vendors_Report record IDs via
+   (confirmed live), so it now just saves plain Vendors_Report record IDs via
    the existing useId/idsFor() mechanism, same as Vehicle/Client. Priority/
    phone/online-status are no longer persisted onto the saved value itself —
    see vendorNamesFor()'s own comment for what that costs on redisplay. */
@@ -1485,12 +1492,12 @@ const DEMO_VEHICLES = [
   { ID:"V3", Name:"BMW 3 Series", Category:"4W", Segment:"D" }
 ];
 const DEMO_ISSUES = [
-  { ID:"I1", Issue_Name:"Battery Jumpstart", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", VEHICLE_TYPE:["4W"], Issue_Type:"REPAIR" },
-  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", VEHICLE_TYPE:["2W"], Issue_Type:"REPAIR" },
-  { ID:"I4", Issue_Name:"Key Lockout", VEHICLE_TYPE:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I5", Issue_Name:"Flatbed Tow", VEHICLE_TYPE:["4W"], Issue_Type:"TOW" },
-  { ID:"I6", Issue_Name:"Mobile Tow", VEHICLE_TYPE:["2W"], Issue_Type:"TOW" }
+  { ID:"I1", Issue_Name:"Battery Jumpstart", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", Vehicle_Category:["4W"], Issue_Type:"REPAIR" },
+  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", Vehicle_Category:["2W"], Issue_Type:"REPAIR" },
+  { ID:"I4", Issue_Name:"Key Lockout", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
+  { ID:"I5", Issue_Name:"Flatbed Tow", Vehicle_Category:["4W"], Issue_Type:"TOW" },
+  { ID:"I6", Issue_Name:"Mobile Tow", Vehicle_Category:["2W"], Issue_Type:"TOW" }
 ];
 const DEMO_CLIENTS = [
   { ID:"C1", Client_Name:"Ondemand" },

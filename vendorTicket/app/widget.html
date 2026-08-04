@@ -195,11 +195,13 @@ img,svg{max-width:100%}
    set of confirmed decisions this whole build relies on (Create_Case only,
    no "Invites" form, Haversine stand-in for Google Maps, etc.) — not
    re-explained per file here.
-   NOT YET CONFIRMED (flagged, not guessed silently — see QUESTIONS_TO_ASK.md):
-   - The real field on vendors_Report distinguishing Individual vs. Fleet
-     (guessed here as `Vendor_Type`, values "Individual"/"Fleet").
-   - The real field linking a technicians_Report row back to its owning
-     fleet vendor (guessed here as `Fleet_Vendor`).
+   SCHEMA DECISIONS (2026-08-03 — all Zoho forms were deleted and rebuilt
+   from scratch this round, so these are now the authored field names, not
+   guesses against a pre-existing form — see FIELDS.md/ACCESS.md):
+   - Individual vs. Fleet lives on `Vendors_Report.Vendor_Type`
+     (values "Individual"/"Fleet").
+   - A technician's owning fleet vendor lives on
+     `Technicians_Report.Fleet_Vendor`, matched by name string (not ID).
    - Whether a fleet vendor's Accept should write "RSP ON THE WAY" directly
      (as implemented) or some other intermediate status before a technician
      is actually picked.
@@ -215,21 +217,21 @@ const CONFIG = {
   phoneField: "Phone_Number",
   vehicleField: "Vehicle",
   /* toggle target — the vendor-specific report toggleGetRescue's own CONFIG
-     already used (My_Availability_Vendor), folded directly into this widget
+     already used (Vendors_Report), folded directly into this widget
      per explicit request — no separate toggle widget. */
-  vendorReport: "My_Availability_Vendor",
+  vendorReport: "Vendors_Report",
   vendorStatusField: "Availability_Status",
   vendorEmailField: "Email",
-  vendorNameField: "vendor_name",
+  vendorNameField: "Vendor_Name",
   /* NOT confirmed live — see this file's own header comment. */
   vendorTypeField: "Vendor_Type",
-  fleetTechnicianReport: "technicians_Report",
+  fleetTechnicianReport: "Technicians_Report",
   fleetTechnicianLinkField: "Fleet_Vendor",
-  fleetTechnicianNameField: "technician_name",
+  fleetTechnicianNameField: "Technician_Name",
   fleetTechnicianEmailField: "Email",
   fleetTechnicianStatusField: "Availability_Status",
   // Invites (2026-08-03, user-confirmed): one record per invited vendor per
-  // ticket — RSID (Lookup -> Create_Case), Vendor (Lookup -> vendors_Report).
+  // ticket — RSID (Lookup -> Create_Case), Vendor (Lookup -> Vendors_Report).
   // getRescueTicket's own JS creates these when the agent saves the
   // Assignment step. This widget's dashboard now finds "my tickets" by first
   // finding MY Invites records, then loading the linked Create_Case tickets —
@@ -359,8 +361,9 @@ function vendorChipName(v){
 // — Vendors1 is a real Lookup, and getRescueTicket now auto-populates a
 // hidden Vendor_Emails field (comma-separated) whenever Vendors1 is saved,
 // which is a more reliable match than the name-comparison below (no
-// dependency on vendors_Report's label matching My_Availability_Vendor's own
-// name field exactly). Checking both: Vendor_Emails first (real email,
+// dependency on the Assignment picker's own vendor name string matching
+// this vendor's own logged-in profile name exactly). Checking both:
+// Vendor_Emails first (real email,
 // exact match), falling back to the Vendors1 name-match for any older
 // ticket saved before Vendor_Emails existed.
 function isMine(rec){
@@ -601,11 +604,12 @@ async function rejectService(){
     updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
     try{
       const fn=resolve("addRecords");
-      // Case_ID/Vehicle are real Lookup fields on Task_Rejections (confirmed
-      // 2026-07-31) — see technicianTicket's own comment on this same call.
+      // RSID/Vehicle are real Lookup fields on Task_Rejections — see
+      // technicianTicket's own comment on this same call (incl. the
+      // 2026-08-03 Case_ID -> RSID rename).
       // Reverted the {"ID":...} object-wrapping attempt — broke saving.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
-        Case_ID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
         Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
@@ -663,9 +667,15 @@ async function assignTechnician(techId){
     // mechanism as the agent's own vendor invites, one record per assigned
     // technician, so this technician's own dashboard picks the ticket up via
     // Invites_Report. Best-effort/non-blocking, same pattern as Task_Rejections.
+    // Real bug fixed 2026-08-03 (schema rebuild): this used to write
+    // tech.ID (a Technicians_Report ID) into the `Vendor` field, which is a
+    // Lookup targeting Vendors_Report — a Zoho Lookup can only point at one
+    // form, so that could never have actually resolved. Invites now has a
+    // separate `Technician` Lookup (-> Technicians_Report) for exactly this
+    // case; getRescueTicket's own vendor invites still use `Vendor` only.
     try{
       const fn=resolve("addRecords");
-      if(fn) await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:{ RSID:r.ID, Vendor:tech.ID } } });
+      if(fn) await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:{ RSID:r.ID, Technician:tech.ID } } });
     }catch(e){ console.warn("[GR-Vendor] could not create Invites record for technician", name, e); }
     toast("Assigned to "+name,"ok");
     backToDashboard();
@@ -1057,7 +1067,7 @@ function renderPaymentScreen(){
   // Was sending "Success" (rejected live: "Invalid column value for
   // Payment_Status") — now uses "PAID".
   const alreadySuccess=String(r.Payment_Status||"").toUpperCase()==="PAID";
-  // Payment_Method1's real options confirmed 2026-08-03 (user's own Zoho
+  // Payment_Method_Final's real options confirmed 2026-08-03 (user's own Zoho
   // field screenshot): Cash / UPI / Card / Net Banking — replaces the
   // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
   // is an automatic online gateway, so the QR/auto-pay block is gone —
@@ -1097,7 +1107,7 @@ async function confirmPaymentReceived(){
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
     // "PAID" here since clicking this button is itself the attestation.
-    const payload={ Payment_Method1: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    const payload={ Payment_Method_Final: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
     // Diagnostic logging (2026-08-03, user-reported live: "Invalid column
     // value for Payment_Status") — same pattern as workCompleted's own logging.
     console.log("[GR-Vendor] confirmPaymentReceived payload:", JSON.stringify(payload));

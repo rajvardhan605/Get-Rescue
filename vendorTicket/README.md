@@ -118,6 +118,17 @@ User shared the real field's live Zoho config for `Payment_Method1`: `Cash` / `U
 
 Also per explicit request: every photo-capture slot (`renderPhotoGrid()`) now shows two distinct "add" tiles instead of one — 📷 opens the existing live-camera modal (GPS/time watermark), and a new 🖼️ opens a plain gallery file picker (`openGallery()`, backed by a new hidden `<input type="file" id="galleryInput" accept="image/*">` with no `capture` attribute, so the OS shows its normal photo library / files chooser). Previously the only way to attach a photo without a working camera was the `cameraFallbackInput` error path, which still hints `capture="environment"` on mobile; the new gallery button is the explicit, always-available alternative.
 
+## 2026-08-03 (later still) — All Zoho forms deleted and rebuilt from scratch: schema rebuild, renames, and a real Invites bug fixed
+
+The user deleted every Zoho form/report (accumulated mismatched field names, unnecessary data) and asked for a complete build spec instead — now in `../FIELDS.md` (Parts 1–2) and `../ACCESS.md`. This widget's own code changed to match:
+
+- **`Payment_Method1` renamed to `Payment_Method_Final`** — the "1" suffix was a Zoho auto-dedup artifact, not a meaningful name; the field itself is unchanged (still the Final Payment step's own method, separate from `Payment_Method` at the Quote step).
+- **`vendors_Report` and the separate `My_Availability_Vendor` form are unified into one `Vendors_Report`.** There was never a real reason for a vendor to have two different records across two forms — this widget's own `CONFIG.vendorReport` now points at `Vendors_Report`, and `vendorNameField` changed from lowercase `vendor_name` to `Vendor_Name`.
+- **`Vendors_Report`'s own field names for phone/priority/status/lat/lon (read via `vendorInfo()` in `getRescueTicket`, not this widget directly)** collapsed from multi-candidate guesses into single confirmed names — doesn't change this widget's own code, but see `getRescueTicket/README.md`.
+- **Real bug fixed: `assignTechnician()`'s fleet hand-off was writing the wrong Invites field.** It sent `{RSID:r.ID, Vendor:tech.ID}` — but `tech.ID` is a `Technicians_Report` record ID, and `Vendor` is a Lookup pointed at `Vendors_Report`. A Zoho Lookup can only target one form, so this could never actually have resolved. `Invites` now has a separate `Technician` Lookup field (→ `Technicians_Report`), and this widget writes `Technician:tech.ID` instead.
+- **`Task_Rejections.Case_ID` renamed to `Task_Rejections.RSID`**, matching `Invites`' own naming for the same "Lookup back to the ticket" concept — this widget's own `rejectService()` write updated to match.
+- **`Technicians_Report.technician_name` renamed to `Technician_Name`**, `fleetTechnicianNameField` updated to match.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

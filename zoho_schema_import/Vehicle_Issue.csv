@@ -1,0 +1,7 @@
+Issue Name,Vehicle Category,Issue Type
+Battery Jumpstart,"2W,4W",REPAIR
+Puncture (Tubeless Tyre),4W,REPAIR
+Puncture (Tube Tyre),2W,REPAIR
+Key Lockout,"2W,4W",REPAIR
+Flatbed Tow,4W,TOW
+Mobile Tow,2W,TOW
