@@ -89,6 +89,12 @@ img,svg{max-width:100%}
 .photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
 .photo-slot.add:active{background:var(--worktop)}
 .photo-slot .rm{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(20,22,28,.65);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:11px}
+/* Auto-upload status badge — see vendorTicket's own matching comment. */
+.photo-slot .up-badge{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;color:#fff;line-height:1}
+.photo-slot .up-badge.ok{background:var(--ok)}
+.photo-slot .up-badge.pending{background:rgba(20,22,28,.65);animation:pulseBadge 1.1s ease-in-out infinite}
+.photo-slot .up-badge.failed{background:var(--stop)}
+@keyframes pulseBadge{0%,100%{opacity:1}50%{opacity:.35}}
 
 /* ---------- form fields (radio/select/input reused) ---------- */
 .fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
@@ -371,6 +377,33 @@ async function calcRoundTripKm(bLat,bLon,dLat,dLon){
   else{ total+=haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON); }
   return Math.round(total*10)/10;
 }
+/* Same office->breakdown->office trip as calcRoundTripKm() above, but also
+   exposing the two individual legs — added 2026-08-04 so Step 7's own
+   Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office fields
+   (documented in FIELDS.md, never actually written by any widget before
+   this) get real values on Work Completed. mechanicToBreakdown is always 0 —
+   there's no separate "Mechanic" waypoint distinct from the office/RESCUE
+   point, same resolved understanding driverTicket's/vendorTicket's own TOW
+   calc4PointRoundtrip() already relies on (see QUESTIONS_TO_ASK.md) —
+   "Office_To_Mechanic" here just means office->breakdown. */
+async function officeRoundTripLegs(bLat,bLon){
+  const rows=await googleDistanceMatrix([{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}], [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}]);
+  let officeToBreakdown, breakdownToOffice, ok=!!rows;
+  if(ok){
+    const e0=rows[0] && rows[0].elements && rows[0].elements[0];
+    const e1=rows[1] && rows[1].elements && rows[1].elements[1];
+    if(e0 && e0.status==="OK" && e1 && e1.status==="OK"){ officeToBreakdown=e0.distance.value/1000; breakdownToOffice=e1.distance.value/1000; }
+    else ok=false;
+  }
+  if(!ok){ officeToBreakdown=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon); breakdownToOffice=officeToBreakdown; }
+  const total=officeToBreakdown+breakdownToOffice;
+  return {
+    officeToMechanic: Math.round(officeToBreakdown*10)/10,
+    mechanicToBreakdown: 0,
+    breakdownToOffice: Math.round(breakdownToOffice*10)/10,
+    total: Math.round(total*10)/10
+  };
+}
 
 /* ---------- helpers ---------- */
 const $=(id)=>document.getElementById(id);
@@ -404,7 +437,7 @@ function isMine(rec){
 }
 
 /* ---------- state ---------- */
-const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{} };
+const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{}, uploadedPhotoFiles:new Set(), failedPhotoFiles:new Set() };
 
 /* ---------- dashboard ---------- */
 // Invites-based matching (2026-08-03) — same pattern as vendorTicket's own
@@ -774,6 +807,16 @@ async function workCompleted(){
     if(resolved.dataset.value==="No"){ const note=$("unresolvedNote").value.trim(); if(note) payload.Unresolved_Note=note; }
     const expenseVal=$("expenseAmount").value;
     if(expenseVal!=="") payload.Expense_Amount=Number(expenseVal);
+    // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office (2026-08-04,
+    // per user request) — the RSR 3-leg roundtrip breakdown, documented in
+    // FIELDS.md since early on but never actually written until now.
+    const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+    if(bLat!=null && bLon!=null){
+      const legs=await officeRoundTripLegs(bLat,bLon);
+      payload.Office_To_Mechanic=legs.officeToMechanic;
+      payload.Mechanic_To_Breakdown=legs.mechanicToBreakdown;
+      payload.Breakdown_To_Office=legs.breakdownToOffice;
+    }
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] workCompleted payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);
@@ -819,7 +862,7 @@ function renderPaymentScreen(){
     <div class="card">
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
       <div class="fld"><label>Payment Method</label>
-        <select id="paymentMethod1">
+        <select id="Payment_Method_Final">
           <option value="Cash" selected>Cash</option>
           <option value="UPI">UPI</option>
           <option value="Card">Card</option>
@@ -851,7 +894,7 @@ async function confirmPaymentReceived(){
     // own "transaction ID, time of receipt... captured in their respective
     // fields" for a real gateway "success") are NOT set here — there's no
     // real payment-gateway integration in this app; see QUESTIONS_TO_ASK.md.
-    const payload={ Payment_Method_Final: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);
@@ -871,12 +914,18 @@ function photoFieldHtml(fieldName,label,min,max){
 function wirePhotoField(fieldName,max){
   renderPhotoGrid(fieldName,max);
 }
+// See vendorTicket's own matching comment.
+function uploadBadgeHtml(f){
+  if(state.uploadedPhotoFiles.has(f)) return '<span class="up-badge ok" title="Saved">✓</span>';
+  if(state.failedPhotoFiles.has(f)) return '<span class="up-badge failed" title="Save failed — will retry when you submit">!</span>';
+  return '<span class="up-badge pending" title="Saving…">⋯</span>';
+}
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
   let html="";
   files.forEach(function(f,i){
-    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
   if(files.length<max){
     // Two explicit add tiles (2026-08-03, user-requested) — live camera
@@ -899,8 +948,22 @@ function renderPhotoGrid(fieldName,max){
 async function uploadPendingPhotos(recordId){
   for(const fieldName in state.photos){
     const files=state.photos[fieldName]||[];
-    for(let i=0;i<files.length;i++){ await apiUpload(recordId, fieldName, files[i]); }
+    for(let i=0;i<files.length;i++){
+      // Most photos are already uploaded immediately on capture/pick (see
+      // uploadPhotoNow, 2026-08-04 — "auto save at the time of upload, don't
+      // need to click save") — skip those here to avoid uploading twice.
+      if(state.uploadedPhotoFiles.has(files[i])) continue;
+      await apiUpload(recordId, fieldName, files[i]);
+    }
   }
+}
+// Fire-and-forget upload the moment a photo is captured/picked — see
+// vendorTicket's own matching comment, not repeated here.
+async function uploadPhotoNow(fieldName, file, max){
+  const r=state.current; if(!r || r.ID==null) return;
+  try{ await apiUpload(r.ID, fieldName, file); state.uploadedPhotoFiles.add(file); }
+  catch(e){ console.warn("[Get-Rescue] immediate upload failed for "+fieldName+" — will retry on save", e); state.failedPhotoFiles.add(file); }
+  renderPhotoGrid(fieldName, max);
 }
 
 /* ---------- camera modal: capture -> canvas GPS/timestamp watermark ---------- */
@@ -940,6 +1003,7 @@ async function openCamera(fieldName,max){
       state.photos[fieldName]=state.photos[fieldName]||[];
       state.photos[fieldName].push(f);
       renderPhotoGrid(fieldName,max);
+      uploadPhotoNow(fieldName,f,max);
       $("cameraFallbackInput").value="";
     };
     $("cameraFallbackInput").click();
@@ -952,6 +1016,7 @@ function openGallery(fieldName,max){
     state.photos[fieldName]=state.photos[fieldName]||[];
     state.photos[fieldName].push(f);
     renderPhotoGrid(fieldName,max);
+    uploadPhotoNow(fieldName,f,max);
     $("galleryInput").value="";
   };
   $("galleryInput").click();
@@ -981,6 +1046,7 @@ async function capturePhoto(){
     state.photos[currentPhotoField].push(file);
     closeCamera();
     renderPhotoGrid(currentPhotoField,currentPhotoMax);
+    uploadPhotoNow(currentPhotoField,file,currentPhotoMax);
   }, "image/jpeg", 0.85);
 }
 $("cameraCancel").onclick=closeCamera;

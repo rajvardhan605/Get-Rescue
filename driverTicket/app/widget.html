@@ -83,6 +83,12 @@ img,svg{max-width:100%}
 .photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
 .photo-slot.add:active{background:var(--worktop)}
 .photo-slot .rm{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(20,22,28,.65);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:11px}
+/* Auto-upload status badge — see vendorTicket's own matching comment. */
+.photo-slot .up-badge{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;color:#fff;line-height:1}
+.photo-slot .up-badge.ok{background:var(--ok)}
+.photo-slot .up-badge.pending{background:rgba(20,22,28,.65);animation:pulseBadge 1.1s ease-in-out infinite}
+.photo-slot .up-badge.failed{background:var(--stop)}
+@keyframes pulseBadge{0%,100%{opacity:1}50%{opacity:.35}}
 
 .fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
 .fld label{font-family:var(--f-disp);font-weight:700;font-size:13.5px}
@@ -367,7 +373,7 @@ function isMine(rec){
   return emails.indexOf(LOGIN_EMAIL.trim().toLowerCase())>=0;
 }
 
-const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{} };
+const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:{}, uploadedPhotoFiles:new Set(), failedPhotoFiles:new Set() };
 
 // Invites-based matching (2026-08-03) — see technicianTicket's own
 // loadMyInvites() for the fuller comment (identical pattern, including the
@@ -632,6 +638,15 @@ async function confirmCancel(){
       // with pos as the "breakdown" point and no drop point.
       const legs = await calc4PointRoundtrip(pos.lat,pos.lon,null,null);
       payload.Roundtrip_Distance = legs.total;
+      // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office
+      // (2026-08-04, per user request — "this also work for the Driver"):
+      // same per-leg breakdown just added to technicianTicket's/vendorTicket's
+      // own RSR Work Completed, extended to this widget's own office<->office
+      // (no drop) trips. dropToOffice in that no-drop case IS the
+      // position->office leg this field means here.
+      payload.Office_To_Mechanic = legs.officeToMechanic;
+      payload.Mechanic_To_Breakdown = legs.mechanicToBreakdown;
+      payload.Breakdown_To_Office = legs.dropToOffice;
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
@@ -707,7 +722,9 @@ async function confirmCxRejectLoading(){
     // breakdown location" (i.e. the breakdown point itself) as the input here.
     const legs = await calc4PointRoundtrip(Number(r.Latitude),Number(r.Longitude),null,null);
     // Same shared "RSP_Completion_Time" as the RSR WIP screen's own Cx Reject — see technicianTicket's own comment.
-    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Roundtrip_Distance: legs.total, Status:"REMAINING FEE DUE" });
+    // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office — see
+    // confirmCancel()'s own matching comment on this same addition.
+    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Roundtrip_Distance: legs.total, Office_To_Mechanic: legs.officeToMechanic, Mechanic_To_Breakdown: legs.mechanicToBreakdown, Breakdown_To_Office: legs.dropToOffice, Status:"REMAINING FEE DUE" });
     toast("Saved","ok");
     goToStatus("REMAINING FEE DUE");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
@@ -834,7 +851,7 @@ function renderPaymentScreen(){
     <div class="card">
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
       <div class="fld"><label>Payment Method</label>
-        <select id="paymentMethod1">
+        <select id="Payment_Method_Final">
           <option value="Cash" selected>Cash</option>
           <option value="UPI">UPI</option>
           <option value="Card">Card</option>
@@ -862,7 +879,7 @@ async function confirmPaymentReceived(){
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
     // "PAID" here since clicking this button is itself the attestation.
-    const payload={ Payment_Method_Final: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);
@@ -879,12 +896,18 @@ function photoFieldHtml(fieldName,label,min,max){
   </div>`;
 }
 function wirePhotoField(fieldName,max){ renderPhotoGrid(fieldName,max); }
+// See vendorTicket's own matching comment.
+function uploadBadgeHtml(f){
+  if(state.uploadedPhotoFiles.has(f)) return '<span class="up-badge ok" title="Saved">✓</span>';
+  if(state.failedPhotoFiles.has(f)) return '<span class="up-badge failed" title="Save failed — will retry when you submit">!</span>';
+  return '<span class="up-badge pending" title="Saving…">⋯</span>';
+}
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
   let html="";
   files.forEach(function(f,i){
-    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
   if(files.length<max){
     // Two explicit add tiles (2026-08-03, user-requested) — live camera
@@ -907,8 +930,22 @@ function renderPhotoGrid(fieldName,max){
 async function uploadPendingPhotos(recordId){
   for(const fieldName in state.photos){
     const files=state.photos[fieldName]||[];
-    for(let i=0;i<files.length;i++){ await apiUpload(recordId, fieldName, files[i]); }
+    for(let i=0;i<files.length;i++){
+      // Most photos are already uploaded immediately on capture/pick (see
+      // uploadPhotoNow, 2026-08-04 — "auto save at the time of upload, don't
+      // need to click save") — skip those here to avoid uploading twice.
+      if(state.uploadedPhotoFiles.has(files[i])) continue;
+      await apiUpload(recordId, fieldName, files[i]);
+    }
   }
+}
+// Fire-and-forget upload the moment a photo is captured/picked — see
+// vendorTicket's own matching comment, not repeated here.
+async function uploadPhotoNow(fieldName, file, max){
+  const r=state.current; if(!r || r.ID==null) return;
+  try{ await apiUpload(r.ID, fieldName, file); state.uploadedPhotoFiles.add(file); }
+  catch(e){ console.warn("[Get-Rescue] immediate upload failed for "+fieldName+" — will retry on save", e); state.failedPhotoFiles.add(file); }
+  renderPhotoGrid(fieldName, max);
 }
 
 let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
@@ -939,6 +976,7 @@ async function openCamera(fieldName,max){
       state.photos[fieldName]=state.photos[fieldName]||[];
       state.photos[fieldName].push(f);
       renderPhotoGrid(fieldName,max);
+      uploadPhotoNow(fieldName,f,max);
       $("cameraFallbackInput").value="";
     };
     $("cameraFallbackInput").click();
@@ -951,6 +989,7 @@ function openGallery(fieldName,max){
     state.photos[fieldName]=state.photos[fieldName]||[];
     state.photos[fieldName].push(f);
     renderPhotoGrid(fieldName,max);
+    uploadPhotoNow(fieldName,f,max);
     $("galleryInput").value="";
   };
   $("galleryInput").click();
@@ -980,6 +1019,7 @@ async function capturePhoto(){
     state.photos[currentPhotoField].push(file);
     closeCamera();
     renderPhotoGrid(currentPhotoField,currentPhotoMax);
+    uploadPhotoNow(currentPhotoField,file,currentPhotoMax);
   }, "image/jpeg", 0.85);
 }
 $("cameraCancel").onclick=closeCamera;

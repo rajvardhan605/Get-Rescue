@@ -959,8 +959,8 @@ const STAGES = [
     status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
     viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
     fields:[
-    { n:"ETA", l:"ETA (mins)", t:"number" },
-    { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", t:"number" },
+    // ETA/Distance_To_Breakdown moved to Final Closure's own "Distance & ETA
+    // Metrics" group 2026-08-04 (per user request) — see DISTANCE_METRICS_FIELDS.
     { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
     { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true }
@@ -977,11 +977,10 @@ const STAGES = [
     { n:"Expense_Amount", l:"Expense Amount", t:"number" },
     { n:"Expense_Photo", l:"Expense Photo", t:"file" },
     { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true },
-    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" },
-    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number" },
-    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number" },
-    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number" },
-    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number" }
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"text" }
+    // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office/
+    // Roundtrip_Distance moved to Final Closure's own "Distance & ETA
+    // Metrics" group 2026-08-04 (per user request) — see DISTANCE_METRICS_FIELDS.
   ]},
 
   /* ---- TOW branch (reordered: accept -> reach -> load -> reached drop -> unload,
@@ -1074,9 +1073,9 @@ const STAGES = [
     { n:"Handover_to_Number", l:"Handover Number", t:"number" },
     { n:"Handover_to_Designation", l:"Handover Location", t:"select", o:["Home","Office","Work Shop"] },
     { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true },
-    { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km)", t:"number" },
-    { n:"Drop_To_Office_Distance", l:"Drop → Office (km)", t:"number" },
-    { n:"Return_Journey_ETA", l:"Return ETA (mins)", t:"number" },
+    // Breakdown_To_Drop_Distance/Drop_To_Office_Distance/Return_Journey_ETA
+    // moved to Final Closure's own "Distance & ETA Metrics" group 2026-08-04
+    // (per user request) — see DISTANCE_METRICS_FIELDS.
     // Action 7c mock, added 2026-07-31 — "DROPPED" click stamps the same
     // shared completion-time field as RSR's Work Completed/Cx Reject.
     { n:"RSP_Completion_Time", l:"Completion Time", t:"text" }
@@ -1177,6 +1176,33 @@ const CLOSURE_FIELDS=[
   { n:"GST_Number", l:"GST Number", t:"text", when:(s)=>s.B2B_GST_Invoice_Required==="Yes",
     req:(s)=>s.Closure_Status==="Completed" && s.B2B_GST_Invoice_Required==="Yes" },
   { n:"Closure_Extra_Photo", l:"Additional Photo", t:"file", full:true }
+];
+/* Distance/ETA metrics (2026-08-04, per user request) — internal ops data
+   the vendor/technician/driver widgets compute (Google Maps Distance Matrix
+   first, Haversine fallback — see those widgets' own comments), not
+   something the agent needs to see mid-wizard. Removed from their previous
+   per-stage wizard display (reach/wip/wipUnloadingTow) entirely and shown
+   only here, in their own Final Closure group — see closureFieldGroups()
+   below, not tied to any STAGES entry. RSR/TOW-specific pairs (ETA vs
+   ETA_TOW, etc.) are gated by Service_Type; the shared ones (Cancel_Distance,
+   Roundtrip_Distance, Office_To_Mechanic, Mechanic_To_Breakdown,
+   Breakdown_To_Office) can get written on either branch (e.g. a TOW ticket
+   cancelled before ever reaching a drop point) so they show unconditionally
+   — closureFieldValueDisplay() already renders "—" for whichever don't apply
+   to a given ticket. */
+const DISTANCE_METRICS_FIELDS=[
+  { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", readonly:true },
+  { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", readonly:true },
+  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", readonly:true },
+  { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", readonly:true },
+  { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", readonly:true },
+  { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Return_Journey_ETA", l:"Return ETA (mins, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -2564,7 +2590,13 @@ function closureFieldGroups(){
     tow ? grp("Loading · Driver", ["wipLoadingTow"]) : grp("Work In Progress · Technician", ["wip"]),
     tow ? grp("Reached Drop Location · Driver", ["wipReachedTow"]) : null,
     tow ? grp("Unloading & Handover · Driver", ["wipUnloadingTow"]) : null,
-    grp("Final Payment · Technician/Driver", ["payment"])
+    grp("Final Payment · Technician/Driver", ["payment"]),
+    // Distance/ETA metrics (2026-08-04) — not tied to any STAGES entry, see
+    // DISTANCE_METRICS_FIELDS' own header comment for why these live only here.
+    (function(){
+      const fields=DISTANCE_METRICS_FIELDS.filter(function(f){ return !f.when || f.when(state.record); });
+      return fields.length ? {title:"Distance & ETA Metrics", fields:fields} : null;
+    })()
   ].filter(Boolean);
 }
 /* index of every field currently shown in the summary, keyed by link name —

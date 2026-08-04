@@ -84,12 +84,31 @@ img,svg{max-width:100%}
 .photo-field.collapsible .lab .chev{color:var(--muted);vertical-align:middle;margin-right:4px;transition:transform .2s}
 .photo-field.collapsible.collapsed .lab .chev{transform:rotate(-90deg)}
 .photo-field.collapsible.collapsed .photo-grid{display:none}
+/* Generic collapsible section card (2026-08-04, user request — "make this
+   screen accordion like") — used to turn the whole RSR WIP screen into a
+   stack of independently-collapsible sections, same chevron-toggle idea as
+   the photo fields above but for arbitrary content (Issue Resolved, Expense). */
+.acc-card{padding:0;overflow:hidden}
+.acc-card .acc-head{display:flex;align-items:center;gap:8px;padding:14px 16px;cursor:pointer;user-select:none}
+.acc-card .acc-head .t{font-family:var(--f-disp);font-weight:800;font-size:14.5px;flex:1}
+.acc-card .acc-head .chev{color:var(--muted);flex:none;transition:transform .2s}
+.acc-card.collapsed .acc-head .chev{transform:rotate(-90deg)}
+.acc-card .acc-body{padding:0 16px 16px}
+.acc-card.collapsed .acc-body{display:none}
 .photo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
 .photo-slot{aspect-ratio:1;border-radius:10px;overflow:hidden;position:relative;background:var(--worktop)}
 .photo-slot img{width:100%;height:100%;object-fit:cover;display:block}
 .photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
 .photo-slot.add:active{background:var(--worktop)}
 .photo-slot .rm{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(20,22,28,.65);color:#fff;border:0;display:grid;place-items:center;cursor:pointer;font-size:11px}
+/* Auto-upload status badge (2026-08-04, per user request) — visible
+   confirmation that a photo's background upload (see uploadPhotoNow)
+   actually reached Zoho, instead of it happening silently. */
+.photo-slot .up-badge{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;color:#fff;line-height:1}
+.photo-slot .up-badge.ok{background:var(--ok)}
+.photo-slot .up-badge.pending{background:rgba(20,22,28,.65);animation:pulseBadge 1.1s ease-in-out infinite}
+.photo-slot .up-badge.failed{background:var(--stop)}
+@keyframes pulseBadge{0%,100%{opacity:1}50%{opacity:.35}}
 
 .fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
 .fld label{font-family:var(--f-disp);font-weight:700;font-size:13.5px}
@@ -467,7 +486,7 @@ function isMine(rec){
   return !!nameMatch;
 }
 
-const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], inviteByTicketId:{} };
+const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], inviteByTicketId:{}, uploadedPhotoFiles:new Set(), failedPhotoFiles:new Set() };
 
 // 2026-08-03 (user-confirmed architecture change): "my tickets" is now found
 // via Invites_Report first (one record per invited vendor per ticket,
@@ -914,13 +933,17 @@ async function confirmCancelCommon(){
       if(dist) payload.Cancel_Distance=dist.distanceKm;
       // Client-requested addition (2026-08-04) — see technicianTicket's/
       // driverTicket's own matching comments: round trip office -> this
-      // vendor's current (cancel-click) position -> office. Branches on
-      // isTow purely to reuse each branch's own existing roundtrip helper
-      // (calcRoundTripKm returns a bare number, calc4PointRoundtrip an
-      // object) — the actual office->pos->office math is identical either way.
-      payload.Roundtrip_Distance = isTow
-        ? (await calc4PointRoundtrip(pos.lat,pos.lon,null,null)).total
-        : await calcRoundTripKm(pos.lat,pos.lon,null,null);
+      // vendor's current (cancel-click) position -> office, for both branches
+      // (calc4PointRoundtrip's no-drop case covers RSR just as well as
+      // calcRoundTripKm did — switched to it here so both branches also get
+      // the Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office
+      // per-leg fields "this also work for the Driver" asked for, not just
+      // the Roundtrip_Distance total).
+      const legs = await calc4PointRoundtrip(pos.lat,pos.lon,null,null);
+      payload.Roundtrip_Distance = legs.total;
+      payload.Office_To_Mechanic = legs.officeToMechanic;
+      payload.Mechanic_To_Breakdown = legs.mechanicToBreakdown;
+      payload.Breakdown_To_Office = legs.dropToOffice;
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
@@ -933,11 +956,9 @@ async function confirmCancelCommon(){
 /* ===== Action 7: WIP - On Road / RSR ===== */
 function renderWipScreen(){
   $("ascreenBody").innerHTML = `
-    <div class="card">
-      ${photoFieldHtml("Image_Upload3","Pre-service Photos",2,4,true)}
-      ${photoFieldHtml("Image_Upload4","Post-service Photos",2,4,true)}
-    </div>
-    <div class="card">
+    <div class="card">${photoFieldHtml("Image_Upload3","Pre-service Photos",2,4,true)}</div>
+    ${accordionHtml("accPostService","Post-service Photos", `
+      ${photoFieldHtml("Image_Upload4","Photos",2,4)}
       <div class="fld"><label>Issue Resolved?<span style="color:var(--stop)">*</span></label>
         <div class="radio-set" id="issueResolved"><div class="opt" data-value="Yes">Yes</div><div class="opt" data-value="No">No</div></div>
       </div>
@@ -947,9 +968,11 @@ function renderWipScreen(){
         <label>Issue Not Resolved — Notes</label>
         <textarea id="unresolvedNote" placeholder="What's still outstanding?"></textarea>
       </div>
+    `)}
+    ${accordionHtml("accExpense","Expense", `
       <div class="fld"><label>Expense Amount</label><input type="number" id="expenseAmount"></div>
       ${photoFieldHtml("Expense_Photo","Expense Photo",0,2)}
-    </div>
+    `)}
     <div class="btn-row">
       <button class="btn ghost" id="cxRejectBtn" type="button">Customer Reject</button>
       <button class="btn primary" id="workDoneBtn" type="button">Work Completed</button>
@@ -964,7 +987,8 @@ function renderWipScreen(){
       </div>
     </div>`;
   wirePhotoField("Image_Upload3",4); wirePhotoField("Image_Upload4",4); wirePhotoField("Expense_Photo",2);
-  wireCollapsibleField("Image_Upload3"); wireCollapsibleField("Image_Upload4");
+  wireCollapsibleField("Image_Upload3");
+  wireAccordion("accPostService"); wireAccordion("accExpense");
   document.querySelectorAll("#issueResolved .opt").forEach(function(o){
     o.onclick=function(){
       document.querySelectorAll("#issueResolved .opt").forEach(function(x){x.classList.remove("sel");});
@@ -991,6 +1015,19 @@ async function workCompleted(){
     if(resolved.dataset.value==="No"){ const note=$("unresolvedNote").value.trim(); if(note) payload.Unresolved_Note=note; }
     const expenseVal=$("expenseAmount").value;
     if(expenseVal!=="") payload.Expense_Amount=Number(expenseVal);
+    // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office (2026-08-04,
+    // per user request) — see technicianTicket's own matching comment: the RSR
+    // 3-leg roundtrip breakdown, documented in FIELDS.md but never actually
+    // written until now. Reuses this file's own calc4PointRoundtrip (already
+    // built for the TOW branch) with no drop point — dropToOffice in that
+    // no-drop case IS the breakdown->office leg RSR needs here.
+    const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+    if(bLat!=null && bLon!=null){
+      const legs=await calc4PointRoundtrip(bLat,bLon,null,null);
+      payload.Office_To_Mechanic=legs.officeToMechanic;
+      payload.Mechanic_To_Breakdown=legs.mechanicToBreakdown;
+      payload.Breakdown_To_Office=legs.dropToOffice;
+    }
     // Diagnostic logging (2026-08-03, user-reported live: "Invalid column
     // value for Status") — same pattern as acceptService's own logging.
     console.log("[GR-Vendor] workCompleted payload:", JSON.stringify(payload));
@@ -1078,7 +1115,9 @@ async function confirmCxRejectLoading(){
     // office, using the ticket's fixed Latitude/Longitude, not a live GPS fix.
     const legs = await calc4PointRoundtrip(Number(r.Latitude),Number(r.Longitude),null,null);
     // Same shared "RSP_Completion_Time" as the RSR WIP screen's own Cx Reject — see technicianTicket's own comment.
-    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Roundtrip_Distance: legs.total, Status:"REMAINING FEE DUE" });
+    // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office — see
+    // confirmCancelCommon()'s own matching comment on this same addition.
+    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Roundtrip_Distance: legs.total, Office_To_Mechanic: legs.officeToMechanic, Mechanic_To_Breakdown: legs.mechanicToBreakdown, Breakdown_To_Office: legs.dropToOffice, Status:"REMAINING FEE DUE" });
     toast("Saved","ok");
     goToStatus("REMAINING FEE DUE");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
@@ -1197,24 +1236,44 @@ function renderPaymentScreen(){
     <div class="card">
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
       <div class="fld"><label>Payment Method</label>
-        <select id="paymentMethod1">
+        <select id="Payment_Method_Final">
           <option value="Cash" selected>Cash</option>
           <option value="UPI">UPI</option>
           <option value="Card">Card</option>
           <option value="Net Banking">Net Banking</option>
+          <option value="Payment Gateway">Payment Gateway</option>
         </select>
+      </div>
+      <div id="qrBlock" style="text-align:center;margin:10px 0;display:none">
+        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
       </div>
       <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
       <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
     </div>
     <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
   wirePhotoField("Upload_Photo_of_receipt",1);
-  refreshPayButton();
+  const methodEl=$("Payment_Method_Final");
+  // Restored 2026-08-04 (per user request) — brings back the "Payment
+  // Gateway" QR display removed during the 2026-08-03 schema rebuild (once
+  // Payment_Method_Final's confirmed real options turned out to be Cash/UPI/
+  // Card/Net Banking, none of them an online gateway). "Payment Gateway" is
+  // back in the dropdown above too. Still just a decorative placeholder —
+  // no real gateway/webhook is wired up to this app, same as the very first
+  // build this exact block came from.
+  function syncMethod(){
+    const gateway=methodEl.value==="Payment Gateway";
+    $("qrBlock").style.display=gateway?"":"none";
+    $("receiptBlock").style.display=gateway?"none":"";
+    refreshPayButton();
+  }
+  methodEl.onchange=syncMethod; syncMethod();
   function refreshPayButton(){
+    const gateway=methodEl.value==="Payment Gateway";
     const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
     // See technicianTicket's own comment on this exact block — same
     // Payment_Status Pending/Success logic, not repeated here.
-    const success = alreadySuccess || receiptOk;
+    const success = alreadySuccess || (!gateway && receiptOk);
     $("paymentStatusDisplay").value = success ? "PAID" : "PENDING";
     $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
   }
@@ -1227,7 +1286,7 @@ async function confirmPaymentReceived(){
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
     // "PAID" here since clicking this button is itself the attestation.
-    const payload={ Payment_Method_Final: $("paymentMethod1").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
     // Diagnostic logging (2026-08-03, user-reported live: "Invalid column
     // value for Payment_Status") — same pattern as workCompleted's own logging.
     console.log("[GR-Vendor] confirmPaymentReceived payload:", JSON.stringify(payload));
@@ -1255,13 +1314,35 @@ function wireCollapsibleField(fieldName){
   const wrap=$("pf_"+fieldName); const lab=wrap&&wrap.querySelector(".lab");
   if(lab) lab.onclick=function(){ wrap.classList.toggle("collapsed"); };
 }
+// Generic collapsible section card — same click-to-toggle idea as
+// wireCollapsibleField() above, but for a titled card wrapping arbitrary
+// field HTML rather than a photo grid specifically (see .acc-card CSS).
+function accordionHtml(id,title,bodyHtml){
+  return `<div class="card acc-card" id="${id}">
+    <div class="acc-head">${CHEV_ICON}<span class="t">${esc(title)}</span></div>
+    <div class="acc-body">${bodyHtml}</div>
+  </div>`;
+}
+function wireAccordion(id){
+  const box=$(id); const head=box&&box.querySelector(".acc-head");
+  if(head) head.onclick=function(){ box.classList.toggle("collapsed"); };
+}
 function wirePhotoField(fieldName,max){ renderPhotoGrid(fieldName,max); }
+// Visible confirmation of uploadPhotoNow()'s own background upload for this
+// exact file — "ok" once apiUpload() has actually succeeded, "failed" if it
+// errored (uploadPendingPhotos() will still retry it at the normal save
+// step either way), "pending" (not yet in either set) while still in flight.
+function uploadBadgeHtml(f){
+  if(state.uploadedPhotoFiles.has(f)) return '<span class="up-badge ok" title="Saved">✓</span>';
+  if(state.failedPhotoFiles.has(f)) return '<span class="up-badge failed" title="Save failed — will retry when you submit">!</span>';
+  return '<span class="up-badge pending" title="Saving…">⋯</span>';
+}
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
   let html="";
   files.forEach(function(f,i){
-    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}"><button type="button" class="rm" data-i="${i}">✕</button></div>`;
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
   if(files.length<max){
     // Two explicit add tiles (2026-08-03, user-requested) — live camera
@@ -1284,8 +1365,28 @@ function renderPhotoGrid(fieldName,max){
 async function uploadPendingPhotos(recordId){
   for(const fieldName in state.photos){
     const files=state.photos[fieldName]||[];
-    for(let i=0;i<files.length;i++){ await apiUpload(recordId, fieldName, files[i]); }
+    for(let i=0;i<files.length;i++){
+      // Most photos are already uploaded immediately on capture/pick (see
+      // uploadPhotoNow, 2026-08-04 — "auto save at the time of upload, don't
+      // need to click save") — skip those here to avoid uploading the same
+      // file twice. Anything still not in the set (immediate upload failed,
+      // or a live SDK became available only after it was taken) still gets
+      // uploaded here as a fallback, same as before this change.
+      if(state.uploadedPhotoFiles.has(files[i])) continue;
+      await apiUpload(recordId, fieldName, files[i]);
+    }
   }
+}
+// Fire-and-forget upload the moment a photo is captured/picked, so it's
+// saved before the vendor ever taps a final action button (2026-08-04, per
+// user request). Best-effort: a failure here just leaves the file for
+// uploadPendingPhotos() to retry at the normal save step, so nothing is lost
+// either way — this only makes the common case faster to actually persist.
+async function uploadPhotoNow(fieldName, file, max){
+  const r=state.current; if(!r || r.ID==null) return;
+  try{ await apiUpload(r.ID, fieldName, file); state.uploadedPhotoFiles.add(file); }
+  catch(e){ console.warn("[GR-Vendor] immediate upload failed for "+fieldName+" — will retry on save", e); state.failedPhotoFiles.add(file); }
+  renderPhotoGrid(fieldName, max); // refresh this slot's badge either way
 }
 
 let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
@@ -1316,6 +1417,7 @@ async function openCamera(fieldName,max){
       state.photos[fieldName]=state.photos[fieldName]||[];
       state.photos[fieldName].push(f);
       renderPhotoGrid(fieldName,max);
+      uploadPhotoNow(fieldName,f,max);
       $("cameraFallbackInput").value="";
     };
     $("cameraFallbackInput").click();
@@ -1328,6 +1430,7 @@ function openGallery(fieldName,max){
     state.photos[fieldName]=state.photos[fieldName]||[];
     state.photos[fieldName].push(f);
     renderPhotoGrid(fieldName,max);
+    uploadPhotoNow(fieldName,f,max);
     $("galleryInput").value="";
   };
   $("galleryInput").click();
@@ -1357,6 +1460,7 @@ async function capturePhoto(){
     state.photos[currentPhotoField].push(file);
     closeCamera();
     renderPhotoGrid(currentPhotoField,currentPhotoMax);
+    uploadPhotoNow(currentPhotoField,file,currentPhotoMax);
   }, "image/jpeg", 0.85);
 }
 $("cameraCancel").onclick=closeCamera;

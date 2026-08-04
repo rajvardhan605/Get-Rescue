@@ -446,6 +446,8 @@ The tables below repeat much of Part 1's information but organized by the ticket
 
 Reachable at any point in a ticket's timeline (dashboard row action + a permanent wizard button), not gated by the stepper. Every field from every step above is also shown here (read-only display, or click-to-edit — see `getRescueTicket/README.md`'s Final Closure entries for the full mechanism). Fields unique to this screen:
 
+**"Distance & ETA Metrics" group (added 2026-08-04, per user request)**: `ETA`, `Distance_To_Breakdown`, `ETA_TOW`, `Distance_To_Breakdown_TOW`, `Cancel_Distance`, `Office_To_Mechanic`, `Mechanic_To_Breakdown`, `Breakdown_To_Office`, `Roundtrip_Distance`, `Breakdown_To_Drop_Distance`, `Drop_To_Office_Distance`, `Return_Journey_ETA` — all removed from their previous per-stage wizard display (`reach`/`wip`/`wipUnloadingTow`) and shown **only** in this dedicated, read-only Final Closure group, not tied to any wizard step. These are all Google Maps/Haversine-computed by the vendor/technician/driver widgets, not agent input — see each field's own Step-N row above for where it's written.
+
 | Field | Label | Type | Widgets | Status |
 |---|---|---|---|---|
 | `Refund_Due` | Refund Due? | radio | Agent | ❓ |
