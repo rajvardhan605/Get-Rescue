@@ -2823,7 +2823,8 @@ const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"
 function closureFieldRowHtml(f){
   const d=closureFieldValueDisplay(f);
   // Thumbnail placeholder for an already-uploaded photo (2026-08-04, user
-  // request) — hydrated to a real <img> after render by
+  // req
+  // uest) — hydrated to a real <img> after render by
   // hydrateFilePreviewsIn(), see that function's own comment.
   const showThumb = f.t==="file" && !state.files[f.n] && state.record[f.n];
   return `<button type="button" class="crow" data-field="${esc(f.n)}">
