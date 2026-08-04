@@ -45,7 +45,7 @@ The single ticket record. Every profile reads/writes through `Agent_Ticket_Repor
 | `Client_Tracking_Id` | Client Tracking ID | Single Line | — | Hidden in the UI whenever `Client` is the special "ON DEMAND" walk-in entry |
 | `Vehicle` | Vehicle | Lookup → `Vehicle_Master_Report` | — | Required |
 | `Vehicle_Registration_Number` | Vehicle Reg. Number | Single Line | — | Optional |
-| `Vehicle_Issue` | Vehicle Issue | Multi Select | populated from `Vehicle_Issue_Report.Issue_Name` | Required. **Not a Lookup** — plain multi-select text, filtered client-side by the chosen Vehicle's `Category` |
+| `Vehicle_Issue` | Vehicle Issue | Multi Select **Lookup** → `Vehicle_Issue_Report` | populated from `Vehicle_Issue_Report.Issue_Name` | Required. **Corrected 2026-08-04, user-confirmed**: this is a real multiselect Lookup (`useId:true`, saves record IDs) — reverses the earlier "plain multi-select text, not a Lookup" note. Filtered client-side to the chosen Vehicle's `Category` matched against the issue's own `VEHICLE_TYPE`, and only offers issues whose `DISPLAY_STATUS` is `SHOW` |
 | `Service_Type` | Service Type | Dropdown | `RSR`, `TOW` | Never picked directly by a human — the widget derives and writes it from the chosen `Vehicle_Issue`'s own `Issue_Type` |
 | `Vehicle_Status` | Vehicle Status | Dropdown | `ONROAD`, `SAFE PARKING` | Required |
 | `Time_of_service` | Time of Service | Radio | `NOW`, `LATER` | Required |
@@ -204,7 +204,7 @@ Covers both independent technicians/drivers who log in directly, and technicians
 | API Name | Label | Zoho Field Type | Options | Notes |
 |---|---|---|---|---|
 | `Name` | Name | Single Line | — | Display label (make/model) |
-| `Category` | Category | Dropdown | `2W`, `4W` | Matched against `Vehicle_Issue.Vehicle_Category` |
+| `Category` | Category | Dropdown (single-select) | `2W`, `4W` | Matched against `Vehicle_Issue_Report.VEHICLE_TYPE` |
 | `Segment` | Segment | Dropdown | `A`–`F` (or whatever the real fee-rate segments are) | Used in the Rate_Master fee lookup |
 
 ## Form 7 — `Vehicle_Issue` (report: `Vehicle_Issue_Report`)
@@ -212,7 +212,8 @@ Covers both independent technicians/drivers who log in directly, and technicians
 | API Name | Label | Zoho Field Type | Options | Notes |
 |---|---|---|---|---|
 | `Issue_Name` | Issue Name | Single Line | — | Display label |
-| `Vehicle_Category` | Vehicle Category | Multi Select | `2W`, `4W` | **Renamed 2026-08-03 from `VEHICLE_TYPE`** (all-caps was inconsistent with the rest of the schema) — which vehicle categories this issue applies to |
+| `VEHICLE_TYPE` | Vehicle Type | Multi Select | `2W`, `4W` | **Corrected 2026-08-04, user-confirmed against real Zoho Studio schema**: the field is `VEHICLE_TYPE` (all-caps) — the 2026-08-03 note claiming a rename to `Vehicle_Category` was wrong (either never landed or was reverted); which vehicle categories this issue applies to, matched against `Vehicle_Master_Report.Category` |
+| `DISPLAY_STATUS` | Display Status | Dropdown | `SHOW` (and presumably a hidden counterpart) | **New 2026-08-04, user-confirmed.** Only issues with `DISPLAY_STATUS = "SHOW"` are offered in the Vehicle Issue picker, on top of the `VEHICLE_TYPE` category match |
 | `Issue_Type` | Issue Type | Dropdown | `REPAIR`, `TOW` (and any others the real catalog needs) | Contains `TOW` → drives the ticket's own `Service_Type` |
 
 ## Form 8 — `Client` (report: `Client_Report`)
@@ -245,7 +246,7 @@ Zoho Creator lets you pick which fields show in a report's List View (the row/gr
 |---|---|---|
 | `Agent_Ticket_Report` | `Create_Case` | `Case_ID`, `Customer_Name`, `Phone_Number1`, `Vehicle`, `Service_Type`, `Status`, `Client`, `Time_of_service` |
 | `Vehicle_Master_Report` | `Vehicle_Master` | `Name`, `Category`, `Segment` |
-| `Vehicle_Issue_Report` | `Vehicle_Issue` | `Issue_Name`, `Vehicle_Category`, `Issue_Type` |
+| `Vehicle_Issue_Report` | `Vehicle_Issue` | `Issue_Name`, `VEHICLE_TYPE`, `DISPLAY_STATUS`, `Issue_Type` |
 | `Client_Report` | `Client` | `Client_Name` |
 | `Vendors_Report` | `Vendors` | `Vendor_Name`, `Phone`, `Priority`, `Availability_Status`, `Vendor_Type` |
 | `Technicians_Report` | `Technicians` | `Technician_Name`, `Email`, `Availability_Status`, `Fleet_Vendor` |
@@ -322,7 +323,7 @@ The tables below repeat much of Part 1's information but organized by the ticket
 |---|---|---|---|---|
 | `Preferred_Vendor` | Preferred Vendor? (Yes = show all vendors; No/default = geofenced) | radio | Agent | ✅ |
 | `Vendors1` | Vendors (multi-Lookup → `Vendors_Report`) — saves real record IDs (`useId:true`, via `idsFor()`), bare (not object-wrapped — an object-wrapping experiment was tried and reverted the same day, broke saving entirely) | Lookup (bare ID) | Agent, Vendor (read-only, dashboard matching only) | ✅ (Lookup type confirmed live 2026-07-31; bare-ID write shape confirmed live 2026-07-31) |
-| `Assigned_Vendor` | A single Lookup → `Vendors_Report`, set by the vendor's own Accept action once they accept the ticket (distinct from `Vendors1`, which only holds the invited *candidates*). Displayed read-only in `getRescueTicket`'s `acceptance`/`acceptanceTow` stages | Lookup (single) | Agent (view-only) | ❓ (not yet written by any widget — see Open Questions) |
+| `Assigned_Vendor` | A single Lookup → `Vendors_Report`, set by the vendor's own Accept action once they accept the ticket (distinct from `Vendors1`, which only holds the invited *candidates*). Displayed read-only in `getRescueTicket`'s `acceptance`/`acceptanceTow` stages. **Write-side implemented 2026-08-04** — `vendorTicket`'s `acceptService()` now sends `currentVendorRecord.id` (unblocked by the schema rebuild merging `My_Availability_Vendor` into `Vendors_Report`, so vendorTicket now always has its own `Vendors_Report` ID on hand). Also now read back by `vendorTicket`'s own `loadDashboard()` to implement "1st person to accept, task goes away from other invited vendors' apps" (Action 4 mock) — falls back to the old "show any invited candidate" behavior for any ticket accepted before this existed (no `Assigned_Vendor` recorded yet) | Lookup (single) | Agent (view-only), Vendor (write on Accept, read in dashboard filtering) | 🟡 (write shape follows the same bare-ID convention as every other Lookup here; best-effort only — two vendors accepting within the same instant could both still write it, no server-side lock available from a plain widget) |
 | `Vendor_Emails` | Auto-populated (comma-separated) with the email of every vendor selected in `Vendors1`, resolved from `Vendors_Report` via `CONFIG.vendorEmailField` — not shown anywhere in this widget's own UI. Used by `vendorTicket`'s own dashboard matching as a more reliable alternative to name-matching | text (hidden) | Agent (write, silent) | 🟡 |
 | `Vendor_Email` | Vendor Email — shown once someone's actually accepted, not something the agent fills in upfront | text | Agent (view-only, Acceptance step) | 🟡 |
 | `Assigned_Technician` | Assigned Technician | select | Agent (view-only, Acceptance step), Vendor (write, on fleet hand-off) | 🟡 |
@@ -494,7 +495,8 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 | Field | Purpose | Status |
 |---|---|---|
 | `Issue_Name` | Display label | ✅ |
-| `Vehicle_Category` | Matched against vehicle's `Category` (renamed 2026-08-03 from all-caps `VEHICLE_TYPE`) | ✅ |
+| `VEHICLE_TYPE` | Multi Select — matched against vehicle's `Category`. **Corrected 2026-08-04**: the 2026-08-03 note claiming this was renamed to `Vehicle_Category` was wrong — `VEHICLE_TYPE` is the real, current field name, user-confirmed against live Zoho Studio | ✅ |
+| `DISPLAY_STATUS` | Only issues with value `SHOW` are offered in the picker — new 2026-08-04, user-confirmed | ✅ |
 | `Issue_Type` | Contains `TOW` → drives `Service_Type` | ✅ |
 
 ### `Rate_Master_Report`

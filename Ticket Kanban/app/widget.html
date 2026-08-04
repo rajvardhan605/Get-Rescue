@@ -190,6 +190,14 @@ img,svg{max-width:100%}
 .check span{font-size:14px;color:var(--text)}
 .hint{font-size:11px;color:var(--muted-2);font-family:var(--f-mono)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+/* Chips + the "add" select live inside one bordered box together (2026-08-04)
+   — see getRescueTicket's own matching comment, not repeated here. */
+.combo-multi{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  border:1.5px solid var(--line-strong);border-radius:10px;padding:8px 10px;background:#fff;transition:.12s}
+.combo-multi:focus-within{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+.combo-multi .chips{margin-bottom:0}
+.combo-multi-input{border:0;outline:0;flex:1;min-width:120px;font-size:14.5px;padding:6px 2px;background:transparent}
+.combo-multi select.add-select{border:0;background:transparent;flex:1;min-width:140px;padding:6px 2px}
 .chip{display:inline-flex;align-items:center;gap:7px;background:var(--signal-soft);color:var(--signal-deep);
   border-radius:999px;padding:7px 8px 7px 13px;font-size:13px;font-weight:600}
 .chip button{border:0;background:rgba(0,0,0,.08);color:inherit;width:18px;height:18px;border-radius:50%;
@@ -299,7 +307,7 @@ img,svg{max-width:100%}
     </label>
   </div>
 
-  <div class="demo-note" id="demoNote">Preview mode — Creator SDK not detected, showing sample data. Inside Creator this reads from <b>Agent_Ticket_Report</b> and updates <b>Create_Case</b>.</div>
+  <div class="demo-note" id="demoNote">Couldn't connect to Zoho Creator — open this widget inside a Creator page and reload.</div>
 
   <!-- DASHBOARD -->
   <div class="dashboard" id="dashboard">
@@ -369,7 +377,11 @@ const CONFIG = {
   serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
   nameField:    "Customer_Name",         // composite name field
   vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
-  vehicleCategoryField: "Category",     // 2W/4W field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's Vehicle_Category
+  vehicleCategoryField: "Category",     // 2W/4W single-select field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's own VEHICLE_TYPE below
+  // See getRescueTicket's own matching comment (2026-08-04, user-confirmed
+  // real Zoho Studio schema) — not repeated here.
+  issueVehicleTypeField: "VEHICLE_TYPE",
+  issueDisplayStatusField: "DISPLAY_STATUS",
   rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
   // option sources (best-effort; degrade to text/empty if unavailable) — report names are the MASTER tables we pull picker options from, unrelated to the Create_Case field names above
   optionReports: {
@@ -383,7 +395,6 @@ const CONFIG = {
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
-let SDK_READY = false;
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
 function resolve(method){
   const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -489,7 +500,9 @@ const STAGES = [
     { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text" },
     { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true },
     { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text" },
-    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true },
+    // useId:true added 2026-08-04 — see getRescueTicket's own matching
+    // comment: Vehicle_Issue is a real multiselect Lookup, not plain text.
+    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true, useId:true },
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
     { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"] },
     { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"] },
@@ -807,28 +820,45 @@ function optionsListFor(field){
 }
 function resolveOptions(field){ return optionsListFor(field); }
 
-/* ---------- vehicle_master + Vehicle_Issue_Report → issue derivation ----------
-   Vehicle_Issue_Report holds every issue with a Vehicle_Category (2W/4W, multiselect)
-   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose Vehicle_Category
+/* ---------- Vehicle_Master_Report + Vehicle_Issue_Report → issue derivation ----------
+   Vehicle_Issue_Report holds every issue with a VEHICLE_TYPE (2W/4W, multiselect),
+   a DISPLAY_STATUS (only "SHOW" issues are offered), and an Issue_Type
+   (ROS/TOW/REPAIR). We show only the SHOW-status issues whose VEHICLE_TYPE
    includes the selected vehicle's own Category (2W/4W, from Vehicle_Master_Report).
    The chosen issue's Issue_Type then drives Service_Type: TOW -> "TOW", anything
    else -> "RSR". */
+// See getRescueTicket's own comment on unwrapOne/valuesOf/vehicleIssuesFor
+// (2026-08-04) — same robustness + diagnostic-logging pass, not repeated here.
+function unwrapOne(v){
+  return (v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.value||"") : String(v);
+}
 function valuesOf(v){
   if(v==null) return [];
-  if(Array.isArray(v)) return v.map(String);
-  if(typeof v==="object") return [String(v.display_value||v.zc_display_value||v.value||"")];
+  if(Array.isArray(v)) return v.map(unwrapOne);
+  if(typeof v==="object") return [unwrapOne(v)];
   return String(v).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
 }
 function vehicleIssuesFor(vehicleLabel){
   if(!vehicleLabel) return [];
   const veh = OPTIONS.vehicles.find(function(v){ return v.v===vehicleLabel; });
-  if(!veh || !veh.raw) return [];
+  if(!veh || !veh.raw){
+    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
+    return [];
+  }
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
-  if(!category) return [];
-  return OPTIONS.issues.filter(function(issue){
-    const types = valuesOf(issue.raw && issue.raw.Vehicle_Category);
+  if(!category){
+    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
+    return [];
+  }
+  const matches = OPTIONS.issues.filter(function(issue){
+    if(!issue.raw) return false;
+    const display = valuesOf(issue.raw[CONFIG.issueDisplayStatusField])[0] || "";
+    if(display.toUpperCase()!=="SHOW") return false;
+    const types = valuesOf(issue.raw[CONFIG.issueVehicleTypeField]);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
+  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
+  return matches;
 }
 function isTowIssue(issueLabel){
   const m = OPTIONS.issues.find(function(o){ return String(o.v)===String(issueLabel); });
@@ -847,12 +877,20 @@ function haversineKm(lat1,lon1,lat2,lon2){
   const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// See getRescueTicket's own matching comment (2026-08-04) — Number("") is 0,
+// not NaN, so a blank coordinate was silently treated as "at the equator"
+// instead of "not set yet".
+function parseCoord(v){
+  if(v==null || v==="") return null;
+  const n=Number(v);
+  return isNaN(n) ? null : n;
+}
 function calcRoundTripKm(r){
-  const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-  if(isNaN(bLat)||isNaN(bLon)) return 0;
+  const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+  if(bLat==null||bLon==null) return 0;
   let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
-  const dLat=Number(r.DropLocationLat), dLon=Number(r.DropLocationLong);
-  if(!isNaN(dLat) && !isNaN(dLon)){
+  const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
+  if(dLat!=null && dLon!=null){
     total+=haversineKm(bLat,bLon,dLat,dLon);
     total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON);
   } else {
@@ -909,66 +947,14 @@ function calcQuote(){
   return out;
 }
 
-/* ---------- demo data (preview only) ---------- */
-const DEMO_VEHICLES = [
-  { ID:"V1", Name:"Maruti Swift", Category:"4W", Segment:"B" },
-  { ID:"V2", Name:"Honda Activa", Category:"2W", Segment:"A" },
-  { ID:"V3", Name:"BMW 3 Series", Category:"4W", Segment:"D" }
-];
-const DEMO_ISSUES = [
-  { ID:"I1", Issue_Name:"Battery Jumpstart", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", Vehicle_Category:["4W"], Issue_Type:"REPAIR" },
-  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", Vehicle_Category:["2W"], Issue_Type:"REPAIR" },
-  { ID:"I4", Issue_Name:"Key Lockout", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I5", Issue_Name:"Flatbed Tow", Vehicle_Category:["4W"], Issue_Type:"TOW" },
-  { ID:"I6", Issue_Name:"Mobile Tow", Vehicle_Category:["2W"], Issue_Type:"TOW" }
-];
-const DEMO_CLIENTS = [
-  { ID:"C1", Client_Name:"Ondemand" },
-  { ID:"C2", Client_Name:"Roadzen" },
-  { ID:"C3", Client_Name:"Allianz" }
-];
-const DEMO_RATE_MASTER = [
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:500 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:300 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Puncture (Tubeless Tyre)", Rate_Type:"FIXED", Fixed_Rate:650 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Puncture (Tube Tyre)", Rate_Type:"FIXED", Fixed_Rate:350 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Key Lockout", Rate_Type:"FIXED", Fixed_Rate:550 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Flatbed Tow", Rate_Type:"FORMULA", Formula_Base_Amount:800, Formula_KM_Buffer:2, Formula_Per_KM_Rate:25, Formula_Min_Amount:1000 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Mobile Tow", Rate_Type:"FORMULA", Formula_Base_Amount:400, Formula_KM_Buffer:1, Formula_Per_KM_Rate:15, Formula_Min_Amount:500 }
-];
-const DEMO = [
-  { ID:"9001", Case_ID:"CSID9001", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:{display_value:"Prasanna S."}, Service_Type:"RSR", Vehicle:"Maruti Swift", Vehicle_Issue:"Battery Jumpstart", Status:"Vendor Assignment" },
-  { ID:"9002", Case_ID:"CSID9002", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:{display_value:"Prasanna S."}, Service_Type:"TOW", Vehicle:"Maruti Brezza", Vehicle_Issue:"Flatbed Tow", Status:"Loading" },
-  { ID:"9003", Case_ID:"CSID9003", Phone_Number1:"+91 90123 70036", Phone_Number:"+91 90123 70036", Customer_Name:{display_value:"Imran S."}, Service_Type:"RSR", Vehicle:"Hyundai i20", Vehicle_Issue:"Engine Overheating", Status:"Create Service Ticket" },
-  { ID:"9004", Case_ID:"CSID9004", Phone_Number1:"+91 98765 40011", Phone_Number:"+91 98765 40011", Customer_Name:{display_value:"Ravi Kumar"}, Service_Type:"RSR", Vehicle:"Tata Nexon", Vehicle_Issue:"Key Lockout", Status:"Work In Progress" },
-  { ID:"9005", Case_ID:"CSID9005", Phone_Number1:"+91 98700 22110", Phone_Number:"+91 98700 22110", Customer_Name:{display_value:"Sathish M."}, Service_Type:"TOW", Vehicle:"Honda City", Vehicle_Issue:"Accident Tow", Status:"Final Payment Collection" },
-  { ID:"9006", Case_ID:"CSID9006", Phone_Number1:"+91 98700 55221", Phone_Number:"+91 98700 55221", Customer_Name:{display_value:"Neha R."}, Service_Type:"RSR", Vehicle:"Honda Activa", Vehicle_Issue:"Puncture", Status:"CLOSED" }
-];
-
 /* =====================================================================
-   STATE + DATA WRAPPERS (with demo fallback)
+   STATE + DATA WRAPPERS
    ===================================================================== */
 const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0 };
 
-async function getTickets(criteria){ if(SDK_READY) return apiGet(criteria); return demoQuery(criteria); }
-async function addTicket(data){ if(SDK_READY) return apiAdd(data); const id="D"+(Date.now()%100000); DEMO.unshift(Object.assign({ID:id},data)); return id; }
-async function updateTicket(id,data){ if(SDK_READY) return apiUpdate(id,data); const r=DEMO.find(x=>String(x.ID)===String(id)); if(r) Object.assign(r,data); return true; }
-/* best-effort demo-mode stand-in for a real criteria() query — pulls every
-   quoted search term back out of the built criteria string (one per OR'd
-   .contains() clause) and checks each DEMO record's phone digits + the
-   configured text fields against them. */
-function demoQuery(criteria){
-  if(!criteria) return DEMO.slice();
-  const terms = (criteria.match(/contains\("([^"]*)"/g)||[]).map(m=>m.slice(10,-1)).filter(Boolean);
-  if(!terms.length) return DEMO.slice();
-  return DEMO.filter(r=> terms.some(t=>{
-    const tDigits = t.replace(/\D/g,"");
-    if(tDigits && (r[CONFIG.phoneField]||"").replace(/\D/g,"").indexOf(tDigits)!==-1) return true;
-    const tLower = t.toLowerCase();
-    return CONFIG.searchTextFields.some(f=> String(r[f]||"").toLowerCase().indexOf(tLower)!==-1);
-  }));
-}
+async function getTickets(criteria){ return apiGet(criteria); }
+async function addTicket(data){ return apiAdd(data); }
+async function updateTicket(id,data){ return apiUpdate(id,data); }
 
 /* =====================================================================
    HELPERS
@@ -1179,7 +1165,7 @@ async function runSearch(){
   if(digits.length>=3) clauses.push("("+CONFIG.phoneField+'.contains("'+digits+'"))');
   CONFIG.searchTextFields.forEach(f=>{ clauses.push("("+f+'.contains("'+safe+'"))'); });
   const crit=clauses.join(" || ");
-  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit, "| SDK_READY:", SDK_READY);
+  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit);
   const recs=await getTickets(crit);
   console.log("[Get-Rescue] search matched", recs.length, "record(s):", recs);
   if(!recs.length){ dd.innerHTML=`<div class="sd-msg">No ticket found for "${esc(raw)}"</div>`; return; }
@@ -1317,14 +1303,19 @@ function buildField(f){
       const allOpts = resolveOptions(f);
       const selectedOpts = arr.map(v=>allOpts.find(o=>String(o.v)===String(v))||{v:v,label:v});
       const remaining = allOpts.filter(o=>arr.indexOf(o.v)===-1);
-      const chips = selectedOpts.length
-        ? selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("")
-        : `<span class="chip-empty">None selected</span>`;
-      const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
-      const addBox = remaining.length
-        ? `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`
-        : (allOpts.length ? "" : `<span class="hint">This vehicle has no issues configured</span>`);
-      wrap.innerHTML=lab+`<div class="chips" id="${id}_chips">${chips}</div>`+addBox;
+      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
+      // Chips + the "add" select render inside one bordered box together
+      // (2026-08-04) — see getRescueTicket's own matching comment.
+      let addInner="";
+      if(remaining.length){
+        const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
+        addInner = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
+      }
+      if(!allOpts.length){
+        wrap.innerHTML=lab+`<span class="hint">This vehicle has no issues configured</span>`;
+      } else {
+        wrap.innerHTML=lab+`<div class="combo-multi" id="${id}_wrap"><div class="chips" id="${id}_chips">${chips}</div>${addInner}</div>`;
+      }
     }
   } else if(f.t==="name2"){
     // Customer_Name is saved as a single plain-text string ("First Last") — split
@@ -1488,12 +1479,12 @@ function collectStep(validate){
   return {ok,missing};
 }
 /* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a
-   live record, and for "Vendors1" 2026-07-31 by the user directly). Vehicle_Issue
-   is confirmed plain multiselect text, NOT a lookup. Assigned_Technician is
-   assumed plain text by analogy (not independently confirmed) — don't re-add
-   useId to either without new evidence. Falls back to the raw value if no
-   matching option is loaded yet (better a failed save you can see than a
-   silent drop). */
+   live record, for "Vendors1" 2026-07-31 by the user directly, and for
+   "Vehicle_Issue" 2026-08-04 — also user-confirmed, reversing the earlier
+   "plain text" assumption). Assigned_Technician is still assumed plain text
+   by analogy (not independently confirmed) — don't re-add useId to it without
+   new evidence. Falls back to the raw value if no matching option is loaded
+   yet (better a failed save you can see than a silent drop). */
 // 2026-07-31: reverted — sending Lookup fields as an {"ID":"..."} object
 // broke saving entirely (see getRescueTicket's own copy of this function).
 // Back to the plain bare-ID value, which is what was actually working.
@@ -1621,23 +1612,21 @@ $("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
 $("clearSearch").onclick=()=>{ $("q").value=""; $("clearSearch").style.display="none"; closeSearchDropdown(); };
 
 async function boot(){
-  SDK_READY=true;
   try{ await ZOHO.CREATOR.UTIL.getInitParams(); }catch(e){}
   await loadOptions();
   loadDashboard();
 }
-function enterDemo(){
-  SDK_READY=false; $("demoNote").style.display="block";
-  OPTIONS.vehicles = DEMO_VEHICLES.map(function(r){ return { v:r.Name, label:r.Name, id:r.ID, raw:r }; });
-  OPTIONS.issues   = DEMO_ISSUES.map(function(r){ return { v:r.Issue_Name, label:r.Issue_Name, id:r.ID, raw:r }; });
-  OPTIONS.clients  = DEMO_CLIENTS.map(function(r){ return { v:r.Client_Name, label:r.Client_Name, id:r.ID, raw:r }; });
-  RATE_MASTER = DEMO_RATE_MASTER;
-  loadDashboard();
+// No more demo-data fallback (2026-08-04, per user request) — same change as
+// getRescueTicket's own matching comment; every detail now comes from the
+// live Zoho API only.
+function showSdkError(){
+  $("demoNote").style.display="block";
+  console.error("[Get-Rescue] ZOHO.CREATOR.UTIL.getInitParams never became available — widget is not running inside a Creator page, or the SDK failed to load.");
 }
 function waitForSDK(a){
   a=a||0;
   if(sdkReady()){ boot(); return; }
-  if(a>40){ enterDemo(); return; }
+  if(a>40){ showSdkError(); return; }
   setTimeout(()=>waitForSDK(a+1),200);
 }
 waitForSDK();

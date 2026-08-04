@@ -189,10 +189,11 @@ img,svg{max-width:100%}
    User-confirmed decisions this build relies on:
    - Data source is Create_Case ONLY (the prompt's own "Invites" form is
      NOT used — user explicitly said "no only use create case form only").
-   - No Google Maps API key yet — calcDistanceETA() below is a Haversine
-     straight-line stand-in (same approach getRescueTicket already uses
-     everywhere else), clearly marked for a real Distance Matrix API swap
-     once a key is provided.
+   - Google Maps Distance Matrix API key provided 2026-08-04 — calcDistanceETA()/
+     calcRoundTripKm() below now call it first (see GOOGLE_MAPS_API_KEY),
+     falling back to the original Haversine straight-line stand-in only if the
+     Maps script fails to load or a request errors, so a network hiccup never
+     blocks a field save.
    - Every field here mirrors what the agent-facing getRescueTicket widget
      already reads/writes for the SAME Create_Case fields (Status values,
      ETA/Distance/Image_Upload* names) so both widgets stay consistent.
@@ -278,8 +279,9 @@ async function apiUpload(id, fieldName, file){
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
 }
 
-/* ---------- distance/ETA — Haversine stand-in for Google Maps Distance
-   Matrix API (see this file's header comment) ---------- */
+/* ---------- distance/ETA — Google Maps Distance Matrix API, Haversine
+   straight-line kept as an automatic fallback (see this file's header
+   comment) ---------- */
 function haversineKm(lat1,lon1,lat2,lon2){
   const toRad=function(d){ return d*Math.PI/180; };
   const R=6371;
@@ -287,21 +289,86 @@ function haversineKm(lat1,lon1,lat2,lon2){
   const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
-const ASSUMED_SPEED_KMH=30; // crude flat-average-road-speed guess, purely to turn a straight-line distance into *some* ETA number until the real API is wired in
-function calcDistanceETA(fromLat,fromLon,toLat,toLon){
+// Real bug fixed 2026-08-04 (see getRescueTicket's own matching comment):
+// Number("") is 0, not NaN, so a blank DropLocationLat/Long (the normal state
+// before a TOW drop point is set) was silently treated as "drop location is
+// at the equator/prime meridian" instead of "not set yet" wherever a call
+// site did Number(r.DropLocationLat) directly. Use this instead.
+function parseCoord(v){
+  if(v==null || v==="") return null;
+  const n=Number(v);
+  return isNaN(n) ? null : n;
+}
+const ASSUMED_SPEED_KMH=30; // Haversine-fallback-only speed guess, unused whenever the real Maps API call succeeds
+// Client-provided key (2026-08-04) — restricted key, see GetRescued repo root
+// README/ACCESS.md caveat: must carry HTTP-referrer restrictions in Google
+// Cloud Console (this is a pure client-side widget, the key is always
+// visible in page source; that's normal for Maps browser keys but means the
+// restriction is the only real protection against abuse).
+const GOOGLE_MAPS_API_KEY="AIzaSyAVVbr5XJ9mSNLMUBNa2JD7mkwkSF0e-UM";
+let mapsApiReady=null;
+function loadGoogleMaps(){
+  if(mapsApiReady) return mapsApiReady;
+  mapsApiReady=new Promise(function(res){
+    if(window.google && window.google.maps && window.google.maps.DistanceMatrixService){ res(true); return; }
+    const cb="__gmapsReady"+Date.now();
+    window[cb]=function(){ res(true); };
+    const s=document.createElement("script");
+    s.src="https://maps.googleapis.com/maps/api/js?key="+GOOGLE_MAPS_API_KEY+"&callback="+cb;
+    s.async=true;
+    s.onerror=function(){ console.warn("[Get-Rescue] Google Maps script failed to load — falling back to Haversine"); res(false); };
+    document.head.appendChild(s);
+  });
+  return mapsApiReady;
+}
+let dmService=null;
+function googleDistanceMatrix(origins,destinations){
+  return loadGoogleMaps().then(function(ok){
+    if(!ok || !window.google || !window.google.maps) return null;
+    if(!dmService) dmService=new google.maps.DistanceMatrixService();
+    return new Promise(function(res){
+      try{
+        dmService.getDistanceMatrix({
+          origins: origins.map(function(o){ return new google.maps.LatLng(o.lat,o.lon); }),
+          destinations: destinations.map(function(d){ return new google.maps.LatLng(d.lat,d.lon); }),
+          travelMode: "DRIVING"
+        }, function(resp,status){
+          if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status); res(null); return; }
+          res(resp.rows);
+        });
+      }catch(e){ console.warn("[Get-Rescue] DistanceMatrix threw",e); res(null); }
+    });
+  });
+}
+async function calcDistanceETA(fromLat,fromLon,toLat,toLon){
   if([fromLat,fromLon,toLat,toLon].some(function(n){ return n==null || isNaN(n); })) return null;
+  const rows=await googleDistanceMatrix([{lat:fromLat,lon:fromLon}],[{lat:toLat,lon:toLon}]);
+  const el=rows && rows[0] && rows[0].elements && rows[0].elements[0];
+  if(el && el.status==="OK") return { distanceKm:Math.round((el.distance.value/1000)*10)/10, etaMins:Math.max(1,Math.round(el.duration.value/60)) };
   const distanceKm=Math.round(haversineKm(fromLat,fromLon,toLat,toLon)*10)/10;
   const etaMins=Math.max(1, Math.round((distanceKm/ASSUMED_SPEED_KMH)*60));
   return { distanceKm:distanceKm, etaMins:etaMins };
 }
-function calcRoundTripKm(bLat,bLon,dLat,dLon){
-  let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
-  if(dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon)){
-    total+=haversineKm(bLat,bLon,dLat,dLon);
-    total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON);
-  } else {
-    total+=haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON);
+// bLat/bLon/dLat/dLon kept as this function's own names (breakdown/drop) even
+// though RSR has no drop point — dLat/dLon simply stay null/NaN for every RSR
+// call site, same as before this Google swap.
+async function calcRoundTripKm(bLat,bLon,dLat,dLon){
+  const hasDrop = dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon);
+  const origins = hasDrop ? [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:dLat,lon:dLon}] : [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}];
+  const dests   = hasDrop ? [{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},{lat:OFFICE_LAT,lon:OFFICE_LON}] : [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
+  const rows=await googleDistanceMatrix(origins,dests);
+  if(rows){
+    let total=0, ok=true;
+    for(let i=0;i<origins.length;i++){
+      const el=rows[i] && rows[i].elements && rows[i].elements[i];
+      if(!el || el.status!=="OK"){ ok=false; break; }
+      total+=el.distance.value/1000;
+    }
+    if(ok) return Math.round(total*10)/10;
   }
+  let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
+  if(hasDrop){ total+=haversineKm(bLat,bLon,dLat,dLon); total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON); }
+  else{ total+=haversineKm(bLat,bLon,OFFICE_LAT,OFFICE_LON); }
   return Math.round(total*10)/10;
 }
 
@@ -474,7 +541,7 @@ async function acceptService(){
     const pos = await getPositionSafe();
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-    const dist = pos ? calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
+    const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
     const payload={
       Service_Acceptance: fmtDateTime(new Date()),
       Status: "RSP ON THE WAY"
@@ -586,7 +653,7 @@ async function markReached(){
   try{
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-    const rt=calcRoundTripKm(bLat,bLon,Number(r.DropLocationLat),Number(r.DropLocationLong));
+    const rt=await calcRoundTripKm(bLat,bLon,parseCoord(r.DropLocationLat),parseCoord(r.DropLocationLong));
     // ETA: captured automatically at Accept, but the flow spec allows manual
     // entry here too "if null" — only overrides what's already saved if the
     // tech actually typed something in.
@@ -619,8 +686,16 @@ async function confirmCancel(){
     if(pos){
       payload.Cancel_Location_Lat=pos.lat; payload.Cancel_Location_Lon=pos.lon;
       const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
-      const dist = !isNaN(startLat) && !isNaN(startLon) ? calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
+      const dist = !isNaN(startLat) && !isNaN(startLon) ? await calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
       if(dist) payload.Cancel_Distance=dist.distanceKm;
+      // Client-requested addition (2026-08-04): round trip office -> this
+      // technician's current (cancel-click) position -> office, using the
+      // same 2-leg calcRoundTripKm() the Reach screen uses for the
+      // breakdown-location case — passing pos as the "breakdown" point and no
+      // drop point gives exactly office->pos->office. Written to the same
+      // Roundtrip_Distance field markReached() sets, since a ticket only ever
+      // reaches this via Cancel OR Reached, never both.
+      payload.Roundtrip_Distance = await calcRoundTripKm(pos.lat,pos.lon,null,null);
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);

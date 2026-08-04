@@ -1,7 +1,8 @@
 {
   "service": "CREATOR",
   "cspDomains": {
-    "connect-src": []
+    "connect-src": ["https://maps.googleapis.com"],
+    "script-src": ["https://maps.googleapis.com"]
   },
   "config": []
 }

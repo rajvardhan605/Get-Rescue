@@ -228,6 +228,15 @@ img,svg{max-width:100%}
 .radio-set.locked .opt{cursor:not-allowed;opacity:.75}
 .radio-set.locked .opt.sel{opacity:1}
 .chips.locked{opacity:.9}
+/* Chips + the "add" input/select live inside one bordered box together
+   (2026-08-04, matches native Zoho Creator multiselect Lookup fields — user
+   request) instead of a separate chips row sitting above a separate input. */
+.combo-multi{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  border:1.5px solid var(--line-strong);border-radius:10px;padding:8px 10px;background:#fff;transition:.12s}
+.combo-multi:focus-within{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+.combo-multi .chips{margin-bottom:0}
+.combo-multi-input{border:0;outline:0;flex:1;min-width:120px;font-size:14.5px;padding:6px 2px;background:transparent}
+.combo-multi select.add-select{border:0;background:transparent;flex:1;min-width:140px;padding:6px 2px}
 .check{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding:8px 0}
 .check input{width:20px;height:20px;accent-color:var(--signal)}
 .check span{font-size:14px;color:var(--text)}
@@ -375,7 +384,7 @@ img,svg{max-width:100%}
     </button>
   </div>
 
-  <div class="demo-note" id="demoNote">Preview mode — Creator SDK not detected, showing sample data. Inside Creator this reads/writes <b>Create_Case</b>.</div>
+  <div class="demo-note" id="demoNote">Couldn't connect to Zoho Creator — open this widget inside a Creator page and reload.</div>
 
   <!-- DASHBOARD -->
   <div class="dashboard" id="dashboard">
@@ -477,7 +486,17 @@ const CONFIG = {
   serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
   nameField:    "Customer_Name",         // composite name field
   vehicleField: "Vehicle",              // Create_Case's own lookup field — confirmed via a live record, NOT "vehicle_master"
-  vehicleCategoryField: "Category",     // 2W/4W field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's Vehicle_Category
+  vehicleCategoryField: "Category",     // 2W/4W single-select field on Vehicle_Master_Report, matched against Vehicle_Issue_Report's own VEHICLE_TYPE below
+  // User-confirmed 2026-08-04 (real Zoho Studio schema, overrides the
+  // 2026-08-03 "renamed to Vehicle_Category" note — that rename either never
+  // actually landed or was reverted; VEHICLE_TYPE is the real, current field):
+  // VEHICLE_TYPE is a MULTI-SELECT picklist on Vehicle_Issue_Report (an issue
+  // can apply to more than one vehicle category), matched against the
+  // selected vehicle's own single-select Category above. DISPLAY_STATUS is a
+  // separate picklist on the same report — only issues with DISPLAY_STATUS
+  // "SHOW" are offered in the picker.
+  issueVehicleTypeField: "VEHICLE_TYPE",
+  issueDisplayStatusField: "DISPLAY_STATUS",
   rateMasterReport: "Rate_Master_Report", // best-guess report name for the Rate_Master form (pattern-matched — not yet confirmed live)
   // Invites form/report (2026-08-03, user-confirmed): one record per invited
   // vendor per ticket — RSID (Lookup -> this Create_Case record), Vendor
@@ -526,7 +545,6 @@ const CONFIG = {
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
-let SDK_READY = false;
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
 function resolve(method){
   const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -655,7 +673,12 @@ const STAGES = [
       when:(s)=>String(s.Client||"").trim().toUpperCase()!=="ON DEMAND" },
     { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true, searchable:true, row:"vehicle" },
     { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text", row:"vehicle" },
-    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true, searchable:true },
+    // useId:true added 2026-08-04, user-confirmed: Vehicle_Issue is a real
+    // multiselect Lookup -> Vehicle_Issue_Report, not plain text (reverses the
+    // earlier "confirmed plain text" note — see idsFor()'s own header
+    // comment) — saves real record IDs via the same generic useId/idsFor
+    // machinery Vendors1 already uses for its own multiselect Lookup.
+    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true, searchable:true, useId:true },
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
     { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true }, // required per 2026-07-31 flow spec — was optional
     { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true }, // required per 2026-07-31 flow spec — was optional
@@ -1197,28 +1220,51 @@ function optionsListFor(field){
 }
 function resolveOptions(field){ return optionsListFor(field); }
 
-/* ---------- vehicle_master + Vehicle_Issue_Report → issue derivation ----------
-   Vehicle_Issue_Report holds every issue with a Vehicle_Category (2W/4W, multiselect)
-   and an Issue_Type (ROS/TOW/REPAIR). We show only the issues whose Vehicle_Category
+/* ---------- Vehicle_Master_Report + Vehicle_Issue_Report → issue derivation ----------
+   Vehicle_Issue_Report holds every issue with a VEHICLE_TYPE (2W/4W, multiselect),
+   a DISPLAY_STATUS (only "SHOW" issues are offered), and an Issue_Type
+   (ROS/TOW/REPAIR). We show only the SHOW-status issues whose VEHICLE_TYPE
    includes the selected vehicle's own Category (2W/4W, from Vehicle_Master_Report).
    The chosen issue's Issue_Type then drives Service_Type: TOW -> "TOW", anything
    else -> "RSR". */
+// A single value's own object-unwrap, reused by valuesOf() below whether it's
+// unwrapping the outer value or one element of a multiselect array — a
+// multiselect can come back as an array of plain strings OR an array of
+// {value/display_value} objects depending on the exact field config, and the
+// single-object case only handled the latter until 2026-08-04.
+function unwrapOne(v){
+  return (v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.value||"") : String(v);
+}
 function valuesOf(v){
   if(v==null) return [];
-  if(Array.isArray(v)) return v.map(String);
-  if(typeof v==="object") return [String(v.display_value||v.zc_display_value||v.value||"")];
+  if(Array.isArray(v)) return v.map(unwrapOne);
+  if(typeof v==="object") return [unwrapOne(v)];
   return String(v).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
 }
 function vehicleIssuesFor(vehicleLabel){
   if(!vehicleLabel) return [];
   const veh = OPTIONS.vehicles.find(function(v){ return v.v===vehicleLabel; });
-  if(!veh || !veh.raw) return [];
+  if(!veh || !veh.raw){
+    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
+    return [];
+  }
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
-  if(!category) return [];
-  return OPTIONS.issues.filter(function(issue){
-    const types = valuesOf(issue.raw && issue.raw.Vehicle_Category);
+  if(!category){
+    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
+    return [];
+  }
+  const matches = OPTIONS.issues.filter(function(issue){
+    if(!issue.raw) return false;
+    // DISPLAY_STATUS gate (user-confirmed 2026-08-04): only ever offer issues
+    // explicitly marked "SHOW" — everything else (e.g. a retired/hidden
+    // issue) is excluded regardless of category match.
+    const display = valuesOf(issue.raw[CONFIG.issueDisplayStatusField])[0] || "";
+    if(display.toUpperCase()!=="SHOW") return false;
+    const types = valuesOf(issue.raw[CONFIG.issueVehicleTypeField]);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
+  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
+  return matches;
 }
 function isTowIssue(issueLabel){
   const m = OPTIONS.issues.find(function(o){ return String(o.v)===String(issueLabel); });
@@ -1256,12 +1302,104 @@ function haversineKm(lat1,lon1,lat2,lon2){
   const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// Returns a real Number for a coordinate value, or null for blank/missing —
+// Number("") is 0, not NaN, so a bare Number()+isNaN() check alone silently
+// treats "no location captured yet" as "located at the equator/prime
+// meridian (0,0)" instead of "unknown". Real bug found 2026-08-04: every
+// vendor with a blank Latitude/Longitude showed an identical, huge distance
+// (~8756 km, i.e. Bangalore-to-(0,0)) in the Assignment picker, and the name
+// column showed the raw record ID — same root cause class as the priority
+// fix vendorSortKey() already needed for the exact same Number("")===0 trap.
+function parseCoord(v){
+  if(v==null || v==="") return null;
+  const n=Number(v);
+  return isNaN(n) ? null : n;
+}
+// Google Maps Distance Matrix API (2026-08-04, client-provided key) — see
+// technicianTicket/driverTicket/vendorTicket's own matching comment for the
+// full design note. Used here only for the Assignment-step vendor-distance
+// column (see VENDOR_DISTANCE_CACHE/refreshVendorDistances below) — NOT for
+// calcRoundTripKm's RT_KM fee calc above, which stays on Haversine (out of
+// scope for this round; ask if that should switch too).
+const GOOGLE_MAPS_API_KEY="AIzaSyAVVbr5XJ9mSNLMUBNa2JD7mkwkSF0e-UM";
+let mapsApiReady=null;
+function loadGoogleMaps(){
+  if(mapsApiReady) return mapsApiReady;
+  mapsApiReady=new Promise(function(res){
+    if(window.google && window.google.maps && window.google.maps.DistanceMatrixService){ res(true); return; }
+    const cb="__gmapsReady"+Date.now();
+    window[cb]=function(){ res(true); };
+    const s=document.createElement("script");
+    s.src="https://maps.googleapis.com/maps/api/js?key="+GOOGLE_MAPS_API_KEY+"&callback="+cb;
+    s.async=true;
+    s.onerror=function(){ console.warn("[Get-Rescue] Google Maps script failed to load — falling back to Haversine"); res(false); };
+    document.head.appendChild(s);
+  });
+  return mapsApiReady;
+}
+let dmService=null;
+function googleDistanceMatrix(origins,destinations){
+  return loadGoogleMaps().then(function(ok){
+    if(!ok || !window.google || !window.google.maps) return null;
+    if(!dmService) dmService=new google.maps.DistanceMatrixService();
+    return new Promise(function(res){
+      try{
+        dmService.getDistanceMatrix({
+          origins: origins.map(function(o){ return new google.maps.LatLng(o.lat,o.lon); }),
+          destinations: destinations.map(function(d){ return new google.maps.LatLng(d.lat,d.lon); }),
+          travelMode: "DRIVING"
+        }, function(resp,status){
+          if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status); res(null); return; }
+          res(resp.rows);
+        });
+      }catch(e){ console.warn("[Get-Rescue] DistanceMatrix threw",e); res(null); }
+    });
+  });
+}
+/* Vendor-distance cache — vendorDistanceKm() itself MUST stay synchronous:
+   it's called from render-time code (typing in the "Search to add…" combo
+   re-renders the option list on every keystroke via resolveOptions() ->
+   vendorsFor() -> vendorDistanceKm(), same as every other multiselect field
+   here), so making it async would fire a fresh Distance Matrix request per
+   vendor on every keystroke. Instead: one batched request (this breakdown
+   point -> every vendor with a location, in a single API call) whenever
+   vendorsFor() is asked for a breakdown location it hasn't already fetched
+   for; results land in this cache, and a re-render is triggered once they're
+   in — vendorDistanceKm() reads straight-line Haversine in the meantime so
+   the picker never has to wait on a network round trip to show something. */
+let VENDOR_DISTANCE_CACHE={}, vendorDistanceCacheKey=null, vendorDistanceFetchInFlight=false;
+async function refreshVendorDistances(record){
+  const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
+  if(bLat==null||bLon==null) return;
+  const key=bLat+","+bLon;
+  if(key===vendorDistanceCacheKey || vendorDistanceFetchInFlight) return;
+  vendorDistanceFetchInFlight=true;
+  try{
+    const withLoc=OPTIONS.vendors.map(function(o){ return {o:o, vinfo:vendorInfo(o)}; }).filter(function(x){ return x.vinfo.lat!=null && x.vinfo.lon!=null; });
+    if(!withLoc.length){ vendorDistanceCacheKey=key; return; }
+    const rows=await googleDistanceMatrix([{lat:bLat,lon:bLon}], withLoc.map(function(x){ return {lat:x.vinfo.lat,lon:x.vinfo.lon}; }));
+    const elements=rows && rows[0] && rows[0].elements;
+    if(!elements) return; // API unavailable/failed — leave the cache/key alone, stay on Haversine, try again next call
+    const newCache={};
+    withLoc.forEach(function(x,i){
+      const el=elements[i];
+      if(el && el.status==="OK") newCache[x.o.id]=Math.round((el.distance.value/1000)*10)/10;
+    });
+    VENDOR_DISTANCE_CACHE=newCache;
+    vendorDistanceCacheKey=key;
+    // Real distances are in — refresh the picker if it's still open on the
+    // Assignment step (guarded so a callback landing after the agent
+    // navigated elsewhere doesn't force a wizard render over another view).
+    if(state.view==="wizard" && state.path[state.stepIndex] && state.path[state.stepIndex].key==="assignment") rerenderCurrentView();
+  }catch(e){ console.warn("[Get-Rescue] refreshVendorDistances failed, staying on Haversine", e); }
+  finally{ vendorDistanceFetchInFlight=false; }
+}
 function calcRoundTripKm(r){
-  const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-  if(isNaN(bLat)||isNaN(bLon)) return 0;
+  const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+  if(bLat==null||bLon==null) return 0;
   let total=haversineKm(OFFICE_LAT,OFFICE_LON,bLat,bLon);
-  const dLat=Number(r.DropLocationLat), dLon=Number(r.DropLocationLong);
-  if(!isNaN(dLat) && !isNaN(dLon)){
+  const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
+  if(dLat!=null && dLon!=null){
     total+=haversineKm(bLat,bLon,dLat,dLon);
     total+=haversineKm(dLat,dLon,OFFICE_LAT,OFFICE_LON);
   } else {
@@ -1291,9 +1429,10 @@ function vendorInfo(opt){
   const phone=rawValue(raw,CONFIG.vendorPhoneField);
   const priority=rawValue(raw,CONFIG.vendorPriorityField);
   const status=String(rawValue(raw,CONFIG.vendorStatusField)||"").trim(); // expected "Online"/"Offline"
-  const lat=Number(rawValue(raw,CONFIG.vendorLatField)), lon=Number(rawValue(raw,CONFIG.vendorLonField));
-  const hasLoc=!isNaN(lat)&&!isNaN(lon);
+  const lat=parseCoord(rawValue(raw,CONFIG.vendorLatField)), lon=parseCoord(rawValue(raw,CONFIG.vendorLonField));
+  const hasLoc=lat!=null&&lon!=null;
   const email=rawValue(raw,CONFIG.vendorEmailField);
+  if(opt.label===opt.id) console.warn("[Get-Rescue] vendorInfo: vendor label fell back to its own record ID — none of", CONFIG.optionReports.vendors.label, "resolved on this Vendors_Report record:", raw);
   return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:status.toUpperCase()==="ONLINE", lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email };
 }
 /* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
@@ -1353,9 +1492,10 @@ async function syncInvites(recordId, vendorNames){
 }
 /* straight-line distance from the ticket's own Latitude/Longitude (set on the
    locations stage) to a vendor's own lat/lon — null if either side is missing */
-function vendorDistanceKm(record, vInfo){
-  const bLat=Number(record.Latitude), bLon=Number(record.Longitude);
-  if(isNaN(bLat)||isNaN(bLon)||vInfo.lat==null||vInfo.lon==null) return null;
+function vendorDistanceKm(record, vInfo, vendorId){
+  if(vendorId!=null && VENDOR_DISTANCE_CACHE[vendorId]!=null) return VENDOR_DISTANCE_CACHE[vendorId];
+  const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
+  if(bLat==null||bLon==null||vInfo.lat==null||vInfo.lon==null) return null;
   return Math.round(haversineKm(bLat,bLon,vInfo.lat,vInfo.lon)*10)/10;
 }
 /* Radius is Service_Type-specific (2026-07-31 Action 4 flow spec, explicit:
@@ -1391,9 +1531,10 @@ function sortVendors(list){
   });
 }
 function vendorsFor(record){
+  refreshVendorDistances(record); // fire-and-forget — see its own header comment
   const all=OPTIONS.vendors.map(function(o){
     const info=vendorInfo(o);
-    return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info) }) });
+    return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info,o.id) }) });
   });
   if(record.Preferred_Vendor==="Yes") return sortVendors(all);
   const withLoc=all.filter(function(o){ return o.vinfo.distanceKm!=null; });
@@ -1403,11 +1544,16 @@ function vendorsFor(record){
 }
 function vendorPickerHint(record){
   if(record.Preferred_Vendor==="Yes") return "Showing all vendors, sorted by priority & distance — search by name.";
-  const bLat=Number(record.Latitude), bLon=Number(record.Longitude);
-  if(isNaN(bLat)||isNaN(bLon)) return "Breakdown location not captured yet — showing all vendors. Capture it on the Locations step to filter by distance.";
+  const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
+  if(bLat==null||bLon==null) return "Breakdown location not captured yet — showing all vendors. Capture it on the Locations step to filter by distance.";
   const anyVendorHasLoc=OPTIONS.vendors.some(function(o){ return vendorInfo(o).lat!=null; });
   if(!anyVendorHasLoc) return "Vendor location data unavailable — showing all vendors.";
-  return "Showing vendors within "+radiusKmFor(record)+" km of the breakdown location (straight-line distance), sorted by priority & distance.";
+  // Distance is real driving distance (Google Maps Distance Matrix) once
+  // refreshVendorDistances() has fetched it for this breakdown point;
+  // straight-line Haversine only briefly, while that fetch is in flight.
+  const key=bLat+","+bLon;
+  const liveDistance = key===vendorDistanceCacheKey;
+  return "Showing vendors within "+radiusKmFor(record)+" km of the breakdown location ("+(liveDistance?"driving distance":"straight-line distance, updating…")+"), sorted by priority & distance.";
 }
 /* rich option row for the Vendors "+ Add…" dropdown — name, priority,
    distance, phone, plus an Online/Offline flag (reuses the same .flag chip
@@ -1485,66 +1631,14 @@ function calcQuote(){
   return out;
 }
 
-/* ---------- demo data (preview only) ---------- */
-const DEMO_VEHICLES = [
-  { ID:"V1", Name:"Maruti Swift", Category:"4W", Segment:"B" },
-  { ID:"V2", Name:"Honda Activa", Category:"2W", Segment:"A" },
-  { ID:"V3", Name:"BMW 3 Series", Category:"4W", Segment:"D" }
-];
-const DEMO_ISSUES = [
-  { ID:"I1", Issue_Name:"Battery Jumpstart", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I2", Issue_Name:"Puncture (Tubeless Tyre)", Vehicle_Category:["4W"], Issue_Type:"REPAIR" },
-  { ID:"I3", Issue_Name:"Puncture (Tube Tyre)", Vehicle_Category:["2W"], Issue_Type:"REPAIR" },
-  { ID:"I4", Issue_Name:"Key Lockout", Vehicle_Category:["2W","4W"], Issue_Type:"REPAIR" },
-  { ID:"I5", Issue_Name:"Flatbed Tow", Vehicle_Category:["4W"], Issue_Type:"TOW" },
-  { ID:"I6", Issue_Name:"Mobile Tow", Vehicle_Category:["2W"], Issue_Type:"TOW" }
-];
-const DEMO_CLIENTS = [
-  { ID:"C1", Client_Name:"Ondemand" },
-  { ID:"C2", Client_Name:"Roadzen" },
-  { ID:"C3", Client_Name:"Allianz" }
-];
-const DEMO_RATE_MASTER = [
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:500 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Battery Jumpstart", Rate_Type:"FIXED", Fixed_Rate:300 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Puncture (Tubeless Tyre)", Rate_Type:"FIXED", Fixed_Rate:650 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Puncture (Tube Tyre)", Rate_Type:"FIXED", Fixed_Rate:350 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Key Lockout", Rate_Type:"FIXED", Fixed_Rate:550 },
-  { Vehicle_Type:"4W", Vehicle_Segment:"B", Issue:"Flatbed Tow", Rate_Type:"FORMULA", Formula_Base_Amount:800, Formula_KM_Buffer:2, Formula_Per_KM_Rate:25, Formula_Min_Amount:1000 },
-  { Vehicle_Type:"2W", Vehicle_Segment:"A", Issue:"Mobile Tow", Rate_Type:"FORMULA", Formula_Base_Amount:400, Formula_KM_Buffer:1, Formula_Per_KM_Rate:15, Formula_Min_Amount:500 }
-];
-const DEMO = [
-  { ID:"9001", Case_ID:"CSID9001", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:"Prasanna S.", Service_Type:"RSR", Vehicle:"Maruti Swift", Vehicle_Issue:"Battery Jumpstart", Status:"Vendor Assignment" },
-  { ID:"9002", Case_ID:"CSID9002", Phone_Number1:"+91 98765 43210", Phone_Number:"+91 98765 43210", Customer_Name:"Prasanna S.", Service_Type:"TOW", Vehicle:"Maruti Brezza", Vehicle_Issue:"Flatbed Tow", Status:"Loading" },
-  { ID:"9003", Case_ID:"CSID9003", Phone_Number1:"+91 90123 70036", Phone_Number:"+91 90123 70036", Customer_Name:"Imran S.", Service_Type:"RSR", Vehicle:"Hyundai i20", Vehicle_Issue:"Engine Overheating", Status:"Create Service Ticket" },
-  { ID:"9004", Case_ID:"CSID9004", Phone_Number1:"+91 98765 40011", Phone_Number:"+91 98765 40011", Customer_Name:"Ravi Kumar", Service_Type:"RSR", Vehicle:"Tata Nexon", Vehicle_Issue:"Key Lockout", Status:"Work In Progress" },
-  { ID:"9005", Case_ID:"CSID9005", Phone_Number1:"+91 98700 22110", Phone_Number:"+91 98700 22110", Customer_Name:"Sathish M.", Service_Type:"TOW", Vehicle:"Honda City", Vehicle_Issue:"Accident Tow", Status:"Final Payment Collection" },
-  { ID:"9006", Case_ID:"CSID9006", Phone_Number1:"+91 98700 55221", Phone_Number:"+91 98700 55221", Customer_Name:"Neha R.", Service_Type:"RSR", Vehicle:"Honda Activa", Vehicle_Issue:"Puncture", Status:"CLOSED" }
-];
-
 /* =====================================================================
-   STATE + DATA WRAPPERS (with demo fallback)
+   STATE + DATA WRAPPERS
    ===================================================================== */
 const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0, editing:false };
 
-async function getTickets(criteria){ if(SDK_READY) return apiGet(criteria); return demoQuery(criteria); }
-async function addTicket(data){ if(SDK_READY) return apiAdd(data); const id="D"+(Date.now()%100000); DEMO.unshift(Object.assign({ID:id},data)); return id; }
-async function updateTicket(id,data){ if(SDK_READY) return apiUpdate(id,data); const r=DEMO.find(x=>String(x.ID)===String(id)); if(r) Object.assign(r,data); return true; }
-/* best-effort demo-mode stand-in for a real criteria() query — pulls every
-   quoted search term back out of the built criteria string (one per OR'd
-   .contains() clause) and checks each DEMO record's phone digits + the
-   configured text fields against them. */
-function demoQuery(criteria){
-  if(!criteria) return DEMO.slice();
-  const terms = (criteria.match(/contains\("([^"]*)"/g)||[]).map(m=>m.slice(10,-1)).filter(Boolean);
-  if(!terms.length) return DEMO.slice();
-  return DEMO.filter(r=> terms.some(t=>{
-    const tDigits = t.replace(/\D/g,"");
-    if(tDigits && (r[CONFIG.phoneField]||"").replace(/\D/g,"").indexOf(tDigits)!==-1) return true;
-    const tLower = t.toLowerCase();
-    return CONFIG.searchTextFields.some(f=> String(r[f]||"").toLowerCase().indexOf(tLower)!==-1);
-  }));
-}
+async function getTickets(criteria){ return apiGet(criteria); }
+async function addTicket(data){ return apiAdd(data); }
+async function updateTicket(id,data){ return apiUpdate(id,data); }
 
 /* =====================================================================
    HELPERS
@@ -1754,7 +1848,7 @@ async function runSearch(){
   if(digits.length>=3) clauses.push("("+CONFIG.phoneField+'.contains("'+digits+'"))');
   CONFIG.searchTextFields.forEach(f=>{ clauses.push("("+f+'.contains("'+safe+'"))'); });
   const crit=clauses.join(" || ");
-  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit, "| SDK_READY:", SDK_READY);
+  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit);
   const recs=await getTickets(crit);
   console.log("[Get-Rescue] search matched", recs.length, "record(s):", recs);
   if(!recs.length){ dd.innerHTML=`<div class="sd-msg">No ticket found for "${esc(raw)}"</div>`; return; }
@@ -2057,20 +2151,25 @@ function buildField(f){
       const allOpts = resolveOptions(f);
       const selectedOpts = arr.map(v=>allOpts.find(o=>String(o.v)===String(v))||{v:v,label:v});
       const remaining = allOpts.filter(o=>arr.indexOf(o.v)===-1);
-      const chips = selectedOpts.length
-        ? selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("")
-        : `<span class="chip-empty">None selected</span>`;
-      let addBox;
-      if(!remaining.length){
-        addBox = allOpts.length ? "" : `<span class="hint">This vehicle has no issues configured</span>`;
-      } else if(f.searchable){
-        addBox = `<div class="combo"><input type="text" id="${id}" class="combo-input" autocomplete="off" placeholder="Search to add…"><div class="combo-dropdown" id="${id}_dd"></div></div>`;
-      } else {
-        const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
-        addBox = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
+      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
+      // Chips + the "add" input/select render inside one bordered box together
+      // (2026-08-04, user request — matches native Zoho Creator multiselect
+      // Lookup fields) instead of a separate chips row above a separate input.
+      let addInner="";
+      if(remaining.length){
+        if(f.searchable){
+          addInner = `<input type="text" id="${id}" class="combo-multi-input" autocomplete="off" placeholder="${selectedOpts.length?"Search to add…":"Search…"}"><div class="combo-dropdown" id="${id}_dd"></div>`;
+        } else {
+          const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
+          addInner = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
+        }
       }
       const hintText = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
-      wrap.innerHTML=lab+`<div class="chips" id="${id}_chips">${chips}</div>`+addBox+(hintText?`<span class="hint">${esc(hintText)}</span>`:"");
+      if(!allOpts.length){
+        wrap.innerHTML=lab+`<span class="hint">This vehicle has no issues configured</span>`;
+      } else {
+        wrap.innerHTML=lab+`<div class="combo-multi" id="${id}_wrap"><div class="chips" id="${id}_chips">${chips}</div>${addInner}</div>`+(hintText?`<span class="hint">${esc(hintText)}</span>`:"");
+      }
     }
   } else if(f.t==="file"){
     const has = state.files[f.n];
@@ -2617,14 +2716,15 @@ function collectStep(validate){
   return {ok,missing};
 }
 /* fields flagged useId:true are real Lookups (confirmed for "Vehicle" via a
-   live record, and for "Vendors1" 2026-07-31 by the user directly — sending
-   its old composite-string format was why vendor assignment silently saved
-   nothing) — Creator's API rejects display text for those and wants the
-   linked record's ID instead. Vehicle_Issue is confirmed plain multiselect
-   text, NOT a lookup. Assigned_Technician is assumed plain text by analogy
-   (not independently confirmed) — don't re-add useId to either without new
-   evidence. Falls back to the raw value if no matching option is loaded yet
-   (better a failed save you can see than a silent drop). */
+   live record, for "Vendors1" 2026-07-31 by the user directly — sending its
+   old composite-string format was why vendor assignment silently saved
+   nothing — and for "Vehicle_Issue" 2026-08-04, also user-confirmed, reversing
+   the earlier "plain text" assumption) — Creator's API rejects display text
+   for those and wants the linked record's ID instead. Assigned_Technician is
+   still assumed plain text by analogy (not independently confirmed) — don't
+   re-add useId to it without new evidence. Falls back to the raw value if no
+   matching option is loaded yet (better a failed save you can see than a
+   silent drop). */
 // 2026-07-31: briefly tried sending Lookup fields as an {"ID":"..."} object
 // (per user-reported Zoho behavior) but that broke saving entirely — even
 // the Create step stopped submitting. Reverted back to the plain bare-ID
@@ -2830,23 +2930,21 @@ $("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
 $("clearSearch").onclick=()=>{ $("q").value=""; $("clearSearch").style.display="none"; closeSearchDropdown(); };
 
 async function boot(){
-  SDK_READY=true;
   try{ await ZOHO.CREATOR.UTIL.getInitParams(); }catch(e){}
   await loadOptions();
   loadDashboard();
 }
-function enterDemo(){
-  SDK_READY=false; $("demoNote").style.display="block";
-  OPTIONS.vehicles = DEMO_VEHICLES.map(function(r){ return { v:r.Name, label:r.Name, id:r.ID, raw:r }; });
-  OPTIONS.issues   = DEMO_ISSUES.map(function(r){ return { v:r.Issue_Name, label:r.Issue_Name, id:r.ID, raw:r }; });
-  OPTIONS.clients  = DEMO_CLIENTS.map(function(r){ return { v:r.Client_Name, label:r.Client_Name, id:r.ID, raw:r }; });
-  RATE_MASTER = DEMO_RATE_MASTER;
-  loadDashboard();
+// No more demo-data fallback (2026-08-04, per user request) — every detail
+// now comes from the live Zoho API only. If the Creator SDK never becomes
+// ready, show a real connection error instead of fabricating sample data.
+function showSdkError(){
+  $("demoNote").style.display="block";
+  console.error("[Get-Rescue] ZOHO.CREATOR.UTIL.getInitParams never became available — widget is not running inside a Creator page, or the SDK failed to load.");
 }
 function waitForSDK(a){
   a=a||0;
   if(sdkReady()){ boot(); return; }
-  if(a>40){ enterDemo(); return; }
+  if(a>40){ showSdkError(); return; }
   setTimeout(()=>waitForSDK(a+1),200);
 }
 waitForSDK();
