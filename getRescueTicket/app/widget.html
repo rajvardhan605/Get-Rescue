@@ -665,33 +665,38 @@ async function apiDownloadFile(id, fieldName){
 
 /* ---------- reusable option lists ---------- */
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
-/* Half-hour slots covering the full 24-hour day (2026-08-04, user request —
-   was wrongly limited to 9:00 AM-5:00 PM, so a customer scheduling an
-   evening/overnight breakdown had no valid slot to pick at all). */
-const SERVICE_TIMES = (function(){
-  function fmt(mins){ mins=((mins%1440)+1440)%1440; const h=Math.floor(mins/60), m=mins%60; const am=h<12; const hh=(h%12)||12; return hh+":"+(m<10?"0"+m:m)+" "+(am?"AM":"PM"); }
-  const out=[];
-  for(let mins=0; mins<24*60; mins+=30){ out.push(fmt(mins)+" - "+fmt(mins+30)); }
-  return out;
-})();
+// SERVICE_TIMES (half-hour slot list) and its own parseSlotStart() reader
+// removed 2026-08-05 (user request) — Schedule_Date + this slot picker are
+// replaced by a single Schedule_Date_Time field; see that field's own
+// comment and computeServiceTime() below. (Reapplied — see the top-of-file
+// note on this file living inside a OneDrive-synced folder silently
+// reverting edits; if this disappears again, that's almost certainly why.)
 
 /* dynamic options filled at boot from reports (best-effort) */
 const OPTIONS = { vehicles:[], issues:[], vendors:[], technicians:[], clients:[] };
 
 /* Quote & Booking Fee's Status is fully derived from what's actually been done
    on it — no manual override. No payment/location integration exists yet, so
-   "sent"/"PAID" are both set by the agent by hand, not by any webhook. Exact
-   flow as specified by the user (2026-07-28):
+   "PAID" is set by the agent by hand, not by any webhook.
+   Updated 2026-08-05 (explicit user request, supersedes the 2026-07-28 spec
+   below for the fee=0 branch only): Booking_Fee not > 0 now advances straight
+   to Location on save — no separate "Request Location" click required first.
+   The button/field itself is left in place (harmless, no other consumer
+   reads it), just no longer gates advancing.
+   Current flow:
      Booking_Fee not > 0 (nothing to collect):
-       Request Location clicked -> LOCATION PENDING (can advance)
-       not clicked (Cancel, or Save without clicking) -> LOCATION REQUEST (blocked)
+       -> LOCATION PENDING (can advance), unconditionally
      Booking_Fee > 0:
-       Payment_Status === "PAID" -> LOCATION PENDING (can advance)
+       Payment_Status === "PAID" -> LOCATION PENDING (can advance) — save & navigate to Location
+       Payment_Status === "PENDING" (or unset) -> BOOKING FEE PENDING (blocked) — save & navigate back to the dashboard's live ticket list
        else Send_Payment_Link clicked -> BOOKING FEE PENDING (blocked)
-       else -> SERVICE FEE QUOTE, unchanged (blocked) */
+       else -> SERVICE FEE QUOTE, unchanged (blocked)
+   Original 2026-07-28 spec, for history (fee=0 branch no longer matches this):
+     Booking_Fee not > 0: Request Location clicked -> LOCATION PENDING; not
+       clicked (Cancel, or Save without clicking) -> LOCATION REQUEST (blocked) */
 function quoteStatus(r){
   const feeZero = !(Number(r.Booking_Fee)>0);
-  if(feeZero) return r.Send_Link_For_The_Breakdown_Location ? "LOCATION PENDING" : "LOCATION REQUEST";
+  if(feeZero) return "LOCATION PENDING";
   if(r.Payment_Status==="PAID") return "LOCATION PENDING";
   if(r.Send_Payment_Link) return "BOOKING FEE PENDING";
   return "SERVICE FEE QUOTE";
@@ -731,8 +736,8 @@ const STAGES = [
        rather than showing a duplicate box. Confirmed via a live "Enter a value
        for Phone Number" error on save. "Client" used to need the same
        treatment but is now its own real Lookup field below (see Client).
-       Computed_Service_Time: NOW -> +30 min from save time; LATER -> the picked
-       Schedule_Date + Service_Time slot's start (see computeServiceTime()).
+       Computed_Service_Time: NOW -> +30 min from save time; LATER -> read
+       straight off the picked Schedule_Date_Time (see computeServiceTime()).
        Lead_Source is always "Call" for this agent-facing widget and is no
        longer a visible field at all — hidden from the frontend, sent silently
        via extra() the same way Phone_Number/Computed_Service_Time are. */
@@ -762,8 +767,12 @@ const STAGES = [
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
     { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true }, // required per 2026-07-31 flow spec — was optional
     { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true }, // required per 2026-07-31 flow spec — was optional
-    { n:"Schedule_Date", l:"Schedule Date", t:"date", req:true, when:(s)=>s.Time_of_service==="LATER" },
-    { n:"Service_Time", l:"Service Time", t:"select", o:SERVICE_TIMES, req:true, when:(s)=>s.Time_of_service==="LATER" },
+    // Replaced 2026-08-05 (user request) — was two separate fields
+    // (Schedule_Date + a half-hour Service_Time slot picker). The user added
+    // a single Schedule_Date_Time field to Create_Case in Zoho instead; one
+    // native datetime-local picker here now writes straight into it — see
+    // computeServiceTime()'s own updated comment.
+    { n:"Schedule_Date_Time", l:"Schedule Date & Time", t:"datetime", req:true, when:(s)=>s.Time_of_service==="LATER" },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -955,7 +964,16 @@ const STAGES = [
     // means priority/phone/online-status can no longer ride along on the
     // saved value itself — see vendorNamesFor()'s own comment on what that
     // costs for later display.
-    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendorsFiltered", full:true, searchable:true, useId:true,
+    // Real bug fixed (2026-08-05, user-reported live: a ticket reached Status
+    // "RSP IRA (INVITE RESPONSE AWAITED)" with Vendors1/Vendor_Emails both
+    // genuinely empty — confirmed via console dump — meaning the agent could
+    // click "Assign & Continue" without ever picking a vendor, advancing to a
+    // status that literally means "awaiting a vendor's response" with no
+    // vendor actually invited). req:true added so collectStep()'s existing
+    // multiselect validation (already there for every other multiselect,
+    // just never applied to this one) blocks the save until at least one
+    // vendor is picked.
+    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendorsFiltered", full:true, searchable:true, useId:true, req:true,
       hint:(s)=>vendorPickerHint(s) },
     // "Remarks [Text Area – optional]" — same shared field as the earlier
     // steps (2026-07-31 flow spec shows it here too).
@@ -1415,16 +1433,24 @@ function valuesOf(v){
   if(typeof v==="object") return [unwrapOne(v)];
   return String(v).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
 }
-function vehicleIssuesFor(vehicleLabel){
-  if(!vehicleLabel) return [];
-  const veh = OPTIONS.vehicles.find(function(v){ return v.v===vehicleLabel; });
+function vehicleIssuesFor(vehicleIdOrLabel){
+  if(!vehicleIdOrLabel) return [];
+  // Real bug fixed (2026-08-05, user-reported live: "Vehicle Issue" shows
+  // "This vehicle has no issues configured" on a reopened ticket) — Vehicle
+  // is a confirmed useId:true field; the caller (optionsListFor's own
+  // "@vehicleIssues" branch) passes state.record[CONFIG.vehicleField]
+  // straight through, which is a bare ID once loaded from a saved record, not
+  // a label. Match by ID first now, falling back to the label match for a
+  // freshly-picked value that hasn't been saved yet.
+  const veh = OPTIONS.vehicles.find(function(v){ return String(v.id)===String(vehicleIdOrLabel); })
+    || OPTIONS.vehicles.find(function(v){ return v.v===vehicleIdOrLabel; });
   if(!veh || !veh.raw){
-    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
+    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleIdOrLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
     return [];
   }
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
   if(!category){
-    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
+    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleIdOrLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
     return [];
   }
   const matches = OPTIONS.issues.filter(function(issue){
@@ -1437,11 +1463,18 @@ function vehicleIssuesFor(vehicleLabel){
     const types = valuesOf(issue.raw[CONFIG.issueVehicleTypeField]);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
-  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
+  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleIdOrLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
   return matches;
 }
-function isTowIssue(issueLabel){
-  const m = OPTIONS.issues.find(function(o){ return String(o.v)===String(issueLabel); });
+// Real bug fixed (2026-08-05) — Vehicle_Issue is useId:true (a confirmed
+// multiselect Lookup), so its array holds bare Vehicle_Issue_Report ids, not
+// labels — matching by o.v (a label) here would silently never find the
+// issue, always returning false and forcing Service_Type to "RSR" no matter
+// what was actually picked. Match by id first now (pick() below was pushing
+// labels until this same fix, so any Vehicle_Issue value from before this fix
+// is still a label — falling back to the label match keeps those working too).
+function isTowIssue(issueValue){
+  const m = OPTIONS.issues.find(function(o){ return String(o.id)===String(issueValue); }) || OPTIONS.issues.find(function(o){ return String(o.v)===String(issueValue); });
   const type = m && m.raw ? valuesOf(m.raw.Issue_Type).join(" ") : "";
   return /tow/i.test(type);
 }
@@ -1727,8 +1760,24 @@ function vendorOptionHtml(o){
 let RATE_MASTER = [];
 function calcQuote(){
   const r = state.record;
-  const veh = OPTIONS.vehicles.find(function(v){ return v.v===r[CONFIG.vehicleField]; });
-  const issues = Array.isArray(r.Vehicle_Issue) ? r.Vehicle_Issue : [];
+  // Real bug fixed (2026-08-05, user-reported live: "Suggested Rate" blank on
+  // reopening an existing ticket — Total_Service_Fee/Booking_Fee/Remaining_Fee
+  // displayed fine since those are just read straight from the saved record,
+  // not recomputed here). Vehicle and Vehicle_Issue are both confirmed
+  // useId:true fields — state.record holds bare IDs once loaded from Zoho,
+  // but this matched against OPTIONS' own .v (a LABEL) — never found the
+  // vehicle or resolved the issue names, so this always fell through to
+  // {total:0}, which then rendered as "" (0||"" is falsy) instead of a real
+  // number. Same ID-first, label-fallback fix as buildField's own select/
+  // multiselect branches — ID first (a reopened ticket), label as a fallback
+  // (a freshly-picked value that hasn't been saved yet).
+  const veh = OPTIONS.vehicles.find(function(v){ return String(v.id)===String(r[CONFIG.vehicleField]); })
+    || OPTIONS.vehicles.find(function(v){ return v.v===r[CONFIG.vehicleField]; });
+  const rawIssues = Array.isArray(r.Vehicle_Issue) ? r.Vehicle_Issue : [];
+  const issues = rawIssues.map(function(idOrName){
+    const m = OPTIONS.issues.find(function(o){ return String(o.id)===String(idOrName); });
+    return m ? m.v : idOrName;
+  });
   const out = { total:0, breakup:"", needsDistance:false };
   if(!veh || !veh.raw || !issues.length) return out;
   const vType = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0] || "";
@@ -1787,25 +1836,21 @@ function fmtDateTime12(d){
   const h24=d.getHours(); const ampm=h24<12?"AM":"PM"; const h12=(h24%12)||12;
   return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(h12)+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())+" "+ampm;
 }
-function parseSlotStart(slot){
-  if(!slot) return null;
-  const m=String(slot).split(" - ")[0].trim().match(/(\d+):(\d+)\s*(AM|PM)/i);
-  if(!m) return null;
-  let h=parseInt(m[1],10); const min=parseInt(m[2],10); const ap=m[3].toUpperCase();
-  if(ap==="PM" && h!==12) h+=12;
-  if(ap==="AM" && h===12) h=0;
-  return {h:h, m:min};
-}
 /* Computed_Service_Time: NOW -> 30 minutes from the moment of saving; LATER ->
-   the picked Schedule_Date combined with the picked Service_Time slot's start. */
+   read straight off the picked Schedule_Date_Time. Replaced 2026-08-05 (user
+   request) — used to combine a separate Schedule_Date + half-hour Service_Time
+   slot picker; both are gone in favor of one native datetime-local field, so
+   this is now a straight parse instead of a date+slot reconstruction.
+   Schedule_Date_Time in state.record is still the raw <input type=datetime-
+   local> value ("YYYY-MM-DDTHH:mm") at this point — buildPayload()'s own
+   per-field encoding (which formats it for Zoho) runs separately and never
+   mutates state.record, so `new Date(...)` here parses it directly. */
 function computeServiceTime(r){
   if(r.Time_of_service==="LATER"){
-    if(!r.Schedule_Date || !r.Service_Time) return "";
-    const dp=String(r.Schedule_Date).split("-"); // <input type=date> gives "YYYY-MM-DD"
-    if(dp.length!==3) return "";
-    const slot=parseSlotStart(r.Service_Time);
-    if(!slot) return "";
-    return fmtDateTime12(new Date(Number(dp[0]), Number(dp[1])-1, Number(dp[2]), slot.h, slot.m, 0));
+    if(!r.Schedule_Date_Time) return "";
+    const d=new Date(r.Schedule_Date_Time);
+    if(isNaN(d)) return "";
+    return fmtDateTime12(d);
   }
   return fmtDateTime12(new Date(Date.now()+30*60*1000));
 }
@@ -1937,9 +1982,28 @@ function vendorDisplayName(v){
   const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
   return String(plain||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
 }
+// Real bug fixed (2026-08-05, user-reported live: dashboard card showed
+// "[object Object], [object Object]" instead of the real Vehicle Issue
+// names) — these rows come straight from the dashboard's own bulk fetch,
+// which never goes through openTicket()'s STAGES.forEach(...unwrapLookup...)
+// normalization (that only runs once a specific ticket is opened). So a
+// multiselect Lookup here can still be an array of raw objects with none of
+// vendorDisplayName's own display_value/zc_display_value/value — readVal()'s
+// plain .join() on an array of such objects just stringifies each one to
+// "[object Object]". Resolves each item's own id (bare, or from an object)
+// against the given OPTIONS list first; falls back to whatever display value
+// the object itself carries, same as before, if no id match is found.
+function lookupNamesFor(rawValue, optionsList){
+  const arr=Array.isArray(rawValue)?rawValue:(rawValue?[rawValue]:[]);
+  return arr.map(function(item){
+    const id=(item && typeof item==="object") ? (item.ID!=null?item.ID:item.id) : item;
+    const m=(id!=null && optionsList) ? optionsList.find(function(o){ return String(o.id)===String(id); }) : null;
+    if(m) return m.label;
+    return (item && typeof item==="object") ? (item.display_value||item.zc_display_value||item.value||"") : String(item||"");
+  }).filter(Boolean).join(", ");
+}
 function vendorNamesFor(r){
-  const v=r.Vendors1; const arr=Array.isArray(v)?v:(v?[v]:[]);
-  return arr.map(vendorDisplayName).filter(Boolean).join(", ");
+  return lookupNamesFor(r.Vendors1, OPTIONS.vendors);
 }
 function rowHtml(r){
   const svc=(readVal(r,CONFIG.serviceTypeField)||"").toUpperCase();
@@ -1958,7 +2022,7 @@ function rowHtml(r){
     <span class="avatar">${esc(initials(name))}</span>
     <span class="main">
       <span class="top-line"><span class="cid">${esc(caseLabel(r))}</span><span class="nm">${esc(name)}</span></span>
-      <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(readVal(r,CONFIG.vehicleField)||"")} · ${esc(readVal(r,"Vehicle_Issue")||"")}</span>
+      <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(lookupNamesFor(r[CONFIG.vehicleField],OPTIONS.vehicles)||"")} · ${esc(lookupNamesFor(r.Vehicle_Issue,OPTIONS.issues)||"")}</span>
       ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
       ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
       ${showFlags ? `<span class="flags">
@@ -2068,10 +2132,25 @@ function newTicket(){
    objects) with a display_value, not the plain label the rest of the UI works
    with. Unwrap them once on load so the select/chip UI, and vehicleIssuesFor's
    label match, see the same plain strings they'd see on a freshly-built ticket. */
+// Real bug fixed (2026-08-05, user-reported live: "Vehicle Issue" chips blank
+// on reopen, AND Suggested_Rate blank alongside it) — this used to extract a
+// DISPLAY value (display_value/zc_display_value/value) from a Lookup object,
+// but everything downstream (buildField's own multiselect findOpt,
+// closureLabelFor, the plain-select id match) was later rewritten to match
+// useId fields by ID, via the same OPTIONS lists the pickers use. Vehicle/
+// Client apparently come back as bare ID strings already (so this function
+// left them untouched either way, which is why fixing those two "worked" by
+// accident) — but Vehicle_Issue's own multiselect Lookup comes back as an
+// array of OBJECTS, and none of them had a display_value/zc_display_value/
+// value property, so every item collapsed to "". calcQuote() then saw an
+// empty Vehicle_Issue array and returned {total:0} — the actual reason
+// Suggested Rate went blank too, not a separate bug. Prefers the object's own
+// .ID/.id now (what every useId matcher actually needs), falling back to a
+// display value only if no id-like property exists at all.
 function unwrapLookup(v){
   if(v==null) return v;
   if(Array.isArray(v)) return v.map(unwrapLookup);
-  if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||"";
+  if(typeof v==="object") return (v.ID!=null ? v.ID : (v.id!=null ? v.id : (v.display_value||v.zc_display_value||v.value||"")));
   return v;
 }
 async function openTicket(rec){
@@ -2118,6 +2197,13 @@ async function openTicket(rec){
   // old composite-string save format).
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
   console.log("[Get-Rescue] openTicket state.record after unwrap:", state.record);
+  // Targeted diagnostic (2026-08-05, user-reported live: "Vendors" still
+  // blank on the Assign step) — Vendors1 goes through the exact same
+  // useId/multiselect code path Vehicle_Issue does (already confirmed
+  // working), so this settles whether it's a real remaining display bug or
+  // this ticket simply never had a vendor saved: raw (pre-unwrap, straight
+  // off Zoho) vs. after unwrap, plus whether OPTIONS.vendors itself loaded.
+  console.log("[Get-Rescue] openTicket Vendors1 — raw from Zoho:", JSON.stringify(rec.Vendors1), "| after unwrap:", JSON.stringify(state.record.Vendors1), "| OPTIONS.vendors loaded:", OPTIONS.vendors.length, "record(s)");
   setPath();
   const st=readVal(rec,CONFIG.stageField);
   state.stepIndex = stageIndexForStatus(state.path, st);
@@ -2213,6 +2299,12 @@ function renderWizard(){
     state.record.Remaining_Fee=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Booking_Fee)||0);
   }
   // fields
+  // Create step's own heading hidden (2026-08-05, user request, reapplied
+  // after it was somehow lost from an earlier pass) — "Create Service
+  // Ticket" duplicated the stepper's own "Create" chip right above it.
+  // Other steps keep their title — several (e.g. "Service Fee Quote &
+  // Booking Fee") carry real detail beyond their short stepper label.
+  $("stepTitle").style.display = step.key==="create" ? "none" : "";
   $("stepTitle").textContent = step.title;
   $("stepDesc").textContent = step.desc||"";
   renderFields(step);
@@ -2282,7 +2374,17 @@ function buildField(f){
   } else if(f.t==="select" && f.searchable){
     const baseOpts=resolveOptions(f);
     const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
-    const curOpt = baseOpts.find(o=>String(o.v)===String(effectiveCur));
+    // Real bug fixed (2026-08-05, user-reported live: "Client"/"Vehicle"
+    // combo box always shows blank ("Search Client…"/"Search Vehicle…")
+    // instead of the saved value when reopening an existing ticket) — same
+    // root cause, same fix as the plain <select> branch and buildField's own
+    // multiselect branch just below/above: useId:true fields hold a bare ID
+    // once loaded from a saved record, but this matched against baseOpts'
+    // own .v (a LABEL) — never found it. Match by ID first, falling back to
+    // the label match for a freshly-picked value that hasn't been saved yet.
+    const curOpt = f.useId
+      ? (baseOpts.find(o=>String(o.id)===String(effectiveCur)) || baseOpts.find(o=>String(o.v)===String(effectiveCur)))
+      : baseOpts.find(o=>String(o.v)===String(effectiveCur));
     wrap.innerHTML=lab+`<div class="combo">
       <input type="text" id="${id}" class="combo-input" autocomplete="off" placeholder="Search ${esc(f.l)}…" value="${esc(curOpt?curOpt.label:"")}"${f.readonly?" disabled":""}>
       <div class="combo-dropdown" id="${id}_dd"></div>
@@ -2293,7 +2395,21 @@ function buildField(f){
     const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
     const isCustom = !!(f.other && effectiveCur!=="" && knownVals.indexOf(String(effectiveCur))===-1);
     const selVal = isCustom ? "Other" : effectiveCur;
-    const opts=baseOpts.map(o=>`<option value="${esc(o.v)}" ${String(selVal)===String(o.v)?"selected":""}>${esc(o.label)}</option>`).join("");
+    // Real bug fixed (2026-08-05, user-reported live: "Assigned Vendor"/
+    // "Assigned Technician" always showed "— select —" on a reopened ticket,
+    // even when a real value was saved) — useId:true fields hold a bare ID
+    // once loaded from a saved record, but each <option value> below is still
+    // the LABEL (o.v) — matching "selected" against that never found the
+    // right option. Same root cause, same fix as buildField's own multiselect
+    // branch: match by ID first for useId fields, falling back to the label
+    // match for a freshly-picked value that hasn't gone through idsFor() yet.
+    const selectedOpt = f.useId
+      ? (baseOpts.find(function(o){ return String(o.id)===String(selVal); }) || baseOpts.find(function(o){ return String(o.v)===String(selVal); }))
+      : null;
+    const opts=baseOpts.map(function(o){
+      const isSel = selectedOpt ? (o===selectedOpt) : (String(selVal)===String(o.v));
+      return `<option value="${esc(o.v)}" ${isSel?"selected":""}>${esc(o.label)}</option>`;
+    }).join("");
     const showOther = f.other && selVal==="Other";
     // <select> has no true "readonly" attribute — f.readonly is treated the
     // same as f.disabled here (both just lock the control), same convention
@@ -2340,9 +2456,39 @@ function buildField(f){
     } else {
       const arr = Array.isArray(cur)?cur:(cur?String(cur).split(",").map(s=>s.trim()):[]);
       const allOpts = resolveOptions(f);
-      const selectedOpts = arr.map(v=>allOpts.find(o=>String(o.v)===String(v))||{v:v,label:v});
-      const remaining = allOpts.filter(o=>arr.indexOf(o.v)===-1);
-      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
+      // Real bug fixed (2026-08-05, user-reported live: "Vendors"/"Vehicle
+      // Issue" chips always blank on a reopened ticket, even though a real
+      // value was saved) — same root cause as the plain <select> and
+      // searchable-select branches (see their own comments), just never
+      // actually applied here despite those comments claiming it was: a
+      // useId:true field holds bare IDs once loaded from a saved record, but
+      // this matched against allOpts' own .v (a LABEL) — never found it, so
+      // it fell back to {v:v,label:v}, showing the raw ID as chip text
+      // instead of the real name (or, when `remaining` below is computed
+      // from the SAME never-matching comparison, could leave the true
+      // already-selected option still offered again in "+ Add…"). Match by
+      // ID first for useId fields, falling back to the label match for a
+      // freshly-picked value that hasn't been saved yet.
+      const findOpt = f.useId
+        ? function(v){ return allOpts.find(o=>String(o.id)===String(v)) || allOpts.find(o=>String(o.v)===String(v)); }
+        : function(v){ return allOpts.find(o=>String(o.v)===String(v)); };
+      // Carries the ORIGINAL stored value (rawValue) alongside whichever
+      // option it resolved to, so the remove button below can always target
+      // exactly what's actually in arr/state.record[f.n] — using o.id instead
+      // would break removal for a legacy value that only matched via the
+      // label fallback (its real stored value is still that label, not the
+      // matched option's id).
+      const selectedOpts = arr.map(v=>{ const o=findOpt(v); return o ? Object.assign({},o,{rawValue:v}) : {v:v,label:v,rawValue:v}; });
+      // Compares against arr (the raw stored values) directly, not against
+      // selectedOpts by reference — selectedOpts' items are copies (see
+      // Object.assign above), so a reference-based .indexOf would never
+      // match anything in allOpts and every option would wrongly stay
+      // "remaining" even once selected.
+      const remaining = allOpts.filter(function(o){
+        const key = f.useId && o.id!=null ? o.id : o.v;
+        return arr.map(String).indexOf(String(key))===-1;
+      });
+      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.rawValue)}">${esc(o.label)}<button type="button" data-remove="${esc(o.rawValue)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
       // Chips + the "add" input/select render inside one bordered box together
       // (2026-08-04, user request — matches native Zoho Creator multiselect
       // Lookup fields) instead of a separate chips row above a separate input.
@@ -2351,7 +2497,10 @@ function buildField(f){
         if(f.searchable){
           addInner = `<input type="text" id="${id}" class="combo-multi-input" autocomplete="off" placeholder="${selectedOpts.length?"Search to add…":"Search…"}"><div class="combo-dropdown" id="${id}_dd"></div>`;
         } else {
-          const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
+          // Option value is the id for useId fields (2026-08-05, consistency
+          // fix — see wireMultiselect's own matching onchange handler below),
+          // same convention the searchable combo (wireComboAdd) already uses.
+          const addOpts = remaining.map(o=>`<option value="${esc(f.useId && o.id!=null ? o.id : o.v)}">${esc(o.label)}</option>`).join("");
           addInner = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
         }
       }
@@ -2546,7 +2695,18 @@ function wireCombo(f,id){
   const input=$(id); const dd=$(id+"_dd"); if(!input||!dd) return;
   const opts=resolveOptions(f);
   let activeIdx=-1, curMatches=[];
-  function labelFor(v){ const o=opts.find(x=>String(x.v)===String(v)); return o?o.label:""; }
+  // Real bug fixed (2026-08-05) — same root cause as buildField's own
+  // searchable-select comment: on blur this re-derives the input's displayed
+  // text from state.record[f.n], which is a bare ID for a useId field on a
+  // reopened ticket, not a label. Without this fix, blurring the field
+  // without picking anything new would silently blank out the exact value
+  // buildField's own fix just correctly pre-filled.
+  function labelFor(v){
+    const o = f.useId
+      ? (opts.find(x=>String(x.id)===String(v)) || opts.find(x=>String(x.v)===String(v)))
+      : opts.find(x=>String(x.v)===String(v));
+    return o?o.label:"";
+  }
   function applyActive(){
     dd.querySelectorAll(".combo-opt").forEach((el,i)=>el.classList.toggle("hi", i===activeIdx));
     const hiEl=dd.querySelector(".combo-opt.hi");
@@ -2608,7 +2768,10 @@ function wireMultiselect(f,id){
       btn.onclick=()=>{
         const val=btn.getAttribute("data-remove");
         const cur=Array.isArray(state.record[f.n])?state.record[f.n]:[];
-        state.record[f.n]=cur.filter(x=>x!==val);
+        // String() comparison (2026-08-05) — ids can come back as either a
+        // number or a numeric string depending on the API path; a strict
+        // !== on mismatched types would silently fail to remove the chip.
+        state.record[f.n]=cur.filter(x=>String(x)!==String(val));
         afterMultiselectChange(f);
       };
     });
@@ -2628,10 +2791,16 @@ function wireMultiselect(f,id){
 function wireComboAdd(f,id){
   const input=$(id); const dd=$(id+"_dd"); if(!input||!dd) return;
   let activeIdx=-1, curMatches=[];
+  // Real bug fixed (2026-08-05) — same useId:true id-vs-label mismatch as
+  // buildField's own multiselect branch (see its comment): cur holds bare
+  // ids once loaded from a saved record (or picked via the fixed pick()
+  // below), but this compared against o.v (a label) — an already-selected
+  // option was never filtered out of "+ Add…", so it could be picked again.
+  function optKey(o){ return f.useId && o.id!=null ? o.id : o.v; }
   function remainingOpts(){
     const allOpts=resolveOptions(f);
-    const cur=Array.isArray(state.record[f.n])?state.record[f.n]:[];
-    return allOpts.filter(o=>cur.indexOf(o.v)===-1);
+    const cur=(Array.isArray(state.record[f.n])?state.record[f.n]:[]).map(String);
+    return allOpts.filter(o=>cur.indexOf(String(optKey(o)))===-1);
   }
   function applyActive(){
     dd.querySelectorAll(".combo-opt").forEach((el,i)=>el.classList.toggle("hi", i===activeIdx));
@@ -2640,7 +2809,15 @@ function wireComboAdd(f,id){
   }
   function pick(o){
     const cur=Array.isArray(state.record[f.n])?state.record[f.n].slice():[];
-    if(cur.indexOf(o.v)===-1) cur.push(o.v);
+    // Real bug fixed (2026-08-05) — pushed o.v (the label) even for
+    // useId:true fields (Vendors1/Vehicle_Issue), while a reopened ticket's
+    // existing selections are bare ids — mixing the two broke id-based
+    // matching everywhere downstream (chip display, isTowIssue(), Invites/
+    // Assigned_Vendor). Push the id for useId fields, same as every other
+    // useId field already does via idsFor() at save time — just done here
+    // directly so state.record is consistent immediately, not just after save.
+    const key=optKey(o);
+    if(cur.map(String).indexOf(String(key))===-1) cur.push(key);
     state.record[f.n]=cur;
     dd.classList.remove("on");
     afterMultiselectChange(f); // rebuilds the field, clearing the search input fresh
@@ -3159,8 +3336,26 @@ async function saveStep(advance){
       renderWizard(); scrollToTop();
     }
     else renderWizard();
-  }catch(e){ console.error(e); toast((e&&e.message)||"Save failed","err"); }
+  }catch(e){ console.error(e); toast(friendlySaveError(e),"err"); }
   finally{ $("saveBtn").disabled=false; }
+}
+// Clearer message for a hard Zoho field-level cap (2026-08-05, user-reported
+// live: "'Remarks' has exceeded the maximum character length.") — this is a
+// server-side field setting (Remarks is a "Multi-line" field with a fairly
+// low character cap), not something this widget's JS can raise or bypass.
+// Since Remarks accumulates a timestamped entry per step for a ticket's
+// entire lifecycle, it will keep hitting this same wall until the field
+// itself is widened in Zoho Creator Studio (Create_Case form -> Remarks ->
+// raise Max Length, or switch to a "Large Text" field type). Zoho's update
+// call validates the whole payload together, so this step's OTHER fields
+// likely didn't save either while Remarks was over the limit — not just
+// Remarks itself.
+function friendlySaveError(e){
+  const raw=(e&&e.message)||"";
+  if(/remarks/i.test(raw) && /maximum character length/i.test(raw)){
+    return "Save blocked — the Remarks log has exceeded Zoho's current field limit for this whole ticket. Nothing on this step saved yet. Ask your Zoho admin to raise the Remarks field's Max Length (or switch it to a Large Text field) in Create_Case, or remove/shorten an old note as a temporary workaround.";
+  }
+  return raw || "Save failed";
 }
 function prevStep(){ if(state.stepIndex===0) return; collectStep(false); state.stepIndex--; console.log("[Get-Rescue] prevStep -> state.record:", state.record); renderWizard(); scrollToTop(); }
 function jumpTo(i){ if(i===state.stepIndex || i>state.maxStepIndex) return; collectStep(false); setPath(); state.stepIndex=Math.min(i,state.path.length-1); console.log("[Get-Rescue] jumpTo("+i+") -> state.record:", state.record); renderWizard(); scrollToTop(); }

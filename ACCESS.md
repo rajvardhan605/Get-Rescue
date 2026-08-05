@@ -8,7 +8,9 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 - **Edit** = needs to update existing records in that Report, and/or upload files to it (`updateRecordById`, `uploadFile`) — Zoho Creator ties file uploads to the same report used for the update.
 - See **`FIELDS.md`** (same folder) for what each report/form's individual fields are used for, and the full build spec for every form.
 
-**2026-08-03 — all Zoho forms/reports were deleted and rebuilt from scratch.** Report names below reflect the rebuilt schema: `vehicle_master_Report` → `Vehicle_Master_Report`, `vendors_Report` → `Vendors_Report`, `technicians_Report` → `Technicians_Report`. The old separate `My_Availability_Vendor` form is gone entirely — it's now unified into `Vendors_Report` (one vendor master, not two).
+**2026-08-03 — all Zoho forms/reports were deleted and rebuilt from scratch.** Report names below reflect the rebuilt schema: `vehicle_master_Report` → `Vehicle_Master_Report`, `vendors_Report` → `Vendors_Report`, `technicians_Report` → `Technicians_Report`. The old separate `My_Availability_Vendor` form was folded into `Vendors_Report` at the time.
+
+**2026-08-05 — `My_Availability_Vendor` brought back, toggle only (user request).** The 2026-08-03 unification above didn't hold up for the vendor portal specifically — see `vendorTicket`'s own entry below. The online/offline toggle now targets `My_Availability_Vendor` again, independent of `Vendors_Report`; everything else about the 2026-08-03 rebuild (report/field names elsewhere) is unaffected.
 
 ---
 
@@ -49,11 +51,12 @@ Same underlying access as Agent — it's a different view (Kanban columns) over 
 ## Vendor (`vendorTicket`)
 
 - **`Agent_Ticket_Report` — View + Edit.** Reads "my tickets" (filtered client-side by the logged-in email matching one of the Vendor-Email candidate fields — see `FIELDS.md`), and writes every field across Accept/Reject, Reach, WIP/Loading/Reached-Drop/Unloading (if Individual), and Final Payment.
-- **`Vendors_Report` — View + Edit.** New 2026-08-03: this single report now covers both the agent's Assignment-step picker AND this vendor's own login/toggle profile (Email match, `Availability_Status` online/offline toggle, `Vendor_Type` Individual/Fleet check) — previously two separate forms (`vendors_Report` + `My_Availability_Vendor`), now unified.
+- **`Vendors_Report` — View + Edit.** This vendor's own identity for ticket matching (Assigned_Vendor/Vendors1/Invites, real Lookups into this report) and the agent's own Assignment-step picker. **Un-unified 2026-08-05 (user request)**: the 2026-08-03 merge that folded the online/offline toggle into this same report didn't work for the vendor portal — reverted the toggle specifically back to its own separate report below; `Vendors_Report` itself is unchanged otherwise.
+- **`My_Availability_Vendor` — View + Edit.** Re-added 2026-08-05 — the vendor's own online/offline toggle (`Availability_Status`, matched by `Email`) lives here again, independent of `Vendors_Report`. Deliberately never used for ID matching (Assigned_Vendor/Vendors1/Invites) — its own record id is not a `Vendors_Report` id.
 - **`Technicians_Report` — View** (at minimum). Used for the fleet hand-off — listing the fleet's own technicians to assign a job to. Currently only ever read, never written, by this widget.
 - **`Task_Rejections` — Add.** Best-effort rejection log (non-blocking) on Reject.
 - **`Invites` (form) — Add.** `assignTechnician()` creates an `Invites_Report` record (`RSID`/`Technician`) when a fleet vendor hands a job off to one of their own technicians. (Fixed 2026-08-03 — this used to incorrectly write into the `Vendor` field; see `Invites`' own field list in `FIELDS.md`.)
-- **`Invites_Report` — View + Edit.** `loadMyInvites()` reads this report to match "my tickets" (by vendor name, falling back to the older `Vendor_Emails`/name match); `updateMyInvite()` writes this vendor's own invite record on Accept/Reject (`Service_Acceptance_Next`, `Status`, `Reject_Reason`).
+- **`Invites_Report` — View + Edit.** `loadMyInvites()` reads this report to match "my tickets" (by the vendor's own `Vendors_Report` record ID — fixed 2026-08-05, was comparing against a name and never matched anything — falling back to the older `Vendor_Emails` email match). `updateMyInvite()` writes this vendor's own invite record on Accept/Reject (`Service_Acceptance_Next`, `Status`, `Reject_Reason`).
 
 Not needed: `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Client_Report`, `Rate_Master_Report` — this widget never touches vehicle/issue/client/rate master data, only the ticket record itself.
 

@@ -473,7 +473,10 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 
 ## Cross-cutting: master-table fields (not on `Create_Case`)
 
-### `Vendors_Report` (vendor master — unified 2026-08-03, absorbs the old separate `My_Availability_Vendor`)
+### `Vendors_Report` (vendor master)
+
+**2026-08-05 (user request): the online/offline toggle no longer lives here** — the 2026-08-03 unification below didn't work for the vendor portal, so the toggle was moved back to its own separate `My_Availability_Vendor` report (`Email`/`Availability_Status`, same field names, matched independently — its record id is never used for ticket matching). Everything else in this section is unaffected.
+
 | Field | Purpose | Widgets | Status |
 |---|---|---|---|
 | `vendor_name` | Display label — **corrected 2026-08-04, confirmed live**: real field is lowercase, the planned `Vendor_Name` rename never landed | Agent, Vendor | ✅ (confirmed live 2026-08-04) |

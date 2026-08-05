@@ -240,15 +240,43 @@ const CONFIG = {
   nameField: "Customer_Name",
   phoneField: "Phone_Number",
   vehicleField: "Vehicle",
-  /* toggle target — the vendor-specific report toggleGetRescue's own CONFIG
-     already used (Vendors_Report), folded directly into this widget
-     per explicit request — no separate toggle widget. */
+  // Added 2026-08-05 (user request — "Vehicle ID showing, not the Vehicle
+  // name") — Vehicle is a real Lookup; this widget's own fetch (field_config
+  // "all" included) still comes back with a bare Vehicle_Master_Report id,
+  // not an enriched display object, so readVal() alone can't show a name.
+  // Same report/name-field convention getRescueTicket's own vehicle picker
+  // already uses — see vehicleDisplayFor()'s own comment for how a wrong
+  // guess here degrades safely.
+  vehicleMasterReport: "Vehicle_Master_Report",
+  vehicleNameField: "Name",
+  // Added 2026-08-05 (user request — "[object Object]" shown instead of the
+  // real issue name on the dashboard card) — Vehicle_Issue is a multiselect
+  // Lookup; its raw array items come back as Lookup objects with no usable
+  // display_value of their own, so a plain .join() (readVal()'s own array
+  // handling) stringified each one to "[object Object]". Same report/label
+  // convention getRescueTicket's own Vehicle_Issue picker already uses.
+  issueReport: "Vehicle_Issue_Report",
+  issueNameField: "Issue_Name",
+  // Vendors_Report — this vendor's own identity for ticket matching
+  // (Assigned_Vendor/Vendors1/Invites, all real Lookups into THIS report).
   vendorReport: "Vendors_Report",
-  vendorStatusField: "Availability_Status",
   vendorEmailField: "Email",
   vendorNameField: "Vendor_Name",
   /* NOT confirmed live — see this file's own header comment. */
   vendorTypeField: "Vendor_Type",
+  // Availability toggle target corrected 2026-08-05 (user request) — this
+  // widget's own comment previously claimed toggleGetRescue used Vendors_Report
+  // for the toggle too, but toggleGetRescue's OWN CONFIG actually says
+  // "My_Availability_Vendor" (a separate report from the vendor master) —
+  // that comment was simply wrong. Deliberately kept independent of
+  // vendorReport above: My_Availability_Vendor's own record id is NOT a
+  // Vendors_Report id, so it must never be used for Assigned_Vendor/ticket
+  // matching (see currentAvailabilityRecord's own comment) — only for this
+  // toggle's own on/off state. Field names match toggleGetRescue's own
+  // (working) guesses for this exact report.
+  availabilityReport: "My_Availability_Vendor",
+  availabilityEmailField: "Email",
+  availabilityStatusField: "Availability_Status",
   fleetTechnicianReport: "Technicians_Report",
   fleetTechnicianLinkField: "Fleet_Vendor",
   fleetTechnicianNameField: "Technician_Name",
@@ -448,15 +476,59 @@ function unwrapLookup(v){
   return v;
 }
 function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
+// Vehicle name lookup (2026-08-05, user request) — see CONFIG.vehicleMasterReport's
+// own comment. Loaded once at boot; VEHICLE_NAMES[id] -> real vehicle name.
+let VEHICLE_NAMES={};
+async function loadVehicleNames(){
+  try{
+    const recs=await apiGetReport(CONFIG.vehicleMasterReport, null, 1000);
+    const map={};
+    recs.forEach(function(v){ map[String(v.ID)] = readVal(v, CONFIG.vehicleNameField) || ""; });
+    VEHICLE_NAMES=map;
+    if(!recs.length) console.warn("[GR-Vendor] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id. Check the report name.");
+  }catch(e){ console.warn("[GR-Vendor] loadVehicleNames failed", e); }
+}
+// Resolves the ticket's Vehicle field to a real name via VEHICLE_NAMES,
+// falling back to whatever readVal() already produces (a display object's
+// own value, or the raw id itself if no name was found) — never worse than
+// the plain readVal() call this replaces.
+function vehicleDisplayFor(r){
+  const raw=r?r[CONFIG.vehicleField]:null;
+  const id=lookupId(raw);
+  const name=id!=null ? VEHICLE_NAMES[String(id)] : null;
+  return name || readVal(r,CONFIG.vehicleField);
+}
+// Issue name lookup (2026-08-05) — see CONFIG.issueReport's own comment.
+let ISSUE_NAMES={};
+async function loadIssueNames(){
+  try{
+    const recs=await apiGetReport(CONFIG.issueReport, null, 1000);
+    const map={};
+    recs.forEach(function(v){ map[String(v.ID)] = readVal(v, CONFIG.issueNameField) || ""; });
+    ISSUE_NAMES=map;
+    if(!recs.length) console.warn("[GR-Vendor] loadIssueNames: 0 records from", CONFIG.issueReport, "— issue names will keep showing as raw ids/objects. Check the report name.");
+  }catch(e){ console.warn("[GR-Vendor] loadIssueNames failed", e); }
+}
+// Resolves the ticket's own Vehicle_Issue array (bare ids, or raw Lookup
+// objects with no display_value of their own) to real names via
+// ISSUE_NAMES, joined the same way readVal() would join a plain array —
+// falling back to whatever readVal() already extracts per item (a display
+// object's own value, or the raw id/label itself) if no name was found.
+function issueNamesFor(r){
+  const raw=r?r.Vehicle_Issue:null;
+  const arr=Array.isArray(raw)?raw:(raw?[raw]:[]);
+  return arr.map(function(item){
+    const id=lookupId(item);
+    const name=id!=null ? ISSUE_NAMES[String(id)] : null;
+    return name || readVal({v:item},"v");
+  }).filter(Boolean).join(", ");
+}
 let toastT=null;
 function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
-// "Vendors1" is saved as a composite "[priority] Name | Phone | Status" string
-// per chip — strip that down to just the name (same parsing getRescueTicket's
-// own vendorDisplayName() uses) so it can be compared against this vendor's
-// own name.
-function vendorChipName(v){
-  return String(v||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
-}
+// vendorChipName() (parsed the old "[priority] Name | Phone | Status"
+// composite string) removed 2026-08-05 — Vendors1 has been a real Lookup
+// (bare IDs, not that composite format) since 2026-07-31; isMine() now
+// compares by ID instead (see its own comment).
 // 2026-07-31: dropped the old 3-field email guess (Vendor_Email/1/2) entirely
 // — Vendors1 is a real Lookup, and getRescueTicket now auto-populates a
 // hidden Vendor_Emails field (comma-separated) whenever Vendors1 is saved,
@@ -472,18 +544,24 @@ function isMine(rec){
   const emails = String(rec.Vendor_Emails||"").split(",").map(function(e){ return e.trim().toLowerCase(); });
   const emailMatch = emails.indexOf(LOGIN_EMAIL.trim().toLowerCase())>=0;
   if(emailMatch){ console.log(tag,"matched via Vendor_Emails -> true"); return true; }
+  // Real bug fixed (2026-08-05, user-reported live: "assigning vendor...
+  // ticket not showing to the vendor"): Vendors1 is a real useId Lookup — its
+  // array holds bare Vendors_Report record IDs, not the old "[priority] Name
+  // | Phone | Status" composite string vendorChipName() parses (that format
+  // predates the 2026-07-31 Lookup migration). Comparing a bare ID against
+  // MY_VENDOR_NAME (a name) could never match, so this fallback was silently
+  // dead for any ticket that only matched here — same root cause as
+  // loadMyInvites()'s own matching fix below. Compare by ID instead now.
   const list = Array.isArray(rec.Vendors1) ? rec.Vendors1 : (rec.Vendors1 ? [rec.Vendors1] : []);
-  const chipNames = list.map(vendorChipName);
-  const nameMatch = MY_VENDOR_NAME && chipNames.some(function(n){ return n.toLowerCase()===MY_VENDOR_NAME.toLowerCase(); });
+  const idMatch = !!(currentVendorRecord && list.some(function(v){ return String(lookupId(v))===String(currentVendorRecord.id); }));
   console.log(tag, {
     LOGIN_EMAIL:LOGIN_EMAIL,
     Vendor_Emails_raw:rec.Vendor_Emails,
-    MY_VENDOR_NAME:MY_VENDOR_NAME,
+    currentVendorRecordId: currentVendorRecord && currentVendorRecord.id,
     Vendors1_raw:rec.Vendors1,
-    Vendors1_parsedNames:chipNames,
-    nameMatch:nameMatch
+    idMatch:idMatch
   });
-  return !!nameMatch;
+  return idMatch;
 }
 
 const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], inviteByTicketId:{}, uploadedPhotoFiles:new Set(), failedPhotoFiles:new Set() };
@@ -500,12 +578,22 @@ const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], in
 // show up silently disappears.
 async function loadMyInvites(){
   const all = await apiGetReport(CONFIG.invitesReport, null, 200);
-  console.log("[GR-Vendor] loadMyInvites: fetched "+all.length+" total Invites records; MY_VENDOR_NAME="+MY_VENDOR_NAME);
+  console.log("[GR-Vendor] loadMyInvites: fetched "+all.length+" total Invites records; currentVendorRecord.id="+(currentVendorRecord&&currentVendorRecord.id));
+  // Real bug fixed (2026-08-05, user-reported live: "assigning vendor...
+  // ticket not showing to the vendor") — root cause of the whole report.
+  // inv.Vendor is a bare Vendors_Report ID; unwrapLookup() only unwraps
+  // enriched {display_value/...} objects, so on a bare ID it's a no-op and
+  // returned the ID itself, compared against MY_VENDOR_NAME (a NAME). An ID
+  // can never equal a name, so this filter matched ZERO invites for every
+  // vendor, every time — the Invites mechanism was completely non-functional
+  // for vendors since the 2026-07-31 Lookup migration. lookupId() is the
+  // right comparison here instead — same no-op-on-bare-ID behavior, but
+  // that's exactly the value we want to compare.
   const mine = all.filter(function(inv){
-    const vName=String(unwrapLookup(inv.Vendor)||"").trim().toLowerCase();
-    return MY_VENDOR_NAME && vName===MY_VENDOR_NAME.trim().toLowerCase();
+    const vId = lookupId(inv.Vendor);
+    return currentVendorRecord && String(vId)===String(currentVendorRecord.id);
   });
-  console.log("[GR-Vendor] loadMyInvites: "+mine.length+" match MY_VENDOR_NAME", mine);
+  console.log("[GR-Vendor] loadMyInvites: "+mine.length+" match currentVendorRecord.id", mine);
   const map={};
   mine.forEach(function(inv){
     const tid=lookupId(inv.RSID);
@@ -562,8 +650,8 @@ function renderDashboard(){
     const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
     return `<div class="tcard" data-id="${esc(r.ID)}">
       <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
-      <h3>${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${esc(svc)}</span>`:""}${esc(readVal(r,CONFIG.vehicleField)||"Vehicle")}</h3>
-      <div class="meta">${esc(readVal(r,"Vehicle_Issue")||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+      <h3>${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${esc(svc)}</span>`:""}${esc(vehicleDisplayFor(r)||"Vehicle")}</h3>
+      <div class="meta">${esc(issueNamesFor(r)||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
     </div>`;
   }).join("");
   document.querySelectorAll(".tcard").forEach(function(el){
@@ -599,9 +687,9 @@ function renderTicketInfo(){
     ["Service", r[CONFIG.serviceTypeField]||""],
     ["Customer", readVal(r,CONFIG.nameField)],
     ["Phone", r[CONFIG.phoneField]||""],
-    ["Vehicle", readVal(r,CONFIG.vehicleField)],
+    ["Vehicle", vehicleDisplayFor(r)],
     ["Location", loc],
-    ["Issue", readVal(r,"Vehicle_Issue")]
+    ["Issue", issueNamesFor(r)]
   ].filter(function(p){ return p[1]; });
   $("ticketInfo").innerHTML = rows.map(function(p){ return `<div><span class="k">${esc(p[0])}</span><span class="v">${esc(p[1])}</span></div>`; }).join("");
 }
@@ -744,7 +832,7 @@ async function rejectService(){
       // Reverted the {"ID":...} object-wrapping attempt — broke saving.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
         RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
-        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
+        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:issueNamesFor(r)
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
     toast("Rejected","ok");
@@ -787,6 +875,14 @@ async function assignTechnician(techId){
     const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
     const name=tech[CONFIG.fleetTechnicianNameField]||"";
     const email=tech[CONFIG.fleetTechnicianEmailField]||"";
+    // Real bug fixed (2026-08-05) — Assigned_Technician is a confirmed
+    // useId:true Lookup in getRescueTicket (live "[object Object]" screenshot
+    // investigation the same week), but this sent the technician's NAME, not
+    // their Technicians_Report id — a Lookup field rejects/silently drops a
+    // plain name. Send tech.ID instead; also explains why getRescueTicket's
+    // own "Assigned Technician" dropdown always showed "— select —" after a
+    // fleet hand-off (that display bug is fixed separately, but this write
+    // was sending the wrong value regardless).
     // Technician_Emails (2026-07-31, per user request): a hidden field the
     // user will hide on the real form, mirroring whichever technician's
     // email(s) are involved — just this one for now, since this hand-off
@@ -794,8 +890,8 @@ async function assignTechnician(techId){
     // several at once (see QUESTIONS_TO_ASK.md — will hold a comma-separated
     // list instead, once that multi-request flow exists).
     const payload = isTow
-      ? { Assigned_Technician:name, Assigned_Technician_Email:email, Technician_Email1:email, Technician_Emails:email }
-      : { Assigned_Technician:name, Assigned_Technician_Email:email, Technician_Email:email, Technician_Emails:email };
+      ? { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email1:email, Technician_Emails:email }
+      : { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email:email, Technician_Emails:email };
     await apiUpdate(r.ID, payload);
     // Invites (2026-08-03, user-confirmed "invite covers all") — same
     // mechanism as the agent's own vendor invites, one record per assigned
@@ -829,7 +925,6 @@ function renderReachScreenRsr(){
   $("ascreenBody").innerHTML = `
     ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : `<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="card">
-      <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA||"")}" placeholder="Enter manually if blank"></div>
       ${photoFieldHtml("Image_Upload2","Arrival Photo",1,1)}
     </div>
     <div class="btn-row">
@@ -859,9 +954,11 @@ async function markReachedRsr(){
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
     const rt=await calcRoundTripKm(bLat,bLon,parseCoord(r.DropLocationLat),parseCoord(r.DropLocationLong));
+    // ETA (mins) input hidden from this screen 2026-08-05 (user request) —
+    // whatever ETA was already computed/saved at Accept time stays as-is;
+    // simply not included in this payload, same as leaving the old manual
+    // box blank always did (Zoho keeps the existing stored value untouched).
     const payload={ Reach_Time: fmtDateTime(new Date()), Roundtrip_Distance: rt, Status:"WORK IN PROGRESS" };
-    const etaVal=$("etaField").value;
-    if(etaVal!=="") payload.ETA=Number(etaVal);
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -879,7 +976,6 @@ function renderReachScreenTow(){
   $("ascreenBody").innerHTML = `
     ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : `<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="card">
-      <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA_TOW||"")}" placeholder="Enter manually if blank"></div>
       <div class="fld"><label>Odometer at Reached</label><input type="number" id="odoReached"></div>
       <div class="fld"><label>Toll Charges?</label>
         <div class="radio-set" id="tollCharges"><div class="opt" data-value="Yes">Yes</div><div class="opt" data-value="No">No</div></div>
@@ -919,8 +1015,8 @@ async function markReachedTow(){
     const payload={ Reach_Time: fmtDateTime(new Date()), Status:"LOADING" };
     if(toll) payload.Toll_Charges=toll.dataset.value;
     if(odo!=="") payload.Odometer_reading_at_Reached_Location=Number(odo);
-    const etaVal=$("etaField").value;
-    if(etaVal!=="") payload.ETA_TOW=Number(etaVal);
+    // ETA_TOW input hidden from this screen 2026-08-05 (user request) — see
+    // markReachedRsr's own matching comment.
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -1495,30 +1591,61 @@ $("cameraShutter").onclick=capturePhoto;
 /* ---------- online/offline toggle (folded in from toggleGetRescue, vendor
    report) + Individual/Fleet detection ---------- */
 let currentVendorRecord=null;
+// Separate from currentVendorRecord on purpose (2026-08-05, user request —
+// "use My_Availability_Vendor report for the toggle") — its own record id is
+// NOT a Vendors_Report id, so it must never be used for Assigned_Vendor/
+// Vendors1/Invites ID matching (see acceptService/isMine/loadMyInvites, which
+// all correctly keep using currentVendorRecord instead). Only for reading/
+// writing this toggle's own on/off state.
+let currentAvailabilityRecord=null;
+function lockAvailabilityToggle(){
+  const el=$("availToggle"); if(!el) return;
+  el.classList.add("locked");
+  el.title="Availability unavailable — no matching "+CONFIG.availabilityReport+" record found for your login.";
+}
 async function loadAvailability(){
-  if(!LOGIN_EMAIL) return;
-  // max_records only accepts 200/500/1000 (Zoho error 9250) — was passing 1,
-  // which broke boot() for every vendor (loadAvailability runs before
-  // loadDashboard). Fixed 2026-07-31.
-  const recs=await apiGetReport(CONFIG.vendorReport, '('+CONFIG.vendorEmailField+' == "'+LOGIN_EMAIL+'")', 200);
-  if(!recs.length) return;
-  currentVendorRecord={ id:recs[0].ID, data:recs[0] };
-  MY_VENDOR_NAME=recs[0][CONFIG.vendorNameField]||"";
-  $("techName").textContent=MY_VENDOR_NAME||"Vendor";
-  IS_FLEET = String(recs[0][CONFIG.vendorTypeField]||"").trim().toLowerCase()==="fleet";
-  const isOnline=String(recs[0][CONFIG.vendorStatusField])==="Online";
+  if(!LOGIN_EMAIL){ console.warn("[GR-Vendor] loadAvailability: LOGIN_EMAIL is empty — getInitParams may have failed or returned no loginUser. Toggle stays locked."); lockAvailabilityToggle(); return; }
+  // Vendor identity (Vendors_Report) — used for Assigned_Vendor/Vendors1/
+  // Invites ID matching elsewhere (isMine/loadMyInvites/acceptService),
+  // unrelated to the toggle itself. Fetches all records and matches client-
+  // side, case-insensitive + trimmed (2026-08-05 fix — a server-side exact-
+  // match criteria is case-sensitive and silently returns nothing on any
+  // casing mismatch).
+  const vrecs=await apiGetReport(CONFIG.vendorReport, null, 200);
+  const myVendor=vrecs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  if(myVendor){
+    currentVendorRecord={ id:myVendor.ID, data:myVendor };
+    MY_VENDOR_NAME=myVendor[CONFIG.vendorNameField]||"";
+    $("techName").textContent=MY_VENDOR_NAME||"Vendor";
+    IS_FLEET = String(myVendor[CONFIG.vendorTypeField]||"").trim().toLowerCase()==="fleet";
+  } else {
+    console.warn("[GR-Vendor] loadAvailability: no", CONFIG.vendorReport, "record's", CONFIG.vendorEmailField, "matched", LOGIN_EMAIL, "— ticket matching (Assigned_Vendor/Vendors1/Invites) will be affected. Records loaded:", vrecs.length, "| first record's own keys:", vrecs[0]);
+  }
+  // Availability toggle (2026-08-05, user request) — a genuinely separate
+  // report from Vendors_Report, same field-name convention (Email/
+  // Availability_Status) the standalone toggleGetRescue widget already used
+  // for this exact report.
+  const arecs=await apiGetReport(CONFIG.availabilityReport, null, 200);
+  const mine=arecs.find(function(r){ return String(r[CONFIG.availabilityEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  if(!mine){
+    console.warn("[GR-Vendor] loadAvailability: no", CONFIG.availabilityReport, "record's", CONFIG.availabilityEmailField, "matched", LOGIN_EMAIL, "— toggle stays locked. Records loaded:", arecs.length, "| first record's own keys:", arecs[0]);
+    lockAvailabilityToggle();
+    return;
+  }
+  currentAvailabilityRecord={ id:mine.ID, data:mine };
+  const isOnline=String(mine[CONFIG.availabilityStatusField])==="Online";
   $("availToggle").classList.toggle("on", isOnline);
 }
 async function onToggleClick(){
-  if(!currentVendorRecord) return;
+  if(!currentAvailabilityRecord) return;
   const el=$("availToggle");
   const wantOnline=!el.classList.contains("on");
   el.classList.toggle("on", wantOnline);
   el.classList.add("locked");
   try{
     const fn=resolve("updateRecordById"); if(!fn) throw new Error("unavailable");
-    const payload={}; payload[CONFIG.vendorStatusField]=wantOnline?"Online":"Offline";
-    await fn({ app_name:CONFIG.appName, report_name:CONFIG.vendorReport, id:currentVendorRecord.id, payload:{data:payload} });
+    const payload={}; payload[CONFIG.availabilityStatusField]=wantOnline?"Online":"Offline";
+    await fn({ app_name:CONFIG.appName, report_name:CONFIG.availabilityReport, id:currentAvailabilityRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
   }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
   finally{ el.classList.remove("locked"); }
@@ -1536,6 +1663,12 @@ async function boot(){
     LOGIN_EMAIL=(params&&params.loginUser)||"";
   }catch(e){ console.warn("getInitParams failed", e); }
   await loadAvailability();
+  // Awaited (not fire-and-forget) so VEHICLE_NAMES is already populated
+  // before the very first render — otherwise the dashboard's first paint
+  // would still show a raw id with nothing to trigger a re-render once the
+  // names actually arrive.
+  await loadVehicleNames();
+  await loadIssueNames();
   await loadDashboard();
 }
 function waitForSDK(attempt){

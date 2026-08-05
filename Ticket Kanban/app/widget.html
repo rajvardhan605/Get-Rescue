@@ -481,7 +481,8 @@ function quoteStatus(r){
    ===================================================================== */
 const STAGES = [
   /* ---- COMMON ---- */
-  { key:"create", branch:"all", bucket:0, short:"Create", title:"Create Service Ticket",
+  { key:"create", branch:"all", bucket:0, short:"Create",
+   title:"Create Service Ticket",
     desc:"Basic customer, vehicle and issue details.", save:"Save & Continue",
     statuses:["NEW"], status:"NEW",
     /* Create_Case has a required "Phone_Number" field separate from the one
@@ -585,7 +586,11 @@ const STAGES = [
     // "Assignment_Sent" dropped from the schema 2026-08-03 (forms rebuilt
     // from scratch) — nothing ever wrote it, same fix already made in
     // getRescueTicket a while back that this widget hadn't picked up yet.
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians" },
+    // useId:true added 2026-08-05 — getRescueTicket confirmed this is a real
+    // Lookup the same day (live "[object Object]" screenshot), reversing the
+    // earlier "plain text by analogy" assumption this widget hadn't picked up
+    // yet; see this file's own technicianDisplayName() for the matching fix.
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true },
     { n:"Assigned_Technician_Email", l:"Technician Email", t:"text" }
   ]},
 
@@ -839,16 +844,21 @@ function valuesOf(v){
   if(typeof v==="object") return [unwrapOne(v)];
   return String(v).split(",").map(function(s){ return s.trim(); }).filter(Boolean);
 }
-function vehicleIssuesFor(vehicleLabel){
-  if(!vehicleLabel) return [];
-  const veh = OPTIONS.vehicles.find(function(v){ return v.v===vehicleLabel; });
+function vehicleIssuesFor(vehicleIdOrLabel){
+  if(!vehicleIdOrLabel) return [];
+  // Real bug fixed (2026-08-05, same root cause found in getRescueTicket the
+  // same day) — Vehicle is a confirmed useId:true field; the caller passes
+  // state.record[CONFIG.vehicleField] straight through, a bare ID once
+  // loaded from a saved record, not a label. Match by ID first now.
+  const veh = OPTIONS.vehicles.find(function(v){ return String(v.id)===String(vehicleIdOrLabel); })
+    || OPTIONS.vehicles.find(function(v){ return v.v===vehicleIdOrLabel; });
   if(!veh || !veh.raw){
-    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
+    console.warn("[Get-Rescue] vehicleIssuesFor: no matching vehicle in OPTIONS.vehicles for", JSON.stringify(vehicleIdOrLabel), "— known vehicle labels:", OPTIONS.vehicles.map(v=>v.v));
     return [];
   }
   const category = valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0];
   if(!category){
-    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
+    console.warn("[Get-Rescue] vehicleIssuesFor: vehicle", JSON.stringify(vehicleIdOrLabel), "has no", CONFIG.vehicleCategoryField, "value on its Vehicle_Master_Report record:", veh.raw);
     return [];
   }
   const matches = OPTIONS.issues.filter(function(issue){
@@ -858,7 +868,7 @@ function vehicleIssuesFor(vehicleLabel){
     const types = valuesOf(issue.raw[CONFIG.issueVehicleTypeField]);
     return types.some(function(t){ return t.toUpperCase()===category.toUpperCase(); });
   });
-  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
+  if(!matches.length) console.warn("[Get-Rescue] vehicleIssuesFor: 0 of", OPTIONS.issues.length, "issues matched category", JSON.stringify(category), "(with DISPLAY_STATUS=SHOW) for vehicle", JSON.stringify(vehicleIdOrLabel), "— every issue's own", CONFIG.issueVehicleTypeField, "/", CONFIG.issueDisplayStatusField, ":", OPTIONS.issues.map(i=>({issue:i.v, vehicleType:valuesOf(i.raw && i.raw[CONFIG.issueVehicleTypeField]), display:i.raw && i.raw[CONFIG.issueDisplayStatusField]})));
   return matches;
 }
 function isTowIssue(issueLabel){
@@ -1065,18 +1075,33 @@ function hasLocFlag(r){
   if(lat==null||lat===""||lon==null||lon==="") return false;
   return !isNaN(Number(lat)) && !isNaN(Number(lon));
 }
-/* Vendors1 is a real Lookup (confirmed 2026-07-31, same as getRescueTicket's
-   own copy of this field) — a raw fetch returns each selection as a lookup
-   object. The composite-string stripping below only matters for any ticket
-   saved under the old (pre-2026-07-31) plain-text format; it's a no-op on a
-   plain lookup display_value. */
+/* Real bug fixed (2026-08-05, user-reported live: assigning a vendor didn't
+   show that vendor on the ticket) — Vendors1 actually saves/reads back a bare
+   Zoho record ID (confirmed the same day in getRescueTicket, via a live
+   "[object Object]"/raw-ID screenshot investigation), not an enriched lookup
+   object as this function previously assumed. Resolve against the already-
+   loaded OPTIONS.vendors list by ID first now — same fix as getRescueTicket's
+   own closureLabelFor(). The old object/composite-string handling stays as a
+   fallback for anything that doesn't match (e.g. OPTIONS not loaded yet, or a
+   ticket saved under the old pre-2026-07-31 plain-text format). */
 function vendorDisplayName(v){
+  const match = OPTIONS.vendors.find(function(o){ return String(o.id)===String(v); });
+  if(match) return match.label;
   const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
   return String(plain||"").trim().replace(/^\[[^\]]*\]\s*/,"").split("|")[0].trim();
 }
 function vendorNamesFor(r){
   const v=r.Vendors1; const arr=Array.isArray(v)?v:(v?[v]:[]);
   return arr.map(vendorDisplayName).filter(Boolean).join(", ");
+}
+// Same fix, same day, same reason — see vendorDisplayName's own comment.
+// Assigned_Technician just confirmed as a real Lookup too (2026-08-05).
+function technicianDisplayName(v){
+  if(v==null||v==="") return "";
+  const match = OPTIONS.technicians.find(function(o){ return String(o.id)===String(v); });
+  if(match) return match.label;
+  const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
+  return String(plain||"").trim();
 }
 /* one Kanban card per ticket — same fields the old row-style dashboard showed,
    just stacked vertically to fit a column instead of a full-width row. */
@@ -1280,7 +1305,20 @@ function buildField(f){
     const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
     const isCustom = !!(f.other && effectiveCur!=="" && knownVals.indexOf(String(effectiveCur))===-1);
     const selVal = isCustom ? "Other" : effectiveCur;
-    const opts=baseOpts.map(o=>`<option value="${esc(o.v)}" ${String(selVal)===String(o.v)?"selected":""}>${esc(o.label)}</option>`).join("");
+    // Real bug fixed (2026-08-05, same root cause found in getRescueTicket
+    // the same day): useId:true fields (Client/Vehicle here) hold a bare ID
+    // once loaded from a saved record, but each <option value> is still the
+    // LABEL (o.v) — matching "selected" against that never found the right
+    // option, so a reopened ticket always showed "— select —". Match by ID
+    // first for useId fields, falling back to the label match for a
+    // freshly-picked value that hasn't gone through idsFor() yet.
+    const selectedOpt = f.useId
+      ? (baseOpts.find(function(o){ return String(o.id)===String(selVal); }) || baseOpts.find(function(o){ return String(o.v)===String(selVal); }))
+      : null;
+    const opts=baseOpts.map(function(o){
+      const isSel = selectedOpt ? (o===selectedOpt) : (String(selVal)===String(o.v));
+      return `<option value="${esc(o.v)}" ${isSel?"selected":""}>${esc(o.label)}</option>`;
+    }).join("");
     const showOther = f.other && selVal==="Other";
     wrap.innerHTML=lab+`<select id="${id}"${f.disabled?" disabled":""}><option value="">— select —</option>${opts}</select>`
       + (f.other ? `<input type="text" id="${id}_other" placeholder="Please specify ${esc(f.l)}" value="${esc(isCustom?effectiveCur:"")}" style="margin-top:8px${showOther?"":";display:none"}">` : "");
@@ -1302,14 +1340,24 @@ function buildField(f){
     } else {
       const arr = Array.isArray(cur)?cur:(cur?String(cur).split(",").map(s=>s.trim()):[]);
       const allOpts = resolveOptions(f);
-      const selectedOpts = arr.map(v=>allOpts.find(o=>String(o.v)===String(v))||{v:v,label:v});
-      const remaining = allOpts.filter(o=>arr.indexOf(o.v)===-1);
-      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.v)}">${esc(o.label)}<button type="button" data-remove="${esc(o.v)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
+      // Real bug fixed (2026-08-05, same root cause found in getRescueTicket
+      // the same day) — useId:true fields (Vehicle_Issue here) hold bare IDs
+      // once loaded from a saved record, not the labels allOpts' own .v is
+      // keyed by. rawValue is kept alongside so the chip's own data-value/
+      // data-remove still echoes back exactly what's in the array.
+      const findOpt = (v)=> f.useId
+        ? (allOpts.find(o=>String(o.id)===String(v)) || allOpts.find(o=>String(o.v)===String(v)))
+        : allOpts.find(o=>String(o.v)===String(v));
+      const selectedOpts = arr.map(v=>Object.assign({rawValue:v}, findOpt(v)||{v:v,label:v}));
+      const remaining = f.useId
+        ? allOpts.filter(o=>arr.every(v=>String(v)!==String(o.id)))
+        : allOpts.filter(o=>arr.indexOf(o.v)===-1);
+      const chips = selectedOpts.map(o=>`<span class="chip" data-value="${esc(o.rawValue)}">${esc(o.label)}<button type="button" data-remove="${esc(o.rawValue)}" aria-label="Remove ${esc(o.label)}">✕</button></span>`).join("");
       // Chips + the "add" select render inside one bordered box together
       // (2026-08-04) — see getRescueTicket's own matching comment.
       let addInner="";
       if(remaining.length){
-        const addOpts = remaining.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join("");
+        const addOpts = remaining.map(o=>`<option value="${esc(f.useId?o.id:o.v)}">${esc(o.label)}</option>`).join("");
         addInner = `<select class="add-select" id="${id}"><option value="">+ Add…</option>${addOpts}</select>`;
       }
       if(!allOpts.length){
@@ -1437,8 +1485,11 @@ function summaryHtml(){
     ["Total Fee", r.Total_Service_Fee||""],
     ["Booking Fee", r.Booking_Fee||""],
     ["Remaining Fee", r.Remaining_Fee||""],
-    ["Vendor", readVal(r,"Vendors1")||r.Vendor_Email||""],
-    ["Technician", r.Assigned_Technician||r.Assigned_Technician_Email||""]
+    // Was readVal(r,"Vendors1") — same raw-ID bug as vendorNamesFor's own
+    // comment (readVal's generic array-join has no way to resolve an ID to a
+    // name); reuse the same fixed resolver the card badge already uses.
+    ["Vendor", vendorNamesFor(r)||r.Vendor_Email||""],
+    ["Technician", technicianDisplayName(r.Assigned_Technician)||r.Assigned_Technician_Email||""]
   ].filter(x=>x[1]!=="" && x[1]!=null);
   return `<div class="summary">`+rows.map(x=>`<div class="srow"><span class="k">${esc(x[0])}</span><span class="v">${esc(x[1])}</span></div>`).join("")+`</div>`;
 }

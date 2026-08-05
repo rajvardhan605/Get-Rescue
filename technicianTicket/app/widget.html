@@ -219,6 +219,15 @@ const CONFIG = {
   nameField: "Customer_Name",
   phoneField: "Phone_Number",
   vehicleField: "Vehicle",
+  // Added 2026-08-05 (user request — "Vehicle ID showing, not the Vehicle
+  // name") — see vendorTicket's own matching CONFIG comment; same fix here.
+  vehicleMasterReport: "Vehicle_Master_Report",
+  vehicleNameField: "Name",
+  // Added 2026-08-05 (user request — "[object Object]" on the dashboard card
+  // instead of the real issue name) — see vendorTicket's own matching CONFIG
+  // comment; same fix here.
+  issueReport: "Vehicle_Issue_Report",
+  issueNameField: "Issue_Name",
   /* "assigned to me" — checks every real Create_Case field this role's
      email could be stored under, depending on which stage set it
      (Assignment vs. Acceptance) — these are two distinct real fields, not
@@ -423,6 +432,43 @@ function unwrapLookup(v){
   return v;
 }
 function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
+// Vehicle name lookup (2026-08-05) — see vendorTicket's own matching comment.
+let VEHICLE_NAMES={};
+async function loadVehicleNames(){
+  try{
+    const recs=await apiGetReport(CONFIG.vehicleMasterReport, null, 1000);
+    const map={};
+    recs.forEach(function(v){ map[String(v.ID)] = readVal(v, CONFIG.vehicleNameField) || ""; });
+    VEHICLE_NAMES=map;
+    if(!recs.length) console.warn("[Get-Rescue] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id.");
+  }catch(e){ console.warn("[Get-Rescue] loadVehicleNames failed", e); }
+}
+function vehicleDisplayFor(r){
+  const raw=r?r[CONFIG.vehicleField]:null;
+  const id=lookupId(raw);
+  const name=id!=null ? VEHICLE_NAMES[String(id)] : null;
+  return name || readVal(r,CONFIG.vehicleField);
+}
+// Issue name lookup (2026-08-05) — see vendorTicket's own matching comment.
+let ISSUE_NAMES={};
+async function loadIssueNames(){
+  try{
+    const recs=await apiGetReport(CONFIG.issueReport, null, 1000);
+    const map={};
+    recs.forEach(function(v){ map[String(v.ID)] = readVal(v, CONFIG.issueNameField) || ""; });
+    ISSUE_NAMES=map;
+    if(!recs.length) console.warn("[Get-Rescue] loadIssueNames: 0 records from", CONFIG.issueReport, "— issue names will keep showing as raw ids/objects.");
+  }catch(e){ console.warn("[Get-Rescue] loadIssueNames failed", e); }
+}
+function issueNamesFor(r){
+  const raw=r?r.Vehicle_Issue:null;
+  const arr=Array.isArray(raw)?raw:(raw?[raw]:[]);
+  return arr.map(function(item){
+    const id=lookupId(item);
+    const name=id!=null ? ISSUE_NAMES[String(id)] : null;
+    return name || readVal({v:item},"v");
+  }).filter(Boolean).join(", ");
+}
 let toastT=null;
 function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
 /* find whichever candidate field on a record matches the logged-in user's
@@ -451,12 +497,19 @@ const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:
 // different forms) — matching now uses the new, correct `Technician` field.
 async function loadMyInvites(){
   const all = await apiGetReport(CONFIG.invitesReport, null, 200);
-  console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; MY_TECH_NAME="+MY_TECH_NAME);
+  console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; currentTechRecord.id="+(currentTechRecord&&currentTechRecord.id));
+  // Real bug fixed (2026-08-05, same root cause found in vendorTicket's own
+  // matching comment the same day): inv.Technician is a bare Technicians_Report
+  // ID; unwrapLookup() only unwraps enriched {display_value/...} objects, so
+  // on a bare ID it's a no-op and returned the ID itself, compared against
+  // MY_TECH_NAME (a NAME) — never matched, for anyone, ever. lookupId() is
+  // the right comparison here instead (same no-op-on-bare-ID behavior, but
+  // that IS the value we want).
   const mine = all.filter(function(inv){
-    const tName=String(unwrapLookup(inv.Technician)||"").trim().toLowerCase();
-    return MY_TECH_NAME && tName===MY_TECH_NAME.trim().toLowerCase();
+    const tId = lookupId(inv.Technician);
+    return currentTechRecord && String(tId)===String(currentTechRecord.id);
   });
-  console.log("[Get-Rescue] loadMyInvites: "+mine.length+" match MY_TECH_NAME", mine);
+  console.log("[Get-Rescue] loadMyInvites: "+mine.length+" match currentTechRecord.id", mine);
   const map={};
   mine.forEach(function(inv){ const tid=lookupId(inv.RSID); if(tid!=null) map[String(tid)]=inv; });
   return map;
@@ -489,8 +542,8 @@ function renderDashboard(){
     const pill = STATUS_PILL[st] || {cls:"", label:st};
     return `<div class="tcard" data-id="${esc(r.ID)}">
       <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
-      <h3>${esc(readVal(r,CONFIG.vehicleField)||"Vehicle")}</h3>
-      <div class="meta">${esc(readVal(r,"Vehicle_Issue")||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+      <h3>${esc(vehicleDisplayFor(r)||"Vehicle")}</h3>
+      <div class="meta">${esc(issueNamesFor(r)||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
     </div>`;
   }).join("");
   document.querySelectorAll(".tcard").forEach(function(el){
@@ -529,9 +582,9 @@ function renderTicketInfo(){
     ["Case ID", caseLabel(r)],
     ["Customer", readVal(r,CONFIG.nameField)],
     ["Phone", r[CONFIG.phoneField]||""],
-    ["Vehicle", readVal(r,CONFIG.vehicleField)],
+    ["Vehicle", vehicleDisplayFor(r)],
     ["Location", loc],
-    ["Issue", readVal(r,"Vehicle_Issue")]
+    ["Issue", issueNamesFor(r)]
   ].filter(function(p){ return p[1]; });
   $("ticketInfo").innerHTML = rows.map(function(p){ return `<div><span class="k">${esc(p[0])}</span><span class="v">${esc(p[1])}</span></div>`; }).join("");
 }
@@ -639,7 +692,7 @@ async function rejectService(){
       // saving (see getRescueTicket's idsFor() comment) — reverted.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
         RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
-        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:readVal(r,"Vehicle_Issue")
+        Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:issueNamesFor(r)
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
     toast("Rejected","ok");
@@ -660,7 +713,6 @@ function renderReachScreen(){
   $("ascreenBody").innerHTML = `
     ${navHref ? `<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>` : `<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="card">
-      <div class="fld"><label>ETA (mins)</label><input type="number" id="etaField" value="${esc(r.ETA||"")}" placeholder="Enter manually if blank"></div>
       ${photoFieldHtml("Image_Upload2","Arrival Photo",1,1)}
     </div>
     <div class="btn-row">
@@ -690,12 +742,10 @@ async function markReached(){
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
     const rt=await calcRoundTripKm(bLat,bLon,parseCoord(r.DropLocationLat),parseCoord(r.DropLocationLong));
-    // ETA: captured automatically at Accept, but the flow spec allows manual
-    // entry here too "if null" — only overrides what's already saved if the
-    // tech actually typed something in.
+    // ETA (mins) manual-entry input hidden from this screen 2026-08-05 (user
+    // request) — was captured automatically at Accept anyway; whatever's
+    // already saved there stays as-is, simply not touched by this payload.
     const payload={ Reach_Time: fmtDateTime(new Date()), Roundtrip_Distance: rt, Status:"WORK IN PROGRESS" };
-    const etaVal=$("etaField").value;
-    if(etaVal!=="") payload.ETA=Number(etaVal);
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -1061,17 +1111,33 @@ $("cameraShutter").onclick=capturePhoto;
 
 /* ---------- online/offline toggle (folded in from toggleGetRescue) ---------- */
 let currentTechRecord=null;
+function lockAvailabilityToggle(){
+  const el=$("availToggle"); if(!el) return;
+  el.classList.add("locked");
+  el.title="Availability unavailable — no matching "+CONFIG.techReport+" record found for your login.";
+}
 async function loadAvailability(){
-  if(!LOGIN_EMAIL) return;
-  // max_records only accepts 200/500/1000 (Zoho error 9250) — was passing 1,
-  // which broke boot() for every technician (loadAvailability runs before
-  // loadDashboard). Fixed 2026-07-31.
-  const recs=await apiGetReport(CONFIG.techReport, '('+CONFIG.techEmailField+' == "'+LOGIN_EMAIL+'")', 200);
-  if(!recs.length) return;
-  currentTechRecord={ id:recs[0].ID, data:recs[0] };
-  MY_TECH_NAME=recs[0][CONFIG.techNameField]||"";
+  if(!LOGIN_EMAIL){ console.warn("[Get-Rescue] loadAvailability: LOGIN_EMAIL is empty — getInitParams may have failed or returned no loginUser. Toggle stays locked."); lockAvailabilityToggle(); return; }
+  // Real bug fixed (2026-08-05, user-reported: "online offline toggle is not
+  // working"): fetched with a server-side exact-match criteria on
+  // techEmailField — Zoho Creator criteria matches are case-sensitive, and a
+  // login email differing only in case from the Technicians_Report record
+  // would silently return zero records, leaving currentTechRecord null and
+  // the toggle clickable-but-inert (onToggleClick's own guard). Also breaks
+  // the ID-based loadMyInvites() matching above, since it needs
+  // currentTechRecord to resolve at all. Fetches ALL technician records now
+  // (max unchanged) and matches client-side, case-insensitive + trimmed.
+  const recs=await apiGetReport(CONFIG.techReport, null, 200);
+  const mine=recs.find(function(r){ return String(r[CONFIG.techEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  if(!mine){
+    console.warn("[Get-Rescue] loadAvailability: no", CONFIG.techReport, "record's", CONFIG.techEmailField, "matched", LOGIN_EMAIL, "— toggle stays locked. Records loaded:", recs.length, "| first record's own keys:", recs[0]);
+    lockAvailabilityToggle();
+    return;
+  }
+  currentTechRecord={ id:mine.ID, data:mine };
+  MY_TECH_NAME=mine[CONFIG.techNameField]||"";
   $("techName").textContent=MY_TECH_NAME||"Technician";
-  const isOnline=String(recs[0][CONFIG.techStatusField])==="Online";
+  const isOnline=String(mine[CONFIG.techStatusField])==="Online";
   $("availToggle").classList.toggle("on", isOnline);
 }
 async function onToggleClick(){
@@ -1104,6 +1170,8 @@ async function boot(){
     LOGIN_EMAIL=(params&&params.loginUser)||"";
   }catch(e){ console.warn("getInitParams failed", e); }
   await loadAvailability();
+  await loadVehicleNames();
+  await loadIssueNames();
   await loadDashboard();
 }
 function waitForSDK(attempt){
