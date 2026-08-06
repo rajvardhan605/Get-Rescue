@@ -574,6 +574,17 @@ async function acceptService(){
     const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
     const odo=$("startOdometer").value;
     const payload={ Service_Acceptance_For_Tow: fmtDateTime(new Date()), Status:"RSP ON THE WAY" };
+    // Real bug fixed (2026-08-06, user-reported live: "Assigned Technician"/
+    // "Technician Email (Assignment)" always blank on the agent's own Service
+    // Acceptance screen) — see vendorTicket's own matching comment on
+    // Assigned_Vendor/Vendor_Email1/2: this direct-acceptance path never
+    // recorded who actually accepted, only the fleet hand-off path
+    // (assignTechnician() in vendorTicket) did.
+    if(currentTechRecord){
+      payload.Assigned_Technician=currentTechRecord.id;
+      const myEmail=currentTechRecord.data && currentTechRecord.data[CONFIG.techEmailField];
+      if(myEmail) payload.Technician_Email1=myEmail;
+    }
     if(dist){ payload.ETA_TOW=dist.etaMins; payload.Distance_To_Breakdown_TOW=dist.distanceKm; }
     if(odo!=="") payload.Odometer_Reading=Number(odo);
     // See technicianTicket's own comment — persisted so Action 6a's Cancel
@@ -926,9 +937,13 @@ function renderPaymentScreen(){
   // Payment_Method_Final's real options confirmed 2026-08-03 (user's own Zoho
   // field screenshot): Cash / UPI / Card / Net Banking — replaces the
   // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
-  // is an automatic online gateway, so the QR/auto-pay block is gone —
-  // every method now requires the receipt photo (or remaining<=0) before
-  // "Payment Received" unlocks.
+  // is an automatic online gateway, so the QR/auto-pay block was removed —
+  // every method required the receipt photo (or remaining<=0) before
+  // "Payment Received" unlocked.
+  // Restored 2026-08-06 (user request — parity with vendorTicket, which
+  // already got this back 2026-08-04) — brings back the "Payment Gateway"
+  // QR display. Still just a decorative placeholder — no real gateway/
+  // webhook is wired up to this app, same as vendorTicket's own copy.
   $("ascreenBody").innerHTML = `
     <div class="card">
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
@@ -938,17 +953,30 @@ function renderPaymentScreen(){
           <option value="UPI">UPI</option>
           <option value="Card">Card</option>
           <option value="Net Banking">Net Banking</option>
+          <option value="Payment Gateway">Payment Gateway</option>
         </select>
+      </div>
+      <div id="qrBlock" style="text-align:center;margin:10px 0;display:none">
+        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
       </div>
       <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
       <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
     </div>
     <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
   wirePhotoField("Upload_Photo_of_receipt",1);
-  refreshPayButton();
+  const methodEl=$("Payment_Method_Final");
+  function syncMethod(){
+    const gateway=methodEl.value==="Payment Gateway";
+    $("qrBlock").style.display=gateway?"":"none";
+    $("receiptBlock").style.display=gateway?"none":"";
+    refreshPayButton();
+  }
+  methodEl.onchange=syncMethod; syncMethod();
   function refreshPayButton(){
+    const gateway=methodEl.value==="Payment Gateway";
     const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
-    const success = alreadySuccess || receiptOk;
+    const success = alreadySuccess || (!gateway && receiptOk);
     $("paymentStatusDisplay").value = success ? "PAID" : "PENDING";
     $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
   }

@@ -278,10 +278,26 @@ const CONFIG = {
   availabilityEmailField: "Email",
   availabilityStatusField: "Availability_Status",
   fleetTechnicianReport: "Technicians_Report",
+  // Superseded 2026-08-06 (user request) — see showHandoffPanel()'s own
+  // comment for the full switch from a Fleet_Vendor name-match to a real
+  // multi-lookup field read directly off this vendor's own Vendors_Report
+  // record. fleetTechnicianLinkField kept only as a fallback if that new
+  // field ever comes back empty/unreadable, not the primary path anymore.
   fleetTechnicianLinkField: "Fleet_Vendor",
+  // Both confirmed wrong live 2026-08-06 (every row showed "—") — kept as the
+  // FIRST candidate in FLEET_TECH_NAME_CANDIDATES/FLEET_TECH_PHONE_CANDIDATES
+  // rather than deleted, so a future correction just needs updating the one
+  // value here, not the candidate list itself.
   fleetTechnicianNameField: "Technician_Name",
+  fleetTechnicianPhoneField: "Phone",
   fleetTechnicianEmailField: "Email",
   fleetTechnicianStatusField: "Availability_Status",
+  // NOT confirmed — user described this as "the technicians multi lookup
+  // field" on Vendors_Report without giving its exact link name; "Technicians"
+  // is the natural guess by analogy with every other field-name convention in
+  // this app. loadAvailability()'s own diagnostic will say clearly if this is
+  // wrong (0 ids extracted despite the vendor genuinely having technicians).
+  vendorTechniciansField: "Technicians",
   // Invites (2026-08-03, user-confirmed): one record per invited vendor per
   // ticket — RSID (Lookup -> Create_Case), Vendor (Lookup -> Vendors_Report).
   // getRescueTicket's own JS creates these when the agent saves the
@@ -296,6 +312,11 @@ const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With A
 const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228;
 
 let SDK_READY=false, LOGIN_EMAIL="", IS_FLEET=false, MY_VENDOR_NAME="";
+// This vendor's own assigned technician ids, read straight off their own
+// Vendors_Report record's multi-lookup field (2026-08-06, user request) —
+// see CONFIG.vendorTechniciansField's own comment. Empty array = no
+// technicians under this vendor, regardless of Vendor_Type/IS_FLEET.
+let MY_TECHNICIAN_IDS=[];
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams==="function"; }
 function resolve(method){
   const C=window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -740,12 +761,48 @@ function renderAcceptScreen(){
     </div>
     <div class="card" id="handoffPanel" style="display:none;margin-top:12px">
       <h3 style="font-family:var(--f-disp);font-weight:800;font-size:15px;margin-bottom:10px">Assign to a technician</h3>
+      <p class="hint" style="margin-bottom:10px">Hand this job to one of your own technicians instead of accepting it yourself — they'll get their own Accept/Reject screen for it.</p>
       <div id="fleetTechList"></div>
     </div>`;
   $("acceptBtn").onclick=acceptService;
   $("rejectBtn").onclick=()=>{ $("rejectPanel").style.display="block"; };
   $("backFromRejectBtn").onclick=()=>{ $("rejectPanel").style.display="none"; };
   $("confirmRejectBtn").onclick=rejectService;
+  // Real change (2026-08-06, user request): the technician hand-off option
+  // now shows on THIS screen directly, as an alternative to accepting
+  // yourself — not only after you've already accepted it personally.
+  // Accept Service always means "I'll do this myself" now (see
+  // acceptService()'s own comment); this is the only path into a hand-off.
+  // Real bug fixed (2026-08-06): this used to only call showHandoffPanel()
+  // when MY_TECHNICIAN_IDS was already non-empty — but the fallback that
+  // checks the OTHER relationship direction (Technicians_Report's own
+  // vendor-link field) lives INSIDE that function, specifically for the case
+  // where MY_TECHNICIAN_IDS came back empty. Gating the call on the same
+  // condition the fallback exists to handle meant the fallback could never
+  // actually run. Always call it now; it decides internally (via both
+  // attempts) whether there's anything to show.
+  // Real bug fixed (2026-08-06, user request: "vendor should only be able to
+  // assign to ONE technician") — reopening this same still-pending ticket
+  // after already assigning it showed the full, freshly-clickable picker
+  // again with nothing marking it as already decided, so a second Assign
+  // click would silently create a second Invites record for a different
+  // technician while the first one's still active. Once Assigned_Technician
+  // is set on the ticket, show a locked confirmation instead of the picker —
+  // no fetch, no Assign buttons, nothing left to click.
+  // Real bug fixed (2026-08-06, user-reported live: this locked message
+  // showed even though no technician was ever actually assigned) —
+  // Assigned_Technician comes back as a Zoho User-field object with every
+  // sub-property empty ({prefix:"",first_name:"",...}) when nobody's been
+  // picked, not null/"" — and an object like that is still truthy in JS, so
+  // the plain truthy check above always locked the panel. lookupId() pulls
+  // the real .ID (or bare id) out of it — undefined/empty when nothing was
+  // ever actually assigned, a real id once someone genuinely is.
+  if(lookupId(r.Assigned_Technician)){
+    $("handoffPanel").style.display="block";
+    $("fleetTechList").innerHTML='<p style="font-size:13px;color:var(--muted)">Already assigned to a technician — waiting on their response.</p>';
+  } else {
+    showHandoffPanel();
+  }
 }
 async function acceptService(){
   setDisabled("acceptBtn",true);
@@ -766,6 +823,16 @@ async function acceptService(){
     // there's no atomic/locking write available from a plain widget without
     // a server-side workflow, so this narrows the race rather than closing it.
     const payload={ Status:"RSP ON THE WAY", Assigned_Vendor: currentVendorRecord && currentVendorRecord.id };
+    // Real bug fixed (2026-08-06, user-reported live: "Vendor Email"/"Vendor
+    // Email (Assignment)" always blank on the agent's own Service Acceptance
+    // screen, even after a vendor directly accepted) — confirmed via code +
+    // FIELDS.md that Vendor_Email1/Vendor_Email2 had NO writer anywhere at
+    // all (unlike Technician_Email/Assigned_Technician_Email, which DO get
+    // set on their own equivalent paths — direct technician acceptance, or a
+    // fleet vendor's own hand-off). Assigned_Vendor itself was always set
+    // correctly; this vendor's own email just never rode along with it.
+    const myEmail = currentVendorRecord && currentVendorRecord.data && currentVendorRecord.data[CONFIG.vendorEmailField];
+    if(myEmail){ if(isTow) payload.Vendor_Email2=myEmail; else payload.Vendor_Email1=myEmail; }
     if(isTow){
       payload.Service_Acceptance_For_Tow=fmtDateTime(new Date());
       if(dist){ payload.ETA_TOW=dist.etaMins; payload.Distance_To_Breakdown_TOW=dist.distanceKm; }
@@ -793,16 +860,15 @@ async function acceptService(){
     // box. Still a guess whether "Yes" itself is right; updateMyInvite()'s
     // own console.warn will show if this specific attempt also fails.
     updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes" });
-    if(IS_FLEET){
-      toast("Accepted — choose a technician","ok");
-      state.current[CONFIG.stageField]="RSP ON THE WAY"; // keep state.current in sync for the hand-off panel below (doesn't re-render the whole screen)
-      await showHandoffPanel();
-    } else {
-      toast("Service accepted","ok");
-      // Navigates straight to "Reach Breakdown Location" per the flow spec —
-      // see goToStatus()'s own comment.
-      goToStatus("RSP ON THE WAY");
-    }
+    // Simplified 2026-08-06 (user request) — the technician hand-off option
+    // now lives directly on the Service Acceptance screen itself (see
+    // renderAcceptScreen()'s own comment), as an alternative to accepting.
+    // Clicking Accept Service always means "I'll do this myself" now; the
+    // hand-off decision no longer happens after the fact.
+    toast("Service accepted","ok");
+    // Navigates straight to "Reach Breakdown Location" per the flow spec —
+    // see goToStatus()'s own comment.
+    goToStatus("RSP ON THE WAY");
   }catch(e){ console.error("[GR-Vendor] acceptService error:", e); toast((e&&e.message)||"Could not accept","err"); }
   finally{ setDisabled("acceptBtn",false); }
 }
@@ -841,30 +907,92 @@ async function rejectService(){
   }catch(e){ toast((e&&e.message)||"Could not reject","err"); }
   finally{ setDisabled("confirmRejectBtn",false); }
 }
-/* Fleet-only hand-off (user-confirmed 2026-07-31: individual vendors do the
-   full on-road flow themselves; fleet vendors hand off instead — see this
-   file's header comment for the unconfirmed schema this relies on). */
+// Real bug fixed (2026-08-06, user-reported live: every technician row
+// showed "—" instead of a real name) — CONFIG.fleetTechnicianNameField
+// ("Technician_Name") isn't the real link name. Tries several candidates
+// instead of one guess, same pattern already used elsewhere in this app for
+// a field that turned out renamed/lowercased after a schema rebuild. Shared
+// by showHandoffPanel() (the row display) and assignTechnician() (the
+// confirmation toast) so both stay consistent.
+const FLEET_TECH_NAME_CANDIDATES=[CONFIG.fleetTechnicianNameField,"technician_name","Name","name"];
+const FLEET_TECH_PHONE_CANDIDATES=["Phone",CONFIG.fleetTechnicianPhoneField,"phone","Mobile_Number_01","Mobile"].filter(Boolean);
+function fleetTechFirstMatch(rec, candidates){
+  for(const f of candidates){ if(rec[f]){ const v=readVal(rec,f); if(v) return v; } }
+  return "";
+}
+function fleetTechName(rec){ return fleetTechFirstMatch(rec, FLEET_TECH_NAME_CANDIDATES); }
+function fleetTechPhone(rec){ return fleetTechFirstMatch(rec, FLEET_TECH_PHONE_CANDIDATES); }
+/* Technician hand-off (user-confirmed 2026-07-31: individual vendors do the
+   full on-road flow themselves; vendors with technicians under them hand off
+   instead). Two real changes 2026-08-06 (user request):
+   1. Called directly from renderAcceptScreen() now, right when the Service
+      Acceptance screen renders — not only after clicking Accept Service.
+      Accept Service now always means "I'll do this myself"; this panel is
+      the only path into a hand-off, shown upfront as its own alternative.
+   2. Used to find technicians by querying Technicians_Report for
+      Fleet_Vendor == this vendor's own NAME (a fragile text match — same
+      class of bug fixed everywhere else this week, just via a name instead
+      of an id) — now reads the technician ids straight off this vendor's own
+      Vendors_Report record (MY_TECHNICIAN_IDS, extracted in
+      loadAvailability()) and fetches exactly those records by id. */
 async function showHandoffPanel(){
   $("handoffPanel").style.display="block";
   $("fleetTechList").innerHTML='<div class="spin"></div>';
   const r=state.current;
   let techs=[];
-  try{
-    const myVendorName = $("techName").textContent;
-    // max_records only accepts 200/500/1000 (Zoho error 9250) — was 100.
-    techs = await apiGetReport(CONFIG.fleetTechnicianReport, '('+CONFIG.fleetTechnicianLinkField+' == "'+myVendorName+'")', 200);
-  }catch(e){ /* best-effort — unconfirmed report/field, see header comment */ }
+  if(MY_TECHNICIAN_IDS.length){
+    try{
+      // max_records only accepts 200/500/1000 (Zoho error 9250) — was 100.
+      const criteria = "("+MY_TECHNICIAN_IDS.map(function(id){ return "ID == "+id; }).join(" || ")+")";
+      techs = await apiGetReport(CONFIG.fleetTechnicianReport, criteria, 200);
+    }catch(e){ console.warn("[GR-Vendor] showHandoffPanel: multi-lookup fetch failed", e); }
+  }
+  // Fallback (2026-08-06, user-shown live: Technicians_Report has its own
+  // "Vendor Name" column pointing back to the vendor — the OPPOSITE
+  // relationship direction from the multi-lookup attempt above, which may
+  // not be the real field/may not exist at all). Only runs if that attempt
+  // found nothing — fetches every technician and matches client-side against
+  // this vendor's own id (if the field turns out to be a real Lookup) or its
+  // name (if it's plain text/display-only), trying both of the two most
+  // likely link names for that "Vendor Name" column.
+  if(!techs.length){
+    console.warn("[GR-Vendor] showHandoffPanel: 0 records via", CONFIG.vendorReport+"."+CONFIG.vendorTechniciansField, "(ids:", MY_TECHNICIAN_IDS, ") — falling back to Technicians_Report's own vendor-link field instead.");
+    try{
+      const all = await apiGetReport(CONFIG.fleetTechnicianReport, null, 200);
+      const candidates=["Vendor_Name","Fleet_Vendor"];
+      for(const field of candidates){
+        const matched = all.filter(function(t){
+          const v=t[field];
+          const vid=lookupId(v);
+          if(currentVendorRecord && vid!=null && String(vid)===String(currentVendorRecord.id)) return true;
+          return String(readVal(t,field)||"").trim().toLowerCase()===MY_VENDOR_NAME.trim().toLowerCase();
+        });
+        if(matched.length){ techs=matched; console.warn("[GR-Vendor] showHandoffPanel: fallback matched", matched.length, "technician(s) via", CONFIG.fleetTechnicianReport+"."+field, "— consider switching CONFIG.vendorTechniciansField/the multi-lookup approach off if this fallback is what's actually working."); break; }
+      }
+    }catch(e){ console.warn("[GR-Vendor] showHandoffPanel: fallback fetch failed", e); }
+  }
   state.fleetTechs=techs;
   if(!techs.length){ $("fleetTechList").innerHTML='<p style="font-size:13px;color:var(--muted)">No technicians found under this fleet account.</p>'; return; }
+  if(!fleetTechName(techs[0])) console.warn("[GR-Vendor] showHandoffPanel: none of", FLEET_TECH_NAME_CANDIDATES, "resolved a name on the first matched technician — real keys:", Object.keys(techs[0]), "| full record:", techs[0]);
   $("fleetTechList").innerHTML = techs.map(function(t){
     const online=String(t[CONFIG.fleetTechnicianStatusField])==="Online";
+    const name=fleetTechName(t)||"—";
+    const phone=fleetTechPhone(t);
     return `<div class="tech-row"><span class="av">🔧</span>
-      <div style="flex:1"><div class="nm">${esc(t[CONFIG.fleetTechnicianNameField]||"—")}</div><div class="sub">${online?"● Online":"● Offline"}</div></div>
+      <div style="flex:1"><div class="nm">${esc(name)}</div><div class="sub">${phone?esc(phone)+" · ":""}${online?"● Online":"● Offline"}</div></div>
       <button class="btn ${online?"primary":"ghost"} assign" type="button" data-id="${esc(t.ID)}" ${online?"":"disabled"} style="width:auto;padding:9px 16px;font-size:12.5px">Assign</button>
     </div>`;
   }).join("");
   document.querySelectorAll(".tech-row .assign").forEach(function(btn){
-    btn.onclick=function(){ assignTechnician(btn.dataset.id); };
+    // Disables every Assign button the instant one is clicked (2026-08-06) —
+    // belt-and-suspenders alongside renderAcceptScreen()'s own
+    // Assigned_Technician check: that one only catches a REOPENED ticket,
+    // not a rapid double-click on this same still-open screen before
+    // assignTechnician()'s own backToDashboard() navigation completes.
+    btn.onclick=function(){
+      document.querySelectorAll(".tech-row .assign").forEach(function(b){ b.disabled=true; });
+      assignTechnician(btn.dataset.id);
+    };
   });
 }
 async function assignTechnician(techId){
@@ -873,7 +1001,7 @@ async function assignTechnician(techId){
   try{
     const r=state.current;
     const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
-    const name=tech[CONFIG.fleetTechnicianNameField]||"";
+    const name=fleetTechName(tech)||"";
     const email=tech[CONFIG.fleetTechnicianEmailField]||"";
     // Real bug fixed (2026-08-05) — Assigned_Technician is a confirmed
     // useId:true Lookup in getRescueTicket (live "[object Object]" screenshot
@@ -1618,6 +1746,18 @@ async function loadAvailability(){
     MY_VENDOR_NAME=myVendor[CONFIG.vendorNameField]||"";
     $("techName").textContent=MY_VENDOR_NAME||"Vendor";
     IS_FLEET = String(myVendor[CONFIG.vendorTypeField]||"").trim().toLowerCase()==="fleet";
+    // Real change (2026-08-06, user request) — "show the technician hand-off
+    // option if this vendor actually HAS technicians, hide it if not" is now
+    // driven by this multi-lookup field's own contents, not by Vendor_Type.
+    // Each item can be a bare id or an enriched {ID/display_value/...}
+    // object depending on how Zoho returns a multi-lookup — lookupId()
+    // already handles both.
+    const rawTechs = myVendor[CONFIG.vendorTechniciansField];
+    MY_TECHNICIAN_IDS = (Array.isArray(rawTechs)?rawTechs:(rawTechs?[rawTechs]:[])).map(lookupId).filter(function(v){ return v!=null && v!==""; });
+    // Only warn for a Fleet-type vendor with zero extracted ids — an
+    // Individual vendor genuinely having none is the normal, expected case
+    // and would otherwise spam every such login with a false-alarm warning.
+    if(IS_FLEET && !MY_TECHNICIAN_IDS.length) console.warn("[GR-Vendor] loadAvailability: Vendor_Type is Fleet but no ids extracted from", CONFIG.vendorReport+"."+CONFIG.vendorTechniciansField, "— raw value:", JSON.stringify(rawTechs), ". If this vendor genuinely has technicians assigned, the field name guess is likely wrong (see CONFIG.vendorTechniciansField's own comment) — this vendor's own record keys:", Object.keys(myVendor));
   } else {
     console.warn("[GR-Vendor] loadAvailability: no", CONFIG.vendorReport, "record's", CONFIG.vendorEmailField, "matched", LOGIN_EMAIL, "— ticket matching (Assigned_Vendor/Vendors1/Invites) will be affected. Records loaded:", vrecs.length, "| first record's own keys:", vrecs[0]);
   }

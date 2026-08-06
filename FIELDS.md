@@ -150,6 +150,8 @@ The single ticket record. Every profile reads/writes through `Agent_Ticket_Repor
 
 ## Form 2 — `Task_Rejections` (report: `Task_Rejections_Report`, or whatever default report name Zoho gives it — the widgets always pass the exact form name `Task_Rejections` to `addRecords`, so the report name itself doesn't matter for writes)
 
+**Read side added 2026-08-06** (user request — a full audit of every workflow timestamp turned up one real gap: `Rejected_At`/`RSP_Name`/`Reason` were being written correctly by all three field-facing widgets, but `getRescueTicket` never fetched or displayed this report at all, so a reject event was structurally invisible to the agent regardless of field-name correctness). New "Rejection History" section in Final Closure (`loadRejectionHistory()`, `CONFIG.taskRejectionsReport`), guessed as `Task_Rejections_Report` by analogy with every other report in this app — **not independently confirmed**. Calls `getRecords` directly (not through the usual `apiGetReport()` helper, which silently swallows every error into an empty list) specifically so a wrong guess here shows up as a console warning instead of looking identical to "this ticket genuinely has no rejections."
+
 Best-effort rejection log, written by Technician/Driver/Vendor whenever they tap Reject. Non-blocking — a failed write here never blocks the actual rejection.
 
 | API Name | Label | Zoho Field Type | Notes |
@@ -253,6 +255,9 @@ Zoho Creator lets you pick which fields show in a report's List View (the row/gr
 | `Rate_Master_Report` | `Rate_Master` | `Vehicle_Type`, `Vehicle_Segment`, `Issue`, `Rate_Type` |
 | `Task_Rejections` (default report) | `Task_Rejections` | `RSID`, `RSP_Name`, `Reason`, `Rejected_At` |
 | `Invites_Report` | `Invites` | `RSID`, `Vendor`, `Technician`, `Service_Acceptance_Next`, `Status` |
+| `Agent_Report` | (agent identities, user-managed) | `Agent_Name` ✅, `Email` 🟡 |
+
+**`Agent_Report` added 2026-08-05** (user request — show the agent's real name, not their login email, on new Remarks entries). Report name AND name field both **user-confirmed**: `Agent_Name` — the initial guess ("cloned from `Technicians_Report`, so it's probably still literally `Technician_Name`") turned out wrong, it was renamed after all. `Email` (used to match the logged-in agent to their record) is still an unconfirmed guess by analogy with every other master report in this app. `getRescueTicket` falls back to the login email itself if no match is found (including if `Email` turns out wrong) — see `agentDisplayName()`'s own comment; a console warning fires on every boot with no match, showing the first loaded record's real keys so a wrong `Email` guess can be corrected quickly.
 
 **Access note**: which profile needs View vs. View+Edit vs. Add on each of these is tracked separately in `ACCESS.md` (same folder) — keep both files in sync when a report's access requirements change.
 
@@ -526,12 +531,12 @@ None of these ten have ever been confirmed against a real `Create_Case` record �
 
 | Value | Written by (step) | Resumes at (reopening a ticket) |
 |---|---|---|
-| `SERVICE FEE QUOTE` | Step 1 (Create Case, on save, when `Time_of_service = NOW`) | Step 2 |
-| `SCHEDULED` | Step 1 (Create Case, on save, when `Time_of_service = LATER`) — **added 2026-08-04** | Step 2 |
+| `SERVICE FEE QUOTE` | Step 1 (Create Case, on save) — **changed 2026-08-06**: written regardless of `Time_of_service`; a "LATER" ticket used to jump straight to `SCHEDULED` here (added 2026-08-04), before Booking Fee or Location were even touched, which put it on the dashboard's "Ready & Invited" bucket while neither was settled. Now goes through the exact same pipeline as a "NOW" ticket. | Step 2 |
 | `BOOKING FEE PENDING` | Step 2 | Step 2 |
 | `LOCATION REQUEST` | Step 2 (fee-free, link not yet sent) or Step 3 (own default) | Step 3 |
 | `LOCATION PENDING` | Step 2 (once link sent / paid) | Step 3 |
-| `READY FOR ASSIGNMENT` | Step 3 (once a breakdown location exists) | Step 4 |
+| `SCHEDULED` | Step 3 — **moved here 2026-08-06** (from Step 1, see above). Written once Booking Fee AND Location are BOTH settled (Step 3 only ever reaches this point once `locationReady()` is true) AND the ticket's own `Computed_Service_Time` is still more than 2 hours away. Holds at Step 3 rather than advancing to Step 4 — a job scheduled hours out shouldn't get a vendor invited immediately. No background job re-evaluates this on its own; the 2-hour window is only actually checked when the ticket is reopened and re-saved. | Step 3 |
+| `READY FOR ASSIGNMENT` | Step 3 (once a breakdown location exists, AND — 2026-08-06 — the service time is ≤2 hours away, or `Time_of_service = NOW`) | Step 4 |
 | `RSP IRA (INVITE RESPONSE AWAITED)` | Step 4 | Step 4 |
 | `RSP REJECT` | Step 5/5a | Step 4 (re-assign) |
 | `RSP ON THE WAY` | Step 5/5a (Accept) | Step 6/6a |

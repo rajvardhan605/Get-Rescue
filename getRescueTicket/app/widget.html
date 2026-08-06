@@ -204,7 +204,7 @@ img,svg{max-width:100%}
 .fld label .req{color:var(--stop);margin-left:2px}
 .fld input,.fld select,.fld textarea{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;
   font-family:var(--f-body);color:var(--text);background:#fff;outline:0;transition:.15s;width:100%}
-.fld textarea{resize:vertical;min-height:74px}
+.fld textarea{resize:vertical;min-height:50px}
 .fld input:focus,.fld select:focus,.fld textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
 .fld input[type=file]{padding:9px;background:var(--worktop);border-style:dashed;cursor:pointer;font-family:var(--f-mono);font-size:12px}
 /* view-only fields (2026-07-31 — the vendor/technician/driver-side wizard
@@ -432,6 +432,10 @@ img,svg{max-width:100%}
         <button class="close-x" id="closureBack" type="button" aria-label="Back to dashboard"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
       </div>
     </div>
+    <!-- Shown/hidden by renderClosure() (2026-08-06, user request) — a
+         ticket already CLOSED opens here read-only; this banner is the only
+         visible explanation for why nothing on the page is editable. -->
+    <div class="hint" id="closureReadOnlyBanner" style="display:none;margin:0 0 14px">🔒 This ticket is already closed — view only.</div>
     <div class="form-card">
       <h3>Close Case</h3>
       <div class="fdesc">Review the ticket and record the final outcome. This can be done at any point during the task's timeline.</div>
@@ -476,6 +480,18 @@ img,svg{max-width:100%}
 
 <script>
 /* =====================================================================
+   ⚠️ 2026-08-06: this file lives inside a OneDrive-synced folder
+   (OneDrive\Desktop\GetRescued). At least THREE separate fixes made this
+   same day (Create step heading hidden, Schedule_Date_Time consolidation,
+   state.editing=true after ticket creation) silently disappeared from this
+   file between turns, with zero git history behind it (checked `git log` —
+   nothing was committed) — the only remaining explanation is a OneDrive
+   sync conflict overwriting local edits with a stale copy, most likely
+   because this file is open/syncing from another device at the same time.
+   If a recently-applied fix looks reverted, check this before re-diagnosing
+   the "bug" from scratch — it may just need reapplying, not re-investigating.
+   Pausing OneDrive sync while actively editing would prevent this.
+   =====================================================================
    GET-RESCUE · TICKET FLOW WIDGET
    Everything is stored in ONE Create_Case record. The widget adds it on
    the first save, then updates the same record every step. The stage is
@@ -516,6 +532,20 @@ const CONFIG = {
   // directly — see syncInvites().
   invitesForm: "Invites",
   invitesReport: "Invites_Report",
+  // Added 2026-08-06 (user request — audit of every workflow timestamp
+  // turned up one real gap: Rejected_At is stamped by all three field-facing
+  // widgets' own rejectService(), but into this SEPARATE form/report, not
+  // Create_Case — this widget never fetched or displayed it at all before
+  // now, so a reject event's own timestamp/reason/name were structurally
+  // invisible to the agent regardless of field-name correctness).
+  // NOT confirmed — FIELDS.md itself flags the report name (needed for reads
+  // via getRecords) as uncertain, since writes only ever used the FORM name
+  // ("Task_Rejections", via addRecords, which doesn't care about report
+  // names at all). Guessed "Task_Rejections_Report" by analogy with every
+  // OTHER report in this app (Vendors_Report, Invites_Report, Client_Report,
+  // etc. all follow this same "_Report" suffix) — loadRejectionHistory()'s
+  // own diagnostic will say clearly if this guess is wrong.
+  taskRejectionsReport: "Task_Rejections_Report",
   // option sources — report names are the MASTER tables we pull picker options
   // from, unrelated to the Create_Case field names above. Renamed 2026-08-03
   // (forms rebuilt from scratch, old ones deleted): vehicle_master_Report ->
@@ -534,7 +564,16 @@ const CONFIG = {
     issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
     vendors:     { report:"Vendors_Report",        label:["vendor_name","Vendor_Name","Name"] },
     technicians: { report:"Technicians_Report",    label:["Technician_Name","Name"], emailField:"Email" },
-    clients:     { report:"Client_Report",         label:["Client_Name","Name"] }
+    clients:     { report:"Client_Report",         label:["Client_Name","Name"] },
+    // "Agent_Report" — report name AND name field both user-confirmed
+    // 2026-08-05: field is "Agent_Name" (an earlier "cloned from
+    // Technicians_Report, so it's probably still literally Technician_Name"
+    // guess turned out wrong — it was renamed after all). "Name" kept only as
+    // a last-resort fallback. Email field ("Email") is still an unconfirmed
+    // guess by analogy — see agentDisplayName()'s own comment for how a wrong
+    // guess there degrades safely. (Reapplied 2026-08-06 — see the top-of-file
+    // OneDrive note; this whole feature vanished once already.)
+    agents:      { report:"Agent_Report",          label:["Agent_Name","Name"], emailField:"Email" }
   },
   fetchLatest: 1000,  // how many recent tickets to pull for the dashboard — Creator only accepts 200, 500 or 1000; maxed out so "show all" isn't capped by an earlier fetch limit
   // Assignment step's "Preferred_Vendor = No" radius filter — see vendorsFor().
@@ -564,6 +603,7 @@ const CONFIG = {
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
 let LOGIN_EMAIL = ""; // the logged-in agent's own email — see boot(), used to attribute new Remarks entries
+let AGENT_DISPLAY_NAME = ""; // resolved from Agent_Report once OPTIONS.agents loads — see agentDisplayName()
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
 function resolve(method){
   const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -673,7 +713,7 @@ const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With A
 // reverting edits; if this disappears again, that's almost certainly why.)
 
 /* dynamic options filled at boot from reports (best-effort) */
-const OPTIONS = { vehicles:[], issues:[], vendors:[], technicians:[], clients:[] };
+const OPTIONS = { vehicles:[], issues:[], vendors:[], technicians:[], clients:[], agents:[] };
 
 /* Quote & Booking Fee's Status is fully derived from what's actually been done
    on it — no manual override. No payment/location integration exists yet, so
@@ -724,13 +764,18 @@ const STAGES = [
     // (it's earlier in STAGES' order, so if `create` also listed it,
     // stageIndexForStatus would wrongly resume every such ticket back at
     // `create` instead of `quote`).
-    // 2026-08-04 (user request): a ticket scheduled for later ("Time_of_service"
-    // = LATER) now writes "SCHEDULED" instead of "SERVICE FEE QUOTE" — makes
-    // it visually distinct on the dashboard (the "SCHEDULED" status was
-    // already wired into the "Ready & Invited" bucket, just never actually
-    // written by anything). Still resumes at `quote` next either way — see
-    // that stage's own `statuses` list, which now also accepts "SCHEDULED".
-    statuses:[], status:(r)=> r.Time_of_service==="LATER" ? "SCHEDULED" : "SERVICE FEE QUOTE",
+    // Superseded 2026-08-06 (user request, detailed spec) — the 2026-08-04
+    // version of this wrote "SCHEDULED" immediately for a "LATER" ticket,
+    // right on Create, before Booking Fee or Location were even touched —
+    // which put it on the dashboard's "Ready & Invited" bucket while neither
+    // was actually settled. Now ALWAYS writes "SERVICE FEE QUOTE" here
+    // regardless of Now/Later — a scheduled ticket goes through the exact
+    // same Quote -> Booking Fee -> Location pipeline as an immediate one.
+    // "SCHEDULED" is now only ever written by the `locations` stage below,
+    // once BOTH the fee and the location are actually settled AND the
+    // ticket's own service time is still >2 hours away — see that stage's
+    // own comment for the full rule.
+    statuses:[], status:(r)=> "SERVICE FEE QUOTE",
     /* Create_Case has a required "Phone_Number" field separate from the one
        shown in this form ("Phone_Number1"). Mirror the value the agent types
        rather than showing a duplicate box. Confirmed via a live "Enter a value
@@ -742,37 +787,61 @@ const STAGES = [
        longer a visible field at all — hidden from the frontend, sent silently
        via extra() the same way Phone_Number/Computed_Service_Time are. */
     extra:(r)=>({ Phone_Number:r.Phone_Number1||"", Computed_Service_Time:computeServiceTime(r), Lead_Source:"Call" }),
+    // 4-column layout (2026-08-06, per the client's own hand-drawn wireframe)
+    // — reordered/regrouped into three 4-across rows via the shared `row:`
+    // mechanism (renderFields() already supports N-column rows, see its own
+    // comment; this is a grouping change, not new layout infrastructure):
+    // Row 1: Name / Mobile / Alt / Email. Row 2: Vehicle / Reg / Client /
+    // Client ID. Row 3: Issue / Status / Now-Later / Date&Time. Each row's
+    // column count still shrinks automatically if a member is conditionally
+    // hidden (Client_Tracking_Id on "ON DEMAND", Schedule_Date_Time on NOW) —
+    // same behavior the row mechanism already had, not something new here.
     fields:[
     { n:"Customer_Name", l:"Customer Name", t:"text", req:true, row:"contact" },
     { n:"Phone_Number1", l:"Phone Number", t:"tel", req:true, row:"contact" },
-    { n:"Email", l:"Email", t:"email", row:"contact" },
     // Re-added 2026-07-31 (was removed 2026-07-25) per the flow spec, which
     // shows it paired with Phone Number — same +91-prefixing `t:"tel"`
     // treatment as Phone_Number1, per explicit choice. Field link name is the
     // one this app used before its removal, not re-confirmed live since.
-    { n:"Alternate_Phone_Number", l:"Alternate Phone Number", t:"tel", full:true },
-    { n:"Client", l:"Client", t:"select", o:"@clients", req:true, useId:true, searchable:true, row:"client" },
-    // Hidden when Client is the special "ON DEMAND" walk-in entry — per
-    // 2026-07-31 user request, a tracking ID doesn't apply to those.
-    { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text", row:"client",
-      when:(s)=>String(s.Client||"").trim().toUpperCase()!=="ON DEMAND" },
-    { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true, searchable:true, row:"vehicle" },
-    { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text", row:"vehicle" },
+    // Reordered 2026-08-06 (wireframe: Name/Mobile/Alt/Email) — was full-width
+    // on its own row before this.
+    { n:"Alternate_Phone_Number", l:"Alternate Phone Number", t:"tel", row:"contact" },
+    { n:"Email", l:"Email", t:"email", row:"contact" },
+    // Regrouped 2026-08-06 (wireframe: Vehicle/Reg/Client/Client ID all in
+    // one row) — Vehicle+Reg and Client+Client ID used to be two separate
+    // 2-column rows.
+    { n:"Vehicle", l:"Vehicle", t:"select", o:"@vehicles", req:true, useId:true, searchable:true, row:"vc" },
+    { n:"Vehicle_Registration_Number", l:"Vehicle Reg. Number", t:"text", row:"vc" },
+    { n:"Client", l:"Client", t:"select", o:"@clients", req:true, useId:true, searchable:true, row:"vc" },
+    // Changed 2026-08-06 (updated wireframe: "IF ON DEMAND DON'T HIDE" /
+    // "IF ON DEMAND MAKE DISABLE EDIT") — was hidden entirely for the special
+    // "ON DEMAND" walk-in Client (2026-07-31). Now always visible; only
+    // locked from editing while ON DEMAND is selected, via isReadonly()'s new
+    // function-support (see its own comment) — same field, doesn't apply to
+    // an ON DEMAND walk-in, so there's nothing meaningful to type, but the
+    // row stays visually consistent instead of collapsing to 3 columns.
+    { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text", row:"vc",
+      readonly:(s)=>String(s.Client||"").trim().toUpperCase()==="ON DEMAND" },
     // useId:true added 2026-08-04, user-confirmed: Vehicle_Issue is a real
     // multiselect Lookup -> Vehicle_Issue_Report, not plain text (reverses the
     // earlier "confirmed plain text" note — see idsFor()'s own header
     // comment) — saves real record IDs via the same generic useId/idsFor
     // machinery Vendors1 already uses for its own multiselect Lookup.
-    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", full:true, req:true, needsVehicle:true, searchable:true, useId:true },
-    { n:"Service_Type", l:"Service Type", t:"badge", full:true },
-    { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true }, // required per 2026-07-31 flow spec — was optional
-    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true }, // required per 2026-07-31 flow spec — was optional
+    // Regrouped 2026-08-06 (updated wireframe: Issue+Status now their own
+    // 2-column row, separate from Now/Later+Date&Time below) — briefly all
+    // four were combined into one 4-across row; split back per this revision.
+    { n:"Vehicle_Issue", l:"Vehicle Issue", t:"multiselect", o:"@vehicleIssues", req:true, needsVehicle:true, searchable:true, useId:true, row:"issuestatus" },
+    { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true, row:"issuestatus" }, // required per 2026-07-31 flow spec — was optional
+    // default:"NOW" added 2026-08-06 per the wireframe's own "Default=NOW"
+    // annotation — was unset before (agent had to pick one explicitly).
+    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true, default:"NOW", row:"schedule" }, // required per 2026-07-31 flow spec — was optional
     // Replaced 2026-08-05 (user request) — was two separate fields
     // (Schedule_Date + a half-hour Service_Time slot picker). The user added
     // a single Schedule_Date_Time field to Create_Case in Zoho instead; one
     // native datetime-local picker here now writes straight into it — see
     // computeServiceTime()'s own updated comment.
-    { n:"Schedule_Date_Time", l:"Schedule Date & Time", t:"datetime", req:true, when:(s)=>s.Time_of_service==="LATER" },
+    { n:"Schedule_Date_Time", l:"Schedule Date & Time", t:"datetime", req:true, when:(s)=>s.Time_of_service==="LATER", row:"schedule" },
+    { n:"Service_Type", l:"Service Type", t:"badge", full:true },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -791,10 +860,11 @@ const STAGES = [
     // Status is "Location Request", so a ticket at either "waiting on
     // location" status should always reopen there, not back here on Quote —
     // quoteStatus() itself is UNCHANGED and can still return either value.
-    // "SCHEDULED" added 2026-08-04 — a ticket the `create` step marked
-    // SCHEDULED (Time_of_service = LATER) still resumes here next, same as
-    // an immediate "SERVICE FEE QUOTE" ticket; only the display status differs.
-    statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING","SCHEDULED"], status:quoteStatus,
+    // "SCHEDULED" removed 2026-08-06 (superseded — see `create`'s own
+    // comment) — `create` no longer ever writes SCHEDULED, so there's
+    // nothing of that status to resume here anymore. A "LATER" ticket now
+    // resumes here on plain "SERVICE FEE QUOTE", identically to a "NOW" one.
+    statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING"], status:quoteStatus,
     // can't advance to Capture Locations until the required action for this
     // ticket's fee situation has actually been done (see quoteStatus above)
     // not a hard block anymore — Save & Continue always saves. If the required
@@ -814,13 +884,32 @@ const STAGES = [
     // agent-editable as before; Payment_Method/Image_Upload are still locked
     // pending clarification on the flow spec's Payment Method option list —
     // see §4/§5.
+    // Row layout (2026-08-06, per the client's own hand-drawn wireframe for
+    // both the RSR and TOW versions of this page) — regrouped via the same
+    // shared `row:` mechanism used on the Create step, not new infrastructure.
+    // Distance_For_Quote_RT_KM is TOW-only (see its own `when`); when it's
+    // hidden (RSR), its row shrinks to Suggested_Rate alone, full-width —
+    // exactly the RSR wireframe's own layout — and when it's shown (TOW),
+    // the same row becomes the TOW wireframe's "Distance | Suggested Rate"
+    // pair. One set of field defs naturally matches both wireframes.
+    // User-confirmed 2026-08-06: Payment_Status stays fully editable here
+    // (the wireframe's own "NOT EDITABLE" annotation on it is NOT applied —
+    // it's still the only agent-facing way to ever mark a fee>0 ticket PAID;
+    // the Payment stage's own copy is already read-only, so locking this one
+    // too would strand every such ticket at Quote forever).
     fields:[
-    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>s.Service_Type==="TOW" },
-    { n:"Suggested_Rate", l:"Suggested Rate", t:"number", readonly:true },
-    { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", recompute:true },
-    { n:"Booking_Fee", l:"Booking Fee", t:"number", recompute:true },
-    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true },
-    { n:"Rate_Breakup", l:"Rate Breakup", t:"textarea", full:true },
+    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>s.Service_Type==="TOW", row:"rate1" },
+    { n:"Suggested_Rate", l:"Suggested Rate", t:"number", readonly:true, row:"rate1" },
+    { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", recompute:true, row:"rate2" },
+    { n:"Rate_Breakup", l:"Rate Breakup", t:"textarea", row:"rate2" },
+    // readonly added 2026-08-06 (user request) — once Payment_Status is PAID,
+    // Booking_Fee can no longer be edited (same isReadonly()/function-support
+    // mechanism as Client_Tracking_Id's own matching comment above). Payment_Status
+    // itself stays editable per the earlier user-confirmed decision — this
+    // only locks Booking_Fee once that flip has actually been made.
+    { n:"Booking_Fee", l:"Booking Fee", t:"number", recompute:true, row:"rate3",
+      readonly:(s)=>String(s.Payment_Status||"").toUpperCase()==="PAID" },
+    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true, row:"rate3" },
     /* Exactly one button here, never two. Booking_Fee>0 -> a single button
        that sends the payment link AND requests the location together in one
        click (its action hook flips Send_Link_For_The_Breakdown_Location too)
@@ -839,15 +928,20 @@ const STAGES = [
        TODO(WhatsApp integration): once built, `action` below is where a real
        "send via WhatsApp" call belongs — noted per the user's own words
        ("for now whatsapp is not integrated when its integrated than it will
-       [be] done, remember it for later"). */
-    { n:"Send_Payment_Link", l:"Send Payment Link", t:"button", full:true, when:(s)=>Number(s.Booking_Fee)>0,
+       [be] done, remember it for later"). Paired with Payment_Status
+       (2026-08-06, wireframe) — only one of the two buttons is ever visible
+       at once, so this row always has exactly 2 members. */
+    { n:"Send_Payment_Link", l:"Send Payment Link", t:"button", when:(s)=>Number(s.Booking_Fee)>0, row:"rate4",
       buttonLabel:"Send Payment Link & Request Location", doneLabel:"Payment Link & Location Sent",
       action:(r)=>{ r.Send_Link_For_The_Breakdown_Location=true; } },
-    { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", full:true, when:(s)=>!(Number(s.Booking_Fee)>0),
+    { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", when:(s)=>!(Number(s.Booking_Fee)>0), row:"rate4",
       buttonLabel:"Request Location", doneLabel:"Location Requested" },
-    { n:"Payment_Method", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], disabled:true },
-    { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"] },
-    { n:"Image_Upload", l:"Receipt Photo", t:"file", readonly:true },
+    { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"], row:"rate4" },
+    // Payment_Method/Image_Upload hidden from this step 2026-08-06 (user
+    // request) — both were already non-interactive here (disabled/readonly),
+    // so nothing was actually settable through them on this screen; neither
+    // field is referenced by any other STAGES entry, so this also means they
+    // no longer appear in Final Closure's derived summary for this step.
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
     // editable both here and on `create` (see that stage's own Remarks).
@@ -875,11 +969,33 @@ const STAGES = [
     // guaranteed to get permanently stuck at the vendor's own "Vehicle
     // Picked" button later, with no way back to this step to fix it short of
     // reopening the ticket from the dashboard.
-    statuses:["LOCATION REQUEST","LOCATION PENDING"], status:(r)=> locationReady(r) ? "READY FOR ASSIGNMENT" : "LOCATION REQUEST",
-    canAdvance:(r)=> locationReady(r),
-    blockedMessage:(r)=> hasLocFlag(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
-      ? "Saved. This TOW ticket also needs a drop location before it can move on — reopen it from the dashboard to add one."
-      : "Saved. This ticket will wait here until a breakdown location is actually captured — reopen it from the dashboard to continue.",
+    // "SCHEDULED" added 2026-08-06 (user request, detailed spec) — once
+    // locationReady(r) is true, Booking Fee and Location are BOTH already
+    // settled (quoteStatus() only ever reaches "LOCATION PENDING" — this
+    // stage's own precondition to write anything past "LOCATION REQUEST" —
+    // once the fee is paid or not applicable). At that point: if the
+    // ticket's own Computed_Service_Time is still >2 hours away, write
+    // "SCHEDULED" and hold here rather than moving on to Assignment (a job
+    // scheduled hours from now shouldn't get a vendor invited immediately);
+    // otherwise write "READY FOR ASSIGNMENT" and proceed as before. A
+    // SCHEDULED ticket resumes back HERE (not `assignment`) so simply
+    // reopening and re-saving it later re-runs this same check — there's no
+    // background job in this widget that re-evaluates it on its own, so the
+    // 2-hour window is only actually checked when someone opens the ticket.
+    statuses:["LOCATION REQUEST","LOCATION PENDING","SCHEDULED"],
+    status:(r)=>{
+      if(!locationReady(r)) return "LOCATION REQUEST";
+      return isServiceTimeFarFuture(r) ? "SCHEDULED" : "READY FOR ASSIGNMENT";
+    },
+    canAdvance:(r)=> locationReady(r) && !isServiceTimeFarFuture(r),
+    blockedMessage:(r)=>{
+      if(!locationReady(r)){
+        return hasLocFlag(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
+          ? "Saved. This TOW ticket also needs a drop location before it can move on — reopen it from the dashboard to add one."
+          : "Saved. This ticket will wait here until a breakdown location is actually captured — reopen it from the dashboard to continue.";
+      }
+      return "Saved. This ticket is scheduled more than 2 hours from now — it'll be ready to assign once that window closes. Reopen it from the dashboard closer to the service time to continue.";
+    },
     // Stamps the exact moment a real breakdown location first exists — only
     // set once (never overwritten on a later re-save of this same step) so it
     // stays "time of receipt", not "time of most recent save". Field name/type
@@ -900,8 +1016,13 @@ const STAGES = [
     // fields) — the flow spec's "[Location field type]" wording does NOT mean
     // a native Zoho Location/map-picker field; keep LatLongPaste as-is.
     { n:"LatLongPaste", l:"Paste Breakdown Lat,Long", t:"text", full:true, hint:"e.g. 28.6139, 77.2090", parseTarget:["Latitude","Longitude"] },
-    { n:"Latitude", l:"Breakdown Latitude", t:"decimal" },
-    { n:"Longitude", l:"Breakdown Longitude", t:"decimal" },
+    // readonly:true added 2026-08-06 (user request — manual entry disabled,
+    // paste-only) — the parseTarget mechanism above writes into these two
+    // directly via state.record (see wireField's own "recompute || parseTarget"
+    // branch), never reads their own DOM input, so readonly doesn't break
+    // that path; it only blocks typing straight into the raw fields.
+    { n:"Latitude", l:"Breakdown Latitude", t:"decimal", readonly:true },
+    { n:"Longitude", l:"Breakdown Longitude", t:"decimal", readonly:true },
     // 2026-07-31: user explicitly confirmed Drop Location is TOW-only —
     // matches the existing `when` guards below already (re-confirms, not a
     // change). Converted from `t:"check"` to `t:"button"` (same shape as the
@@ -911,8 +1032,10 @@ const STAGES = [
     { n:"Send_Link_For_The_Drop_Location", l:"Send Drop Location Link", t:"button", full:true, when:(s)=>s.Service_Type==="TOW",
       buttonLabel:"Send Drop Location Link to Customer", doneLabel:"Location Link Sent" },
     { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
-    { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
-    { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>s.Service_Type==="TOW" },
+    // readonly:true added 2026-08-06 (user request) — see Latitude/Longitude's
+    // own matching comment above, same reasoning applies to the drop pair.
+    { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>s.Service_Type==="TOW", readonly:true },
+    { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>s.Service_Type==="TOW", readonly:true },
     /* Round-trip distance calc is TOW-only (RSR's distances live on the wip
        stage's own fields instead). Clicking recalculates from the static
        office location -> breakdown -> drop -> office each time; repeatable
@@ -1256,9 +1379,17 @@ const CLOSURE_FIELDS=[
   { n:"Closure_Reason", l:"Not Converted / Cancelled Reason", t:"select", o:REJECT_REASONS, full:true,
     when:(s)=>s.Closure_Status==="Cancelled"||s.Closure_Status==="Not Converted", req:true },
   { n:"Remarks", l:"Remarks", t:"remarks", full:true },
-  { n:"Cx_Feedback_Score", l:"Customer Feedback (1–10)", t:"radio", o:["1","2","3","4","5","6","7","8","9","10"], full:true,
-    req:(s)=>s.Closure_Status==="Completed" },
-  { n:"Cx_Feedback_Text", l:"Customer Feedback (Notes)", t:"textarea", full:true },
+  // Revised 2026-08-06 (user request, supersedes the earlier "make WhatsApp/
+  // GST view-only" ask from this same tracking item) — the actual final
+  // decision: ONLY the feedback fields lock, since customer feedback is
+  // meant to arrive via WhatsApp (some other process/integration writes it
+  // in), not be typed by the agent here. GST stays fully editable, explicitly
+  // reversing the earlier ambiguity — no change needed there, kept as-is.
+  // req:true removed from Cx_Feedback_Score along with the lock — requiring
+  // a field the agent can no longer fill in through this widget would have
+  // permanently blocked marking any ticket "Completed".
+  { n:"Cx_Feedback_Score", l:"Customer Feedback (1–10)", t:"radio", o:["1","2","3","4","5","6","7","8","9","10"], full:true, readonly:true },
+  { n:"Cx_Feedback_Text", l:"Customer Feedback (Notes)", t:"textarea", full:true, readonly:true },
   { n:"B2B_GST_Invoice_Required", l:"B2B GST Invoice Required?", t:"radio", o:["Yes","No"], default:"No" },
   { n:"GST_Number", l:"GST Number", t:"text", when:(s)=>s.B2B_GST_Invoice_Required==="Yes",
     req:(s)=>s.Closure_Status==="Completed" && s.B2B_GST_Invoice_Required==="Yes" },
@@ -1398,7 +1529,28 @@ async function loadOptions(){
   try{ OPTIONS.vendors     = await pull(O.vendors); }catch(e){}
   try{ OPTIONS.technicians = await pull(O.technicians); }catch(e){}
   try{ OPTIONS.clients     = await pull(O.clients); }catch(e){}
+  try{ OPTIONS.agents      = await pull(O.agents); }catch(e){}
   try{ RATE_MASTER = await apiGetReport(CONFIG.rateMasterReport, null, 1000); }catch(e){}
+}
+// Real display name for Remarks attribution (2026-08-05, reapplied 2026-08-06
+// — see the top-of-file OneDrive note; this whole feature vanished once
+// already). Matches OPTIONS.agents (pulled from the user-confirmed
+// "Agent_Report") against LOGIN_EMAIL via its own raw record — pull()'s
+// {v,label,id,raw} shape keeps the full original record in `raw` precisely so
+// a second lookup like this doesn't need its own separate fetch. Falls back
+// to the login email itself (the previous behavior) if the report has no
+// matching record — including if "Agent_Report"'s real email field turns out
+// to be named something other than the guessed "Email" (diagnostic below
+// will show exactly that on the next boot if so).
+function agentDisplayName(){
+  if(!LOGIN_EMAIL) return "Agent";
+  const emailField = CONFIG.optionReports.agents.emailField || "Email";
+  const match = OPTIONS.agents.find(function(a){
+    const raw=a.raw||{}; const v=raw[emailField];
+    return v!=null && String(v).trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase();
+  });
+  if(!match) console.warn("[Get-Rescue] agentDisplayName: no Agent_Report record's \""+emailField+"\" matched", LOGIN_EMAIL, "— falling back to the login email itself. OPTIONS.agents loaded:", OPTIONS.agents.length, "record(s). If that count is 0, check the report name; if it's >0 but still no match, the email field name is probably wrong — first loaded record:", OPTIONS.agents[0]&&OPTIONS.agents[0].raw);
+  return match ? match.label : LOGIN_EMAIL;
 }
 /* option lists for a field — "@vehicleIssues" is computed on the fly (vehicle-
    dependent), everything else is a static pull from OPTIONS. Shared by
@@ -1605,10 +1757,17 @@ function vendorInfo(opt){
    via the same Vendors_Report the picker itself pulls from. Not shown as a
    field in this widget at all (the user will hide it on the real Zoho form
    too); vendors with no resolvable email are silently skipped. */
+// Real bug fixed (2026-08-06, user-reported live: Vendor_Emails saved blank
+// even with 2 real vendors in Vendors1) — same id-vs-label mismatch as every
+// other useId matcher fixed this week: Vendors1's own array holds bare ids
+// (confirmed via the user's own console dump), but this matched against
+// OPTIONS.vendors' own .v (a label) — never found either vendor, so every
+// email came back empty. Match by id first, falling back to the label match
+// for a freshly-picked value that hasn't been through idsFor() yet.
 function vendorEmailsFor(names){
   const arr=Array.isArray(names)?names:(names?[names]:[]);
   return arr.map(function(name){
-    const opt=OPTIONS.vendors.find(function(o){ return String(o.v)===String(name); });
+    const opt=OPTIONS.vendors.find(function(o){ return String(o.id)===String(name); }) || OPTIONS.vendors.find(function(o){ return String(o.v)===String(name); });
     return opt ? vendorInfo(opt).email : "";
   }).filter(Boolean).join(", ");
 }
@@ -1814,7 +1973,39 @@ function calcQuote(){
 /* =====================================================================
    STATE + DATA WRAPPERS
    ===================================================================== */
-const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0, editing:false };
+// closureReadOnly (2026-08-06, user request): true when Final Closure was
+// opened for a ticket whose Status is already "CLOSED" (set by saveClosure()
+// itself — the one unambiguous "this ticket is done" signal) — see
+// openTicket()/openFieldEditor()/renderClosure()'s own comments for what
+// this actually locks down.
+const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0, editing:false, rejectionHistory:[], closureReadOnly:false };
+// Loads every Task_Rejections entry for one ticket (2026-08-06) — see
+// CONFIG.taskRejectionsReport's own comment. Best-effort: an empty/failed
+// result just means the Final Closure section below has nothing to show,
+// never blocks opening the ticket.
+async function loadRejectionHistory(recordId){
+  if(!recordId){ state.rejectionHistory=[]; return; }
+  // Calls getRecords directly instead of going through apiGetReport() — that
+  // helper silently swallows every error into [], which would make a wrong
+  // report-name guess look identical to "this ticket genuinely has no
+  // rejections" (both show nothing, no way to tell which). Inspecting the
+  // raw response code here means a bad guess actually says so.
+  try{
+    const fn = resolve("getRecords");
+    if(!fn){ state.rejectionHistory=[]; return; }
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.taskRejectionsReport, field_config:"all", max_records:200, criteria:"(RSID == "+recordId+")" });
+    if(r && r.code===3000 && Array.isArray(r.data)){
+      // Not re-sorted — fmtDateTime()'s own "DD-MMM-YYYY" format doesn't sort
+      // correctly as a plain string, and the API already returns these in
+      // creation order (= chronological, since rejectService() only ever adds
+      // one at the moment it happens).
+      state.rejectionHistory = r.data;
+    } else {
+      state.rejectionHistory=[];
+      console.warn("[Get-Rescue] loadRejectionHistory: unexpected response for report", CONFIG.taskRejectionsReport, "— code:", r&&r.code, "| full response:", r, "— if code isn't 3000, the guessed report name is likely wrong (see CONFIG.taskRejectionsReport's own comment).");
+    }
+  }catch(e){ console.warn("[Get-Rescue] loadRejectionHistory threw for report", CONFIG.taskRejectionsReport, e); state.rejectionHistory=[]; }
+}
 
 async function getTickets(criteria){ return apiGet(criteria); }
 async function addTicket(data){ return apiAdd(data); }
@@ -1835,6 +2026,37 @@ function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) ret
 function fmtDateTime12(d){
   const h24=d.getHours(); const ampm=h24<12?"AM":"PM"; const h12=(h24%12)||12;
   return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(h12)+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())+" "+ampm;
+}
+// Reverse of fmtDateTime12() above (2026-08-06) — needed to check how far
+// away Computed_Service_Time actually is (see isServiceTimeFarFuture()).
+// Written by hand rather than relying on `new Date(str)` — native Date
+// parsing of a non-ISO string like "05-Aug-2026 11:25:18 PM" isn't reliably
+// consistent across engines, and this format is unambiguous enough to parse
+// directly with a regex.
+function parseDateTime12(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  let hour=Number(m[4])%12; if(/pm/i.test(m[7])) hour+=12;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), hour, Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+// Real change (2026-08-06, user request, detailed spec) — decides the
+// SCHEDULED-vs-READY split once both Booking Fee and Location are settled
+// (see `locations`' own status/canAdvance comment for where this is used):
+// "if SERVICE DATE TIME is > 2 hours from now, status = SCHEDULED; if <= 2
+// hours, status = READY [FOR ASSIGNMENT]". Computed_Service_Time already
+// holds the ticket's own target service time regardless of Now/Later (for
+// "NOW" it's set to +30 min from Create time — by the time fee+location are
+// actually settled, real time has almost always already moved past that
+// mark, so this naturally returns false for a "NOW" ticket without needing
+// a separate Time_of_service check).
+function isServiceTimeFarFuture(r){
+  const d=parseDateTime12(r.Computed_Service_Time);
+  if(!d) return false;
+  return (d.getTime()-Date.now()) > 2*60*60*1000;
 }
 /* Computed_Service_Time: NOW -> 30 minutes from the moment of saving; LATER ->
    read straight off the picked Schedule_Date_Time. Replaced 2026-08-05 (user
@@ -1918,7 +2140,7 @@ function renderReportLists(recs){
   });
   // clicking the row itself still opens the edit wizard exactly as before
   document.querySelectorAll("#columns .rrow").forEach(el=>{
-    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); if(rec) openTicket(rec); };
+    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); if(rec) openTicketOrClosure(rec); };
   });
   // the new sibling action opens the Final Closure screen instead — stops
   // propagation defensively even though it's not actually nested inside .rrow
@@ -1931,6 +2153,9 @@ function renderReportLists(recs){
       e.stopPropagation();
       const rec=recs.find(r=>String(r.ID)===el.dataset.closeId); if(!rec) return;
       const fresh=await apiGetById(rec.ID);
+      // Dedicated "Close" action is a deliberate close/edit request, never
+      // read-only, even for a ticket that happens to already be CLOSED.
+      state.closureReadOnly=false;
       openClosure(fresh||rec);
     };
   });
@@ -2075,7 +2300,7 @@ async function runSearch(){
   if(!recs.length){ dd.innerHTML=`<div class="sd-msg">No ticket found for "${esc(raw)}"</div>`; return; }
   dd.innerHTML=recs.map(rowHtml).join("");
   dd.querySelectorAll(".rrow").forEach(el=>{
-    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); closeSearchDropdown(); if(rec) openTicket(rec); };
+    el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); closeSearchDropdown(); if(rec) openTicketOrClosure(rec); };
   });
 }
 document.addEventListener("click",e=>{
@@ -2153,6 +2378,20 @@ function unwrapLookup(v){
   if(typeof v==="object") return (v.ID!=null ? v.ID : (v.id!=null ? v.id : (v.display_value||v.zc_display_value||v.value||"")));
   return v;
 }
+// Real bug fixed (2026-08-06, user-reported live: clicking an already-closed
+// ticket — via search or the dashboard's own "RSP Closed" bucket row — opened
+// the editable wizard on the Create step instead of a view-only Final
+// Closure) — stageIndexForStatus() has no stage whose own `statuses` list
+// includes "CLOSED", so it fell back to index 0 every time. Status is only
+// ever "CLOSED" once saveClosure() itself has written it (see that
+// function's own comment), so it's the one unambiguous signal to route on.
+// Both row-click paths (dashboard + search) go through this now instead of
+// calling openTicket() directly.
+function openTicketOrClosure(rec){
+  const isClosed = String(rec.Status||"").trim().toUpperCase()==="CLOSED";
+  state.closureReadOnly = isClosed;
+  if(isClosed) openClosure(rec); else openTicket(rec);
+}
 async function openTicket(rec){
   // Diagnostic logging (2026-07-31, user-reported "fields show empty when
   // reopening a saved ticket") — logs the RAW record exactly as Zoho
@@ -2196,6 +2435,14 @@ async function openTicket(rec){
   // separate vendorDisplayName() pass needed anymore (that was only for the
   // old composite-string save format).
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  // Baseline for the Rate_Breakup/Total_Service_Fee auto-refresh check in
+  // renderWizard() (2026-08-06) — without this, reopening a ticket would look
+  // exactly like a "Vehicle_Issue just changed" event on the very first
+  // render (no marker yet vs. whatever's already saved), overwriting any
+  // manual edit the agent made in a PREVIOUS session even though nothing
+  // actually changed this time. Seeding it here means it only fires for a
+  // real, active change made within this same open session.
+  state.record._rateBreakupForIssues=JSON.stringify(state.record.Vehicle_Issue||[]);
   console.log("[Get-Rescue] openTicket state.record after unwrap:", state.record);
   // Targeted diagnostic (2026-08-05, user-reported live: "Vendors" still
   // blank on the Assign step) — Vendors1 goes through the exact same
@@ -2218,7 +2465,7 @@ async function openTicket(rec){
    state.record, so any unsaved edits on the current step carry over — the
    click handler runs collectStep(false) first to snapshot them). Either way
    this clones rec fresh, same pattern as openTicket. */
-function openClosure(rec){
+async function openClosure(rec){
   // Diagnostic logging (2026-08-04, user-reported live: Customer Name/Client/
   // Vehicle Issue/Vendors/photos still blank here even after the field_config
   // fix on apiGetById() and the id->label mapping on Vehicle/Client/Assigned
@@ -2234,12 +2481,24 @@ function openClosure(rec){
   // Vendors1's own display-name unwrapping happens for free below — see
   // openTicket()'s own comment on this same pattern.
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
+  // See openTicket()'s own matching comment — same baseline, in case the
+  // agent navigates from Final Closure into the wizard without a fresh
+  // reopen in between.
+  state.record._rateBreakupForIssues=JSON.stringify(state.record.Vehicle_Issue||[]);
   console.log("[Get-Rescue] openClosure state.record after unwrap — Client:", JSON.stringify(state.record.Client), "| Vehicle:", JSON.stringify(state.record.Vehicle), "| Vehicle_Issue:", JSON.stringify(state.record.Vehicle_Issue));
+  await loadRejectionHistory(state.recordId);
   showView("closure"); renderClosure(); scrollToTop();
 }
 function renderClosure(){
   $("closureCaseId").textContent = state.recordId ? caseLabel(state.record) : "unsaved";
-  renderFields({fields:CLOSURE_FIELDS}, "closureFields");
+  // viewOnly:state.closureReadOnly (2026-08-06, user request) — renderFields()
+  // already clones every field with readonly:true forced when step.viewOnly
+  // is set (see its own header comment); passing it through here reuses that
+  // existing mechanism for CLOSURE_FIELDS' own directly-rendered inputs
+  // (Refund_Due, Closure_Status, etc.) instead of adding a second one.
+  renderFields({fields:CLOSURE_FIELDS, viewOnly:state.closureReadOnly}, "closureFields");
+  $("closureSaveBtn").style.display = state.closureReadOnly ? "none" : "";
+  $("closureReadOnlyBanner").style.display = state.closureReadOnly ? "" : "none";
   // Collapsible closure sections (2026-07-31, extended 2026-08-03) — header
   // click toggles just that one group; state persists via EXPANDED_CLOSURE_GROUPS.
   document.querySelectorAll("#closureFields .closure-group .cg-head").forEach(el=>{
@@ -2291,11 +2550,32 @@ function renderWizard(){
   if(step.key==="quote"){
     const q=calcQuote();
     state.record.Suggested_Rate=q.total; // readonly/computed — always kept in sync
-    // Rate_Breakup is agent-editable (2026-07-28), so only seed it the first
-    // time — otherwise every re-render (e.g. after changing Booking_Fee) would
-    // silently overwrite whatever the agent typed back to the auto breakup.
-    if(state.record.Rate_Breakup==null || state.record.Rate_Breakup==="") state.record.Rate_Breakup=q.breakup;
-    if(state.record.Total_Service_Fee==null || state.record.Total_Service_Fee==="") state.record.Total_Service_Fee=q.total;
+    // Rate_Breakup/Total_Service_Fee are agent-editable (2026-07-28), so
+    // they were only ever seeded once while blank — otherwise every
+    // re-render (e.g. after changing Booking_Fee) would silently overwrite
+    // whatever the agent typed back to the auto values. Real bug fixed
+    // 2026-08-06 (user-reported live): that also meant going back and
+    // picking a DIFFERENT Vehicle_Issue never refreshed either one — both
+    // just kept showing the previous issue's stale rate/breakup forever,
+    // since they already had a value from before. Now re-seeds whenever the
+    // Vehicle_Issue selection's own signature actually changes, not just
+    // once — a manual edit still sticks as long as the issue selection
+    // itself hasn't changed since.
+    const issueSig = JSON.stringify(state.record.Vehicle_Issue||[]);
+    const issueChanged = state.record._rateBreakupForIssues!==issueSig;
+    if(state.record.Rate_Breakup==null || state.record.Rate_Breakup==="" || issueChanged) state.record.Rate_Breakup=q.breakup;
+    // Real bug fixed (2026-08-06, user-reported live): Total_Service_Fee used
+    // to auto-seed from Suggested_Rate the moment this step rendered, same as
+    // Rate_Breakup above — but unlike Rate_Breakup (just a computed reference
+    // breakdown), Total_Service_Fee is the actual number the agent is
+    // supposed to deliberately enter. Auto-seeding it meant clicking "Close
+    // Case" WITHOUT ever touching this field (collectStep(false) just
+    // snapshots whatever's currently in state.record) carried the suggested
+    // rate into Final Closure looking like a real agent-entered value, even
+    // though nothing was ever actually typed in. No longer auto-filled —
+    // Suggested_Rate stays visible right above it as a reference the agent
+    // can copy manually if they want to accept it as-is.
+    state.record._rateBreakupForIssues=issueSig;
     state.record.Remaining_Fee=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Booking_Fee)||0);
   }
   // fields
@@ -2306,6 +2586,9 @@ function renderWizard(){
   // Booking Fee") carry real detail beyond their short stepper label.
   $("stepTitle").style.display = step.key==="create" ? "none" : "";
   $("stepTitle").textContent = step.title;
+  // Create step's own subtitle hidden too (2026-08-06, user request) — same
+  // reasoning as the heading above, just the description line underneath it.
+  $("stepDesc").style.display = step.key==="create" ? "none" : "";
   $("stepDesc").textContent = step.desc||"";
   renderFields(step);
 }
@@ -2536,7 +2819,7 @@ function buildField(f){
   } else {
     const map={tel:"tel",email:"email",number:"number",decimal:"number",date:"date",datetime:"datetime-local",time:"time",text:"text"};
     const step2 = (f.t==="decimal")?' step="any"':"";
-    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${f.readonly?" readonly":""} value="${esc(cur||"")}">`+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(cur||"")}">`+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
   }
   // interactions
   setTimeout(()=>wireField(f,id),0);
@@ -2545,7 +2828,12 @@ function buildField(f){
 // "Client" added 2026-07-31 — Client_Tracking_Id's new `when` (hides it for
 // the special "ON DEMAND" client) needs a re-render to take effect live.
 const RERENDER=["Time_of_service","Vehicle","Client","Preferred_Vendor",
-  "Refund_Due","Closure_Status","B2B_GST_Invoice_Required"];
+  "Refund_Due","Closure_Status","B2B_GST_Invoice_Required",
+  // Added 2026-08-06 (user request: Booking_Fee locks once Payment_Status is
+  // PAID) — without this, flipping Payment_Status wouldn't re-render the
+  // step, so Booking_Fee's new isReadonly() check wouldn't visually take
+  // effect until the agent navigated away and back.
+  "Payment_Status"];
 /* Radio-field changes force a full re-render (see wireField's radio branch,
    above RERENDER's own declaration) — this app now has two different top-level
    views that can be "current" (the step wizard vs. the Final Closure screen),
@@ -2590,10 +2878,11 @@ function wireField(f,id){
     const addEntry=()=>{
       const text=newEl.value.trim(); if(!text) return;
       // Author attribution (2026-08-04, user request): prefix each new entry
-      // with whoever's actually adding it (LOGIN_EMAIL, set at boot — see its
-      // own comment) so a Remarks log with multiple agents editing the same
-      // ticket over time shows who said what, not just when.
-      const stamped=fmtDateTime(new Date())+" — "+(LOGIN_EMAIL||"Agent")+": "+text;
+      // with whoever's actually adding it. AGENT_DISPLAY_NAME (2026-08-05,
+      // reapplied 2026-08-06 — see top-of-file OneDrive note) resolves a real
+      // name from Agent_Report; falls back to the login email itself if no
+      // match was found (including if Agent_Report isn't reachable at all).
+      const stamped=fmtDateTime(new Date())+" — "+(AGENT_DISPLAY_NAME||LOGIN_EMAIL||"Agent")+": "+text;
       const existing=String(state.record[f.n]||"").trim();
       state.record[f.n]=existing?(existing+"\n"+stamped):stamped;
       logEl.innerHTML=esc(state.record[f.n]).replace(/\n/g,"<br>");
@@ -3071,16 +3360,49 @@ function closureSummaryHtml(){
     const existing = CLOSURE_FIELD_INDEX[f.n];
     if(!existing || (existing.readonly && !f.readonly)) CLOSURE_FIELD_INDEX[f.n]=f;
   }); });
-  return groups.map(closureGroupHtml).join("");
+  return groups.map(closureGroupHtml).join("") + rejectionHistoryHtml();
+}
+// Rejection History (2026-08-06) — see CONFIG.taskRejectionsReport's own
+// comment for why this exists as a hand-built block instead of going through
+// closureFieldGroups()/buildField() like every other section: Task_Rejections
+// is a separate report with potentially MULTIPLE rows per ticket, not a
+// single Create_Case field value, so the generic one-field-per-row machinery
+// doesn't fit. Read-only by design — matches what's actually in Zoho, same
+// as the rest of this app's "field activity log" style sections.
+function rejectionHistoryHtml(){
+  if(!state.rejectionHistory.length) return "";
+  const title="Rejection History";
+  const collapsed=!EXPANDED_CLOSURE_GROUPS.has(title);
+  const rows=state.rejectionHistory.map(function(rj){
+    const who=readVal(rj,"RSP_Name")||"—";
+    const reason=readVal(rj,"Reason")||"—";
+    const when=readVal(rj,"Rejected_At")||"—";
+    return `<div class="crow" style="cursor:default">
+      <span class="k">${esc(when)}</span>
+      <span class="v">${esc(who)} — ${esc(reason)}</span>
+    </div>`;
+  }).join("");
+  return `<div class="form-card closure-group${collapsed?" collapsed":""}" style="margin-bottom:14px" data-group="${esc(title)}">
+    <div class="cg-head"><h3>${esc(title)}</h3>${CHEV_ICON}</div>
+    <div class="cg-body"><div class="summary editable">${rows}</div></div>
+  </div>`;
 }
 /* ---- click-any-field-to-edit popup (#fieldModal) ---- */
 let editingField=null;
 function openFieldEditor(fieldName){
   const f=CLOSURE_FIELD_INDEX[fieldName]; if(!f) return;
-  editingField=f;
+  // Real bug fixed (2026-08-06, user request) — forces every field read-only
+  // in the popup when Final Closure was opened for an already-CLOSED ticket
+  // (see openTicketOrClosure()'s own comment). Clones rather than mutating
+  // f directly — f is the SAME object closureFieldRowHtml()/other screens
+  // read; forcing readonly here must not leak into a later, editable open of
+  // the same ticket.
+  editingField = state.closureReadOnly ? Object.assign({},f,{readonly:true}) : f;
   $("fieldModalTitle").textContent=f.l||f.n;
   const body=$("fieldModalBody"); body.innerHTML="";
-  body.appendChild(buildField(f));
+  body.appendChild(buildField(editingField));
+  $("fieldModalSave").style.display = state.closureReadOnly ? "none" : "";
+  $("fieldModalCancel").textContent = state.closureReadOnly ? "Close" : "Cancel";
   $("fieldModal").classList.add("on");
   hydrateFilePreviewsIn("#fieldModalBody");
 }
@@ -3160,6 +3482,13 @@ async function saveFieldEditor(){
    Closure_Status==="Completed") — resolved fresh against the current
    state.record every time, same evaluation point req was already checked at. */
 function isReq(f){ return typeof f.req==="function" ? f.req(state.record) : f.req; }
+// Added 2026-08-06 (wireframe request: Client Tracking ID should stay
+// VISIBLE for an "ON DEMAND" client, just disabled for editing, instead of
+// hidden entirely) — same function-or-plain-value pattern isReq() already
+// uses. Only the plain text/tel/email/etc. input branch in buildField()
+// reads this via the helper so far — every other field type still only
+// supports a static true/false, unchanged.
+function isReadonly(f){ return typeof f.readonly==="function" ? f.readonly(state.record) : f.readonly; }
 /* ---- collect current step's (or the Final Closure screen's) DOM -> state.record ---- */
 function collectStep(validate){
   const fields = state.view==="closure" ? CLOSURE_FIELDS : state.path[state.stepIndex].fields;
@@ -3295,6 +3624,16 @@ async function saveStep(advance){
   try{
     if(!state.recordId){
       const id=await saveWithCoordFallback(payload, addTicket); state.recordId=id;
+      // Real bug fixed (2026-08-05, user request, reapplied after it was
+      // somehow lost from an earlier pass — see the top-of-file OneDrive
+      // note): the header kept showing "New Ticket" for the rest of this
+      // same session even after the record was created — state.editing only
+      // ever got set true by openTicket()/openClosure() (reopening from the
+      // dashboard later), never by the Create step's own first save.
+      // wizStageTitle reads state.editing on every render, so flipping it
+      // here is enough for the very next renderWizard() call (a few lines
+      // down, when advancing) to say "Edit Ticket" immediately.
+      state.editing=true;
       // Case_ID depends on the record's own ID, so it can only be set after creation —
       // short, unique-enough tag: "RSID" + the last 6 digits of the new record's ID.
       // Best-effort: if Create_Case already auto-stamps its own Case_ID on create
@@ -3419,7 +3758,9 @@ $("saveBtn").onclick=()=>saveStep(true);
 $("cancelBtn").onclick=cancelWizard;
 // permanent "Close Case" button inside the wizard — snapshots whatever's on
 // the current step first so the closure screen's summary reflects it too
-$("wizClosureBtn").onclick=()=>{ collectStep(false); openClosure(state.record); };
+// Mid-wizard "Close Case" — the agent is actively editing a not-yet-closed
+// ticket right now, so this is always the editable path, never read-only.
+$("wizClosureBtn").onclick=()=>{ collectStep(false); state.closureReadOnly=false; openClosure(state.record); };
 $("closureBack").onclick=cancelClosure;
 $("closureCancelBtn").onclick=cancelClosure;
 $("closureSaveBtn").onclick=saveClosure;
@@ -3443,10 +3784,12 @@ async function boot(){
   // whoever actually added them (see wireField's "remarks" branch) — this
   // widget never tracked the logged-in agent's own identity before now,
   // unlike the vendor/technician/driver widgets, which already fetch their
-  // own profile record. There's no "Agents" master report to look up a
-  // display name from, so the login email itself is used as the stand-in.
+  // own profile record.
   try{ const params=await ZOHO.CREATOR.UTIL.getInitParams(); LOGIN_EMAIL=(params&&params.loginUser)||""; }catch(e){}
   await loadOptions();
+  // AGENT_DISPLAY_NAME (2026-08-05, reapplied 2026-08-06) — needs
+  // OPTIONS.agents, so this can only resolve after loadOptions() above finishes.
+  AGENT_DISPLAY_NAME = agentDisplayName();
   loadDashboard();
 }
 // No more demo-data fallback (2026-08-04, per user request) — every detail
