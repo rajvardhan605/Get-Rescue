@@ -273,14 +273,32 @@ img,svg{max-width:100%}
 .crow .v.empty{color:var(--muted-2);font-weight:400}
 .crow .edit-ic{flex:none;color:var(--muted-2);margin-top:2px}
 .crow:hover .edit-ic,.crow:focus-visible .edit-ic{color:var(--signal)}
+/* Photo rows only (2026-08-07, user request — "increase height width images
+   for final closure page... more visable/effective") — stacked layout, big
+   thumbnail full-width above the label/value line, instead of squeezed into
+   the same 56px inline slot every other field type's row uses. .crow-photo-
+   meta reuses .crow's own .k/.v/.edit-ic styling (descendant selectors,
+   still match one level deeper) so only the outer row needs new rules. */
+.crow.crow-photo{flex-direction:column;align-items:stretch;gap:10px}
+.crow-photo-meta{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%}
 .cgroup-empty{padding:9px 6px;font-size:12.5px;color:var(--muted-2);font-family:var(--f-mono)}
 /* Uploaded-photo thumbnail (2026-08-04) — small preview on a closure row,
    bigger one in the field-edit popup; async-hydrated by hydrateFilePreviewsIn()
    after render (see its own comment), starts as a placeholder icon. */
-.crow-thumb{flex:none;width:40px;height:40px;border-radius:8px;overflow:hidden;background:var(--worktop);display:flex;align-items:center;justify-content:center}
+/* Sizes increased 2026-08-07 (user request — "increase height width of photo
+   images... make things more visable/effective... end user perspective") —
+   .crow-thumb (Closure summary's own inline row thumbnails) was 40px, easily
+   too small to actually make out a photo's content at a glance; .crow-thumb.big
+   (the wizard's own live file fields + the field-edit popup) was a fixed
+   140px regardless of screen size. Both bumped up, and .big is now capped by
+   max-width/max-height (not a fixed box) so it scales down cleanly on a
+   narrow phone screen instead of overflowing or forcing horizontal scroll —
+   see the phone breakpoint below for the small-screen size. */
+.crow-thumb{flex:none;width:56px;height:56px;border-radius:8px;overflow:hidden;background:var(--worktop);display:flex;align-items:center;justify-content:center}
 .crow-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-.crow-thumb .thumb-ph{font-size:16px;opacity:.5}
-.crow-thumb.big{width:140px;height:140px;border-radius:10px;margin-bottom:10px}
+.crow-thumb .thumb-ph{font-size:20px;opacity:.5}
+.crow-thumb.big{width:220px;height:220px;max-width:100%;border-radius:10px;margin-bottom:10px}
+.crow-thumb.big .thumb-ph{font-size:44px}
 
 /* wide variant of the shared confirm modal — hosts a single buildField()
    editor instead of a Yes/No prompt (see openFieldEditor/#fieldModal) */
@@ -304,6 +322,18 @@ img,svg{max-width:100%}
   transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
+/* Mechanic-update notifications (2026-08-07) — see showMechUpdateNotification()'s
+   own comment. Stacks top-right, above the toast/modal (z-index 90) since a
+   background update can legitimately land while a modal's open. */
+.mech-notif-stack{position:fixed;top:16px;right:16px;z-index:90;display:flex;flex-direction:column;gap:8px;max-width:min(340px,calc(100vw - 32px))}
+.mech-notif-card{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--signal);
+  border-radius:10px;padding:11px 12px;box-shadow:var(--sh-2);animation:mechNotifIn .2s ease-out}
+.mech-notif-body{flex:1;cursor:pointer;font-size:13px;line-height:1.45}
+.mech-notif-body b{display:block;font-size:13.5px;margin-bottom:2px}
+.mech-notif-status{color:var(--muted);font-family:var(--f-mono);font-size:11.5px;margin-top:3px}
+.mech-notif-close{flex:none;border:0;background:transparent;color:var(--muted-2);font-size:18px;line-height:1;cursor:pointer;padding:0 2px}
+.mech-notif-close:hover{color:var(--stop)}
+@keyframes mechNotifIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
 .modal{position:fixed;inset:0;background:rgba(20,22,28,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:20px}
 .modal.on{display:flex}
 .modal .box{background:#fff;border-radius:16px;padding:24px;max-width:380px;width:100%;box-shadow:var(--sh-2);text-align:center}
@@ -342,6 +372,10 @@ img,svg{max-width:100%}
   .rlist-head{padding:14px 16px}
   .sec-head{flex-wrap:wrap}
   .wiz-title h2{font-size:20px}
+  /* Photo previews fill the available width on a phone instead of staying a
+     fixed 220px box (2026-08-07, user request) — height follows via
+     aspect-ratio so it stays square rather than stretching. */
+  .crow-thumb.big{width:100%;height:auto;aspect-ratio:1/1;max-width:320px}
 }
 
 /* ---- small phones ---- */
@@ -374,7 +408,7 @@ img,svg{max-width:100%}
 <div class="wrap">
 
   <!-- TOP BAR -->
-  <div class="topbar">
+  <div class="topbar" id="topbar">
     <div class="brand">
       <span class="mk"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z" fill="#fff"/></svg></span>
       <b>GET-RESCUE</b>
@@ -416,7 +450,21 @@ img,svg{max-width:100%}
     <div class="form-card">
       <h3 id="stepTitle"></h3>
       <div class="fdesc" id="stepDesc"></div>
+      <!-- Shown whenever state.closureReadOnly (2026-08-07, merged Final
+           Closure into the stepper's own "Agent Closure" step) — the whole
+           wizard is locked read-only for a ticket whose Status is already
+           "CLOSED", on every step, not just this one; this is the one visible
+           explanation for why nothing on the page can be edited. Same wording
+           as the old standalone closure screen's own banner. -->
+      <div class="hint" id="wizClosureReadOnlyBanner" style="display:none;margin:0 0 14px">🔒 This ticket is already closed — view only.</div>
       <div class="grid" id="fields"></div>
+      <!-- Vendor Invite Status (2026-08-07, user-reported live: after sending
+           invites to multiple vendors, a rejection gave no visible sign of
+           WHICH vendor rejected or that anything happened at all — the
+           Assignment step only ever showed the Vendors1 picker, never the
+           live Invites_Report responses) — populated only on the "assignment"
+           step, see renderWizard()'s own assignInviteStatusHtml() call. -->
+      <div id="assignInviteStatus"></div>
     </div>
   </div>
 
@@ -459,6 +507,13 @@ img,svg{max-width:100%}
 </div></div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Real-time-ish mechanic-update notifications (2026-08-07, user request) —
+     separate from the single-slot toast above (which auto-hides in 2.6s and
+     would just get stomped by a second simultaneous event); each card stays
+     until dismissed or its own 12s timeout, and several can stack at once —
+     see showMechUpdateNotification()'s own comment. -->
+<div class="mech-notif-stack" id="mechNotifStack"></div>
 
 <div class="modal" id="modal"><div class="box">
   <h4 id="mTitle">Are you sure?</h4>
@@ -546,6 +601,18 @@ const CONFIG = {
   // etc. all follow this same "_Report" suffix) — loadRejectionHistory()'s
   // own diagnostic will say clearly if this guess is wrong.
   taskRejectionsReport: "Task_Rejections_Report",
+  // Added 2026-08-07 (user request — show/hide the Accept step's technician
+  // fields based on whether the vendor actually has one) — same field name
+  // vendorTicket already guesses for this same multi-lookup on its own
+  // Vendors_Report, including that widget's own caveat: NOT independently
+  // confirmed there either (a live Vendors_Report key dump on 2026-08-04 —
+  // see optionReports.vendors' own comment below — didn't happen to show a
+  // "Technicians" key, though that's equally consistent with "this field
+  // exists but was blank on that one sampled record," since Zoho's bulk
+  // fetch commonly omits empty fields entirely rather than returning them as
+  // null). vendorHasTechnicians() below degrades harmlessly to "hide" if the
+  // guess is wrong (an absent/misnamed field just reads as an empty list).
+  vendorTechniciansField: "Technicians",
   // option sources — report names are the MASTER tables we pull picker options
   // from, unrelated to the Create_Case field names above. Renamed 2026-08-03
   // (forms rebuilt from scratch, old ones deleted): vehicle_master_Report ->
@@ -603,6 +670,7 @@ const CONFIG = {
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init) ---------- */
 let LOGIN_EMAIL = ""; // the logged-in agent's own email — see boot(), used to attribute new Remarks entries
+let INIT_PARAMS = null; // full getInitParams() result — see boot()/zohoAppLinkName()'s own comments
 let AGENT_DISPLAY_NAME = ""; // resolved from Agent_Report once OPTIONS.agents loads — see agentDisplayName()
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams === "function"; }
 function resolve(method){
@@ -668,39 +736,226 @@ async function apiUpdate(id, data){
   if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
   return true;
 }
-/* best-effort file upload — signatures vary by SDK build; never blocks a save */
+/* Real bug fixed (2026-08-07, user-reported live: uploads to Image_Upload2/3/4
+   throwing "Invalid Configuration...!!!") — the config object itself was
+   already correct (confirmed against Zoho's own JS API v2 docs: app_name,
+   report_name, id, field_name, file is exactly the documented shape). The
+   actual bug was resolve()'s own generic namespace probe: it tries
+   [DATA, PUBLISH, META, UTIL, FILE] in that fixed order and returns the FIRST
+   one with a function literally named "uploadFile" — but the docs confirm
+   the real, only-correct method is specifically ZOHO.CREATOR.FILE.uploadFile.
+   If ANY earlier namespace in that list also happens to expose something
+   called "uploadFile" (for a different purpose, with a different expected
+   shape), the generic probe would silently call THAT one instead — which
+   would throw exactly this kind of generic "invalid config" rejection no
+   matter how correct our own config object was. Now calls FILE.uploadFile
+   directly when it exists, only falling back to the old generic probe if an
+   older SDK build doesn't expose the FILE namespace at all. */
 async function apiUpload(id, fieldName, file){
-  const fn = resolve("uploadFile"); if(!fn || !file) return false;
-  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
-  catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
+  const C = window.ZOHO && ZOHO.CREATOR;
+  const fn = (C && C.FILE && typeof C.FILE.uploadFile==="function") ? C.FILE.uploadFile.bind(C.FILE) : resolve("uploadFile");
+  if(!fn){ console.warn("[Get-Rescue] apiUpload: no uploadFile method found (checked ZOHO.CREATOR.FILE first, then the generic namespace probe) for field", fieldName); return false; }
+  if(!file) return false;
+  const req = { app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file };
+  try{
+    const r = await fn(req);
+    console.log("[Get-Rescue] apiUpload(", fieldName, ") <- response:", r, "| file:", file.name, file.type, file.size+"b", "| id:", id);
+    // Some SDK builds resolve the promise even on a business-logic rejection
+    // (e.g. code!==3000) rather than throwing — treat that the same as a
+    // real failure instead of reporting success just because nothing threw.
+    if(r && typeof r==="object" && "code" in r && r.code!==3000){
+      console.warn("[Get-Rescue] apiUpload(", fieldName, ") resolved but with a non-success code — treating as failed:", r);
+      return false;
+    }
+    return true;
+  }
+  catch(e){ console.warn("[Get-Rescue] apiUpload(", fieldName, ") threw — request was:", req, "| error:", e, "| error.message:", e&&e.message, "| error.code:", e&&e.code); return false; }
 }
-// Added 2026-08-04 (user request — "image not previewing in Final Closure
-// which I have uploaded"): File Upload fields only ever showed plain
-// "Uploaded"/"Not uploaded" text, no actual thumbnail, anywhere in this
-// widget. Counterpart to apiUpload() above, same resolve() namespace-probing
-// pattern. Response shape guessed (not independently confirmed against a
-// live widget) — different Creator SDK versions are known to return either
-// a raw Blob, a wrapped {code,data:Blob}, or a plain URL string, so all three
-// are handled; if the real shape (or even the method name itself) turns out
-// different, this just returns null and the caller leaves the placeholder
-// icon in place — never worse than the current text-only display.
+// Real bug fixed (2026-08-07, user-reported live: "images field is not
+// uploaded whenever agent upload images... and not showing in closure page")
+// — two compounding issues at every call site that used to do this inline:
+// 1. apiUpload() was fired WITHOUT awaiting it ("won't block" — true, but
+//    also meant a genuine upload failure had zero user-facing signal; the
+//    record save itself still toasted "Saved"/"Ticket closed" as if the
+//    photo made it too, with the real error only ever reaching a
+//    console.warn nobody was looking at.
+// 2. Even a SUCCESSFUL upload never touched state.record[f.n] locally, so
+//    closureFieldValueDisplay()'s "Uploaded"/"Not uploaded" text — and the
+//    thumbnail hydration, which only even ATTEMPTS a fetch when
+//    state.record[f.n] is truthy (see closureFieldRowHtml()'s own
+//    showThumb) — kept showing "Not uploaded"/no thumbnail for the REST OF
+//    THIS SAME SESSION regardless of whether the upload actually succeeded.
+//    Only a full close-and-reopen (a fresh apiGetById re-fetch) would ever
+//    pick it up, and only then if the upload had genuinely landed.
+// Now awaits every upload, marks state.record[f.n]=true and clears
+// state.files[f.n] on success (so the Closure summary/thumbnail reflects it
+// immediately, no reopen needed), and collects/toasts any real failures by
+// field name instead of swallowing them into a console-only warning.
+// Returns the list of field names that failed (empty array = all good, or
+// nothing to upload) — deliberately does NOT toast itself, so callers can
+// fold the result into their own single end-of-save toast instead of a
+// second toast() call immediately stomping the first one (this app's toast
+// is a single shared element, not a stack — see toast()'s own definition).
+async function uploadPendingFiles(recordId){
+  const failed=[]; const succeeded=[];
+  for(const k in state.files){
+    if(!state.files[k]) continue;
+    const ok = await apiUpload(recordId, k, state.files[k]);
+    if(ok){ succeeded.push(k); delete state.files[k]; }
+    else failed.push(k);
+  }
+  // Real bug fixed (2026-08-07) — used to just set state.record[k]=true as a
+  // placeholder. That was enough for closureFieldValueDisplay()'s "Uploaded"
+  // text, but zohoFileDownloadUrl() (the new, actually-working preview) needs
+  // the REAL filepath Zoho assigned the file, which is only knowable via a
+  // fresh fetch — `true` can't build a real URL. One re-fetch covers every
+  // field that just succeeded in this same save, not one per file.
+  if(succeeded.length){
+    try{
+      const fresh = await apiGetById(recordId);
+      succeeded.forEach(function(k){ state.record[k] = (fresh && fresh[k]!=null) ? fresh[k] : true; });
+    }catch(e){ console.warn("[Get-Rescue] uploadPendingFiles: fresh re-fetch for preview failed (non-blocking) — thumbnail may not show until the ticket is reopened", e); succeeded.forEach(function(k){ state.record[k]=true; }); }
+  }
+  return failed;
+}
+// Real fix (2026-08-07) — readFile() (below) turned out to be a genuine dead
+// end for binary files: it hands back the raw file content as text, and
+// somewhere inside the SDK's own transport that gets forced through a lossy
+// UTF-8 decode — confirmed live by logging the actual numeric char codes of
+// a downloaded PNG's own signature bytes: byte 0 (0x89, not valid standalone
+// UTF-8) came back as 65533 (U+FFFD, the Unicode replacement character) —
+// permanently destroyed before this code ever saw it. No client-side
+// reconstruction can recover a byte that's already gone, so this abandons
+// readFile()-based previews entirely (that function is left below, unused
+// for this purpose, in case a future SDK fix ever makes it viable again).
+// Instead builds the exact same direct download URL Zoho's OWN native report
+// grid uses for its thumbnails — confirmed live 2026-08-07 by inspecting
+// that real <img> element's own src/downqual attributes on a working photo:
+//   https://creatorapp.zoho.in/<scope>/<applink>/report/<report>/<recordId>/
+//   <fieldName>/download-file?filepath=<path>&digestValue=<const>&isPreview=true
+// This is a normal https:// URL — the BROWSER fetches it directly, using
+// this same creatorapp.zoho.in session's own cookies (the widget is embedded
+// in that same origin), never touching JS string/binary reconstruction at all.
+// Two things hardcoded from that one live sample, not independently
+// re-derived — first things to recheck if this ever breaks after an account
+// or locale change:
+//   - ZOHO_SCOPE_NAME ("getrescued") — this account's own Creator workspace
+//     link name (visible in the app's own creatorapp.zoho.in URL bar).
+//   - the digestValue query param ("eyJsYW5ndWFnZSI6ImVuIn0=", which
+//     base64-decodes to {"language":"en"}) — looks like a static locale
+//     marker, not a per-file secret, so hardcoding it seemed safe.
+// <applink> ("get-rescue-development" in this environment) is NOT hardcoded
+// — resolved from envUrlFragment (part of getInitParams()'s own return
+// value, captured in boot() as INIT_PARAMS) so this still works once the
+// widget is eventually published to a "production" environment, where that
+// "-development" suffix presumably won't apply.
+const ZOHO_SCOPE_NAME = "getrescued";
+function zohoAppLinkName(){
+  const frag = (INIT_PARAMS && INIT_PARAMS.envUrlFragment) || "";
+  return CONFIG.appName + (/development/i.test(frag) ? "-development" : "");
+}
+// rawValue is this field's OWN current value in state.record. Real bug
+// fixed (2026-08-07, user-reported live — the resulting <img src> came out
+// double-nested/garbled): this is NOT a bare filename — Zoho's own raw API
+// value for a File Upload field is its own complete REST API v2.1 download
+// PATH, e.g. "/api/v2.1/<scope>/<app>/report/<report>/<id>/<field>/download
+// ?filepath=<realFilename>" (confirmed live). Wrapping that WHOLE string as
+// if it were the filename (the previous version of this function) produced
+// exactly the nested-URL garbage seen live. The real filename is extracted
+// from ITS OWN filepath= query param instead; falls back to using the raw
+// value as-is if it turns out NOT to contain one (e.g. a future SDK/field
+// config that returns a bare filename directly, same as this function
+// originally assumed).
+function zohoFileDownloadUrl(recordId, fieldName, rawValue){
+  if(!recordId || !rawValue || rawValue===true) return null;
+  // Real bug fixed (2026-08-07, user-reported live: preview worked for
+  // Expense_Photo — a single-file field — but stayed a placeholder for
+  // Pre-service/Post-service Photo, both "min 2, max 4" MULTI-file fields
+  // per FIELDS.md) — a multi-file field's raw value is an ARRAY of entries,
+  // not one value. typeof [] is "object" too, so the old code silently fell
+  // into the single-value object branch, found no .filepath/.value/
+  // .display_value on a plain array, and returned null every time — no
+  // error, just a permanently unhydrated placeholder. Uses the FIRST entry
+  // as this row's one representative thumbnail, matching the existing
+  // summary UI (one thumbnail slot per field row regardless of how many
+  // files are actually attached).
+  const first = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  if(!first || first===true) return null;
+  const raw = (typeof first==="string") ? first
+    : (first && typeof first==="object") ? (first.filepath||first.value||first.display_value||null)
+    : null;
+  if(!raw){
+    console.warn("[Get-Rescue] zohoFileDownloadUrl: could not resolve a usable value for", fieldName, "— raw field value was:", JSON.stringify(rawValue));
+    return null;
+  }
+  const m = raw.match(/filepath=([^&]+)/i);
+  const filepath = m ? decodeURIComponent(m[1]) : raw;
+  const clean = String(filepath).replace(/^\/+/,"");
+  return "https://creatorapp.zoho.in/"+ZOHO_SCOPE_NAME+"/"+zohoAppLinkName()+"/report/"+CONFIG.reportName+"/"+recordId+"/"+fieldName+"/download-file?filepath=/"+encodeURIComponent(clean)+"&digestValue=eyJsYW5ndWFnZSI6ImVuIn0=&isPreview=true";
+}
+/* SUPERSEDED for previews as of 2026-08-07 — see zohoFileDownloadUrl()'s own
+   header comment for why (readFile()'s response is provably lossy for
+   binary content, not a client-fixable bug). Left in place, not deleted, per
+   this file's own convention (see STAGES' "agentClosure" entry / openClosure()
+   for the precedent) — hydrateFilePreviewsIn() now only falls back to this
+   when zohoFileDownloadUrl() can't build a real URL yet (e.g. state.record
+   hasn't been refreshed with a real filepath). */
 let DOWNLOAD_FILE_UNAVAILABLE_WARNED=false;
 async function apiDownloadFile(id, fieldName){
-  const fn = resolve("downloadFile");
+  const C = window.ZOHO && ZOHO.CREATOR;
+  const fn = (C && C.FILE && typeof C.FILE.readFile==="function") ? C.FILE.readFile.bind(C.FILE) : resolve("downloadFile");
   if(!fn){
-    // Logged once, not per-field — if "downloadFile" isn't the real SDK
-    // method name, every thumbnail on screen would otherwise warn separately.
-    if(!DOWNLOAD_FILE_UNAVAILABLE_WARNED){ DOWNLOAD_FILE_UNAVAILABLE_WARNED=true; console.warn("[Get-Rescue] apiDownloadFile: no \"downloadFile\" method found on ZOHO.CREATOR.{DATA,PUBLISH,META,UTIL,FILE} — photo thumbnails will stay as placeholder icons. If the SDK exposes file download under a different method name, update resolve(\"downloadFile\") in apiDownloadFile()."); }
+    // Logged once, not per-field — every thumbnail on screen would otherwise warn separately.
+    if(!DOWNLOAD_FILE_UNAVAILABLE_WARNED){ DOWNLOAD_FILE_UNAVAILABLE_WARNED=true; console.warn("[Get-Rescue] apiDownloadFile: no ZOHO.CREATOR.FILE.readFile (and no generic \"downloadFile\" fallback either) — photo thumbnails will stay as placeholder icons."); }
     return null;
   }
   if(!id) return null;
   try{
     const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName });
+    console.log("[Get-Rescue] apiDownloadFile(", fieldName, ") <- response type:", typeof r, r);
+    // Diagnostic (2026-08-07) — console rendering of unprintable characters
+    // (those diamond/box glyphs) looks identical whether the underlying byte
+    // is genuinely intact (e.g. 0x89, just not a printable glyph) or has
+    // already been irreversibly replaced with U+FFFD by a lossy UTF-8 decode
+    // somewhere upstream of this code. Logging the actual numeric code points
+    // of the first few characters settles which one this actually is: PNG's
+    // real signature is exactly [137,80,78,71,13,10,26,10] — an exact match
+    // means the string is intact and the &0xff-mask+btoa() fix below should
+    // work; anything else (especially repeated 65533/0xFFFD) proves the data
+    // is already corrupted before this code ever sees it, and no client-side
+    // fix is possible — a different approach entirely would be needed.
+    if(typeof r==="string") console.log("[Get-Rescue] apiDownloadFile(", fieldName, ") <- first 8 char codes:", Array.from(r.slice(0,8)).map(function(c){return c.charCodeAt(0);}));
     if(r instanceof Blob) return r;
     if(r && r.data instanceof Blob) return r.data;
-    if(typeof r==="string" && r) return r; // treated as a ready-to-use URL by the caller
+    if(typeof r==="string" && r){
+      if(/^(data:|https?:|blob:)/i.test(r)) return r; // already a ready-to-use URL/data-URI
+      // Real bug fixed (2026-08-07, user-reported live — console showed the
+      // PNG magic-number bytes garbled as "�PNG..." instead of valid base64):
+      // readFile()'s response is NOT already base64 text — treating it as
+      // such (this file's own earlier fix) produced an invalid data URI
+      // (net::ERR_INVALID_URL). It's raw file content where each JS string
+      // character may carry noise in the high bits — Zoho's own community-
+      // documented workaround for this exact method masks every character
+      // down to its low 8 bits (`charCodeAt & 0xff`) to recover the real
+      // byte, THEN base64-encodes that clean binary string with btoa().
+      // Chunked (32KB at a time) so String.fromCharCode.apply() doesn't blow
+      // the call stack on a large photo. "image/png" as the declared type is
+      // just a syntactically-valid placeholder, not a real sniff of the
+      // actual file — browsers decode a data URI's <img src> by sniffing the
+      // real image bytes regardless of the declared type, so a JPEG/GIF/etc.
+      // wrapped with the "wrong" declared type here still renders fine.
+      const CHUNK=0x8000; let binary="";
+      for(let i=0;i<r.length;i+=CHUNK){
+        const slice=r.slice(i,i+CHUNK);
+        const bytes=new Array(slice.length);
+        for(let j=0;j<slice.length;j++) bytes[j]=slice.charCodeAt(j)&0xff;
+        binary+=String.fromCharCode.apply(null, bytes);
+      }
+      try{ return "data:image/png;base64,"+btoa(binary); }
+      catch(e){ console.warn("[Get-Rescue] apiDownloadFile: btoa() failed even after byte-masking for "+fieldName, e); return null; }
+    }
     return null;
-  }catch(e){ console.warn("[Get-Rescue] downloadFile failed for "+fieldName, e); return null; }
+  }catch(e){ console.warn("[Get-Rescue] readFile failed for "+fieldName, e); return null; }
 }
 
 /* ---------- reusable option lists ---------- */
@@ -936,12 +1191,25 @@ const STAGES = [
       action:(r)=>{ r.Send_Link_For_The_Breakdown_Location=true; } },
     { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", when:(s)=>!(Number(s.Booking_Fee)>0), row:"rate4",
       buttonLabel:"Request Location", doneLabel:"Location Requested" },
-    { n:"Payment_Status", l:"Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"], row:"rate4" },
-    // Payment_Method/Image_Upload hidden from this step 2026-08-06 (user
-    // request) — both were already non-interactive here (disabled/readonly),
-    // so nothing was actually settable through them on this screen; neither
-    // field is referenced by any other STAGES entry, so this also means they
-    // no longer appear in Final Closure's derived summary for this step.
+    // Real change (2026-08-07, explicit user request) — labels only, "please
+    // rename not change the api name just for the layout": still the exact
+    // same Payment_Status field, just relabeled "BF..." to distinguish it
+    // from the Payment stage's own (unrelated) copy of the same field name.
+    { n:"Payment_Status", l:"BF Payment Status", t:"select", o:["PAID","PENDING","NOT APPLICABLE"], row:"rate4" },
+    // Payment_Method restored 2026-08-07 (user request) — was hidden from
+    // this step entirely on 2026-08-06 ("Payment Method and Receipt Photo
+    // hide from here"); user now wants it back specifically for the Booking
+    // Fee, relabeled "BF Payment Method" to distinguish it from the Payment
+    // stage's own "Payment Method" (Payment_Method_Final, a different field
+    // for the remaining/final fee). Same option list as that field's own,
+    // for consistency.
+    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], default:"Cash", row:"rate5" },
+    // ⚠ NEW field, added 2026-08-07 (user request: "add booking fee
+    // transaction id field") — does NOT exist yet in Create_Case; needs
+    // creating in Zoho Studio (Single Line Text) before this can actually
+    // save. Nothing else in this app reads/writes it — purely for the agent
+    // to record a reference number against the booking fee payment.
+    { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5" },
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
     // editable both here and on `create` (see that stage's own Remarks).
@@ -1124,26 +1392,51 @@ const STAGES = [
     // reading the record's own real Status is the only reliable source now
     // that this stage is vendor-side viewOnly. See QUESTIONS_TO_ASK.md.
     status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
-    // viewOnly (2026-07-31, user-confirmed): the vendor/technician enters
-    // this data directly in their own native Zoho Creator form/app, not this
-    // widget — every field below now renders locked (see renderFields'
-    // viewOnly handling). The agent can still page through and see it, and
-    // Save still advances the stepper (status is computed from whatever the
-    // vendor already saved), just can't type into any of these fields here.
-    viewOnly:true,
+    // viewOnly REMOVED 2026-08-07 (explicit user request) — was set
+    // 2026-07-31 on the assumption the vendor/technician enters this data
+    // directly in their own native Zoho Creator app, with the agent only
+    // ever viewing it here. In practice that left this screen showing
+    // nothing at all until the vendor's own accept action actually fired —
+    // the agent now needs to be able to type/select these fields directly
+    // (e.g. to manually record who accepted if the vendor side hasn't come
+    // through yet), so every field below is editable again like any other
+    // stage. Save still advances the stepper the same way as before
+    // (status is still read off the ticket's own Status, see just above) —
+    // only the fields' own editability changed here.
     fields:[
+    // Real bug fixed (2026-08-07, user-reported live: "when agent assign
+    // vendor to the ticket first it show accepted but vendor not accepted
+    // request") — seedAcceptanceVendorFields() (see its own comment) used to
+    // pre-fill Assigned_Vendor from Vendors1 the moment the agent opened this
+    // step, EVEN THOUGH nothing had actually been accepted yet — a merely-
+    // invited vendor's name showing up pre-selected here looked exactly like
+    // a confirmed acceptance. This explicit choice is the fix: the agent now
+    // has to deliberately say "I'm entering this manually" before any
+    // auto-fill happens at all; left on the default ("Vendor App"), the
+    // fields below stay genuinely blank until the vendor's own accept action
+    // (or a deliberate manual entry) actually writes something — no more
+    // false "looks accepted" the instant a vendor is merely invited.
+    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true,
+      o:["Vendor Accepting via App","Agent Entering on Behalf of Vendor"], default:"Vendor Accepting via App",
+      hint:"Choose 'Agent Entering on Behalf of Vendor' only if the vendor/mechanic isn't using their own app for this job — the fields below will fill in for you to complete manually. Otherwise this stays blank until the vendor's own app actually reports back." },
     // "Assign_Technican" dropped from the schema 2026-08-03 (forms rebuilt
     // from scratch) — nothing ever wrote it; it was a display-only guess
     // with no real data source. See FIELDS.md.
-    { n:"Reject_Reason", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason, full:true },
+    // Reject_Reason removed from this screen entirely 2026-08-07 (user
+    // request) — it's still fully visible elsewhere (Final Closure's own
+    // Rejection History section, see loadRejectionHistory()), just no longer
+    // shown a second time here.
     { n:"Vendor_Email1", l:"Vendor Email", t:"text" },
-    { n:"Technician_Email", l:"Technician Email", t:"text" },
+    // Technician fields below all gated on vendorHasTechnicians() (2026-08-07,
+    // user request) — pointless clutter for an Individual vendor who will
+    // never hand a job to a technician; see that function's own comment.
+    { n:"Technician_Email", l:"Technician Email", t:"text", when:vendorHasTechnicians },
     // Moved here from `assignment` 2026-07-31 (UI simplification, matches
     // the Action 4 mock) — these are outcome fields, shown once someone's
     // actually accepted, not something the agent fills in upfront.
     { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true },
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians },
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians },
     // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
     // OWN Accept action once they accept — not written by this widget at
     // all (viewOnly stage). Assumed to lookup Vendors_Report (same target as
@@ -1156,7 +1449,13 @@ const STAGES = [
     // 2026-07-31: same fix as `acceptance` above — "Action_field" was never
     // written by technicianTicket (it writes Status directly on Cancel).
     status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     // ETA/Distance_To_Breakdown moved to Final Closure's own "Distance & ETA
     // Metrics" group 2026-08-04 (per user request) — see DISTANCE_METRICS_FIELDS.
@@ -1164,13 +1463,56 @@ const STAGES = [
     // clickable link, same source/fallback as the field-facing widgets' own
     // nav-link (2026-08-04, per user request).
     { n:"Navigation_Link", l:"Navigation Link", t:"navlink", full:true },
+    // Expected Arrival Time (2026-08-07, user request) — see
+    // expectedArrivalTime()'s own comment. emptyHint covers the ticket not
+    // having a real acceptance timestamp/ETA yet (e.g. still viewOnly-locked
+    // before the vendor's own accept action actually ran).
+    { n:"_ExpectedArrival", l:"Expected Arrival Time", t:"computed", compute:expectedArrivalTime,
+      emptyHint:"Not available yet — needs the vendor/technician's own acceptance time and ETA.", full:true },
+    // Agent ETA Override (2026-08-07, user request) — ⚠️ NEW Zoho field, does
+    // NOT exist yet in Create_Case; needs creating in Zoho Studio (Number or
+    // Decimal, minutes) before this can actually save — same as any other
+    // brand-new field introduced in this file. Lets the call-center agent
+    // override the vendor's own Google-Maps-derived ETA (see ETA's own
+    // comment in DISTANCE_METRICS_FIELDS) before notifying the customer —
+    // e.g. the agent knows about traffic/road conditions the vendor's own
+    // distance-matrix estimate didn't account for. expectedArrivalTime()
+    // prefers this over the vendor's own ETA the moment it's actually entered.
+    // agentEditable:true is this stage's one deliberate exception to its own
+    // viewOnly lock (see renderFields()'s own comment on that flag) — every
+    // OTHER field here stays vendor-entered/agent-viewed-only; this one is
+    // deliberately agent-entered.
+    { n:"Agent_ETA_Override", l:"Agent ETA Override (mins)", t:"number", agentEditable:true,
+      hint:"Overrides the ETA above before sending it to the customer." },
+    // Send ETA to Customer (2026-08-07, user request) — same WhatsApp-message-
+    // placeholder pattern as every other "Send ... Link" button in this app
+    // (e.g. Send_Link_For_The_Breakdown_Location on the locations stage — see
+    // that field's own comment) — no real WhatsApp/SMS integration exists
+    // yet, this just flips a one-way "done" flag. TODO(WhatsApp integration):
+    // wire a real send into this action once built. agentEditable:true is
+    // moot in practice for a button (wireField's own button branch never
+    // actually checks f.readonly either way) — kept for documentation.
+    // repeatable:true (unlike Send_Link_For_The_Breakdown_Location's own
+    // one-time lock) — an ETA can change (traffic, a later override) and may
+    // need re-sending, so this deliberately never locks into a permanent
+    // "done" state — see wireField's own button branch/this file's other
+    // repeatable button (Calculate_Distance) for the same reasoning.
+    { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
+      buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
+      action:(r)=>{ const eta=expectedArrivalTime(r); toast(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer","ok"); } },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
     { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true }
   ]},
   { key:"wip", branch:"rsr", bucket:2, short:"WIP", title:"Work In Progress",
     desc:"On-site repair — photos, expense and resolution.", save:"Save Progress",
     statuses:["WORK IN PROGRESS"], status:"WORK IN PROGRESS",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     { n:"Issue_Resolved", l:"Issue Resolved?", t:"radio", o:["Yes","No"] },
     { n:"Unresolved_Note", l:"Issue Not Resolved — Notes", t:"textarea", when:(s)=>!!s.Unresolved_Note, full:true },
@@ -1195,18 +1537,28 @@ const STAGES = [
     // 2026-07-31: same fix as `acceptance` above — "Service_Request1" was
     // never written by driverTicket (it writes Status directly).
     status:(r)=> r.Status==="RSP REJECT" ? "RSP REJECT" : "RSP ON THE WAY",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 — see `acceptance`'s own matching comment above.
     fields:[
+    // See `acceptance`'s own matching comment above — same field, same fix,
+    // Tow's own copy (shared field name; only one branch's Accept step is
+    // ever active per ticket, so no collision).
+    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true,
+      o:["Vendor Accepting via App","Agent Entering on Behalf of Vendor"], default:"Vendor Accepting via App",
+      hint:"Choose 'Agent Entering on Behalf of Vendor' only if the driver/vendor isn't using their own app for this job — the fields below will fill in for you to complete manually. Otherwise this stays blank until the driver's own app actually reports back." },
     // "Assign_Technican1" dropped from the schema 2026-08-03 — see
     // `acceptance`'s own matching comment above.
-    { n:"Reject_Reason1", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason1, full:true },
+    // Reject_Reason1 removed from this screen entirely 2026-08-07 — see
+    // `acceptance`'s own matching comment above (same reasoning, Tow's
+    // own reject reason field).
     { n:"Image_Upload1", l:"Photo", t:"file" },
     { n:"Vendor_Email2", l:"Vendor Email", t:"text" },
-    { n:"Technician_Email1", l:"Driver Email", t:"text" },
+    // Technician/driver hand-off fields below all gated on
+    // vendorHasTechnicians() — see `acceptance`'s own matching comment above.
+    { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians },
     // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
     { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text" },
-    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true },
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text" },
+    { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians },
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians },
     // See `acceptance`'s own comment on this same new field.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true }
   ]},
@@ -1217,12 +1569,34 @@ const STAGES = [
     // its real Status) — same fix as `reach`'s own RSR sibling above.
     statuses:["RSP ON THE WAY","RSP CANCELLED"],
     status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     { n:"Odometer_reading_at_Reached_Location", l:"Odometer at Reached", t:"number" },
     { n:"Toll_Charges", l:"Toll Charges?", t:"radio", o:["Yes","No"] },
     // See reach's own matching comment — same fix, TOW's copy of this field.
     { n:"Navigate_To_Breakdown_Link", l:"Navigate to Breakdown Link", t:"navlink", full:true },
+    // See `reach`'s own matching comment above — same field, TOW's copy.
+    { n:"_ExpectedArrival", l:"Expected Arrival Time", t:"computed", compute:expectedArrivalTime,
+      emptyHint:"Not available yet — needs the driver's own acceptance time and ETA.", full:true },
+    // See `reach`'s own matching Agent_ETA_Override/Send_ETA_To_Customer
+    // comments above — same feature, TOW's own copy of both fields.
+    // Agent_ETA_Override_TOW is ALSO a brand-new field, not yet in Create_Case.
+    { n:"Agent_ETA_Override_TOW", l:"Agent ETA Override (mins)", t:"number", agentEditable:true,
+      hint:"Overrides the ETA above before sending it to the customer." },
+    // repeatable:true (unlike Send_Link_For_The_Breakdown_Location's own
+    // one-time lock) — an ETA can change (traffic, a later override) and may
+    // need re-sending, so this deliberately never locks into a permanent
+    // "done" state — see wireField's own button branch/this file's other
+    // repeatable button (Calculate_Distance) for the same reasoning.
+    { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
+      buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
+      action:(r)=>{ const eta=expectedArrivalTime(r); toast(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer","ok"); } },
     { n:"Image_Upload5", l:"Arrival Photo", t:"file" },
     { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason2, full:true }
   ]},
@@ -1238,7 +1612,13 @@ const STAGES = [
     // about "RSP REJECT" above, to avoid the resume-routing ambiguity bug
     // already fixed once this session (see README §5, 2026-07-31).
     statuses:["LOADING"], status:"LOADING",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     { n:"Pre_service_Photo", l:"Pre-service Photo", t:"file" },
     { n:"Image_Upload_On_truck", l:"On-truck Photo", t:"file" },
@@ -1250,7 +1630,13 @@ const STAGES = [
   { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
     desc:"Odometer and drop-location proof.", save:"Save",
     statuses:["TO DROP LOCATION"], status:"TO DROP LOCATION",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     // "Odometer_Reading" corrected 2026-07-31 from t:"file" to t:"number" —
     // it's the same plain number field Accept's own Start Odometer writes
@@ -1274,7 +1660,13 @@ const STAGES = [
   { key:"wipUnloadingTow", branch:"tow", bucket:2, short:"Unload", title:"Unloading & Handover",
     desc:"Unload, handover details and return journey.", save:"Save Handover",
     statuses:["UNLOADING"], status:"UNLOADING",
-    viewOnly:true, // see `acceptance`'s own comment above — same 2026-07-31 vendor-side lock
+    // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
+    // field editable in every steps so agent enter details") — see
+    // `acceptance`'s own matching 2026-08-07 comment for the original
+    // reasoning/reversal; every remaining vendor/technician/driver-side stage
+    // is now editable here too, for the same reason: the agent needs to be
+    // able to type/select this data directly, not just view whatever the
+    // vendor's own app happened to save.
     fields:[
     { n:"Unloaded_Images", l:"Unloaded Photo", t:"file" },
     { n:"VCRF_Image", l:"VCRF Image", t:"file" },
@@ -1324,13 +1716,42 @@ const STAGES = [
     // mirrored read-only here since it wasn't shown on this stage's own
     // screen before. The field widgets write "PAID" on Payment Received.
     { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true }
-  ]}
+  ]},
   /* the old "closure" stage (branch:"final", __summary + Remarks) was removed
-     2026-07-30 — ticket closure no longer happens as the last step of this
-     linear wizard at all. It's now its own dedicated "Final Closure" screen
-     (see CLOSURE_FIELDS / openClosure / renderClosure / saveClosure below),
-     reachable from a dashboard row action and a permanent button inside the
-     wizard, at ANY point in a ticket's timeline — not gated by the stepper. */
+     2026-07-30 — ticket closure stopped being the last step of this linear
+     wizard and became its own separate "Final Closure" screen instead (see
+     CLOSURE_FIELDS / openClosure / renderClosure / saveClosure below).
+     2026-08-07 (user request): now REVERSED — closure is a stepper step again,
+     "Agent Closure", right after Payment, showing the exact same content the
+     separate Final Closure screen showed (CLOSURE_FIELDS, patched into this
+     stage's own `fields` right after that const is declared further down —
+     STAGES is built before CLOSURE_FIELDS in file order, so it can't be
+     referenced directly here without a bigger reorder; a placeholder empty
+     array below gets overwritten in place). Agent-only by construction, not
+     by any new access-control code: this whole widget IS the agent's own
+     app — vendor/technician/driver each run their own separate widget and
+     never load this one at all. branch:"pay" (same as `payment` itself)
+     lands it at the very end of buildPath()'s result for BOTH RSR and TOW.
+     "RSP CLOSED" in statuses (what `payment` itself writes on save) means a
+     ticket that reached Payment but was never actually closed now resumes
+     HERE on reopen, instead of falling through stageIndexForStatus()'s
+     "no match -> index 0 (Create)" fallback, which is what happened before
+     this stage existed. "CLOSED" resumes here too, forced fully read-only
+     across the WHOLE wizard by state.closureReadOnly (see renderWizard()'s
+     own generalized viewOnly check, and openTicketOrClosure()'s comment) —
+     unlike vendor/technician/driver's OWN viewOnly stages (acceptance/reach/
+     wip/etc.), which stay editable-looking for every OTHER step. The
+     dedicated "Close Case" button (wizClosureBtn) still exists separately
+     and still works from ANY earlier step, same as before the merge — see
+     jumpToAgentClosureStep() — since the stepper's own normal step-locking
+     (state.maxStepIndex) would otherwise refuse to let the agent jump straight
+     here early (e.g. to close/cancel a ticket right after Create). */
+  { key:"agentClosure", branch:"pay", bucket:3, short:"Closure", title:"Agent Closure",
+    desc:"Review the ticket and record the final outcome. This can be done at any point during the task's timeline.",
+    save:"Close Case",
+    statuses:["RSP CLOSED","CLOSED"], status:"CLOSED",
+    fields:[] // patched to CLOSURE_FIELDS right after that const is declared below
+  }
 ];
 
 /* build the active stage path from Service_Type */
@@ -1395,6 +1816,12 @@ const CLOSURE_FIELDS=[
     req:(s)=>s.Closure_Status==="Completed" && s.B2B_GST_Invoice_Required==="Yes" },
   { n:"Closure_Extra_Photo", l:"Additional Photo", t:"file", full:true }
 ];
+// See STAGES' own "agentClosure" entry's comment — patched in here (rather
+// than inline in that array literal) because STAGES is built before this
+// const exists in file order; referencing CLOSURE_FIELDS directly up there
+// would throw (temporal dead zone), so the stage starts with an empty
+// placeholder and gets it filled in the moment it's actually available.
+STAGES.find(function(s){ return s.key==="agentClosure"; }).fields = CLOSURE_FIELDS;
 /* Distance/ETA metrics (2026-08-04, per user request) — internal ops data
    the vendor/technician/driver widgets compute (Google Maps Distance Matrix
    first, Haversine fallback — see those widgets' own comments), not
@@ -1408,19 +1835,28 @@ const CLOSURE_FIELDS=[
    cancelled before ever reaching a drop point) so they show unconditionally
    — closureFieldValueDisplay() already renders "—" for whichever don't apply
    to a given ticket. */
+// readonly:true REMOVED from every field below 2026-08-07 (explicit user
+// request: "ensure all app-generated information is available on the Close
+// Case page for manual entry when mechanics are not using the app") — these
+// were locked on the assumption the vendor/technician/driver's own app
+// always computes them; when a mechanic works the job without ever touching
+// their own app, nothing writes these at all unless the agent can type them
+// in by hand here. Each row already shows up in the Close Case summary and
+// is already clickable (openFieldEditor()) — readonly was the only thing
+// stopping the popup's own input from actually accepting a value.
 const DISTANCE_METRICS_FIELDS=[
-  { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
-  { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
-  { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", readonly:true },
-  { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", readonly:true },
-  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", readonly:true },
-  { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", readonly:true },
-  { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", readonly:true },
-  { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Return_Journey_ETA", l:"Return ETA (mins, TOW)", t:"number", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }
+  { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number" },
+  { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number" },
+  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number" },
+  { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number" },
+  { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number" },
+  { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Return_Journey_ETA", l:"Return ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }
 ];
 /* Field-activity timestamps/GPS (2026-08-04, per user audit request — "all
    data we are saving through process should be visible in Final Closure").
@@ -1433,15 +1869,21 @@ const DISTANCE_METRICS_FIELDS=[
    here regardless so at least the agent can SEE whatever did get saved,
    which also doubles as a way to notice if one of these names turns out to
    be wrong (it'll just show "—" forever instead of a real value). */
+// readonly:true REMOVED from every field below 2026-08-07 — same reasoning
+// as DISTANCE_METRICS_FIELDS' own matching comment just above: these
+// timestamps/GPS fixes are normally written by the vendor/technician/
+// driver's own app actions, but when a mechanic works the job without using
+// that app at all, the agent needs to be able to type/paste them in here by
+// hand instead of the row staying permanently stuck on "—".
 const FIELD_ACTIVITY_LOG_FIELDS=[
-  { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
-  { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Service_Reject_Time", l:"Reject Time", t:"text", readonly:true },
-  { n:"Reach_Time", l:"Reached Breakdown Time", t:"text", readonly:true },
-  { n:"Pickup_Time", l:"Vehicle Picked Up Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Cancellation_Time", l:"Cancellation Time", t:"text", readonly:true },
-  { n:"Cancel_Location_Lat", l:"Cancel Location (Lat)", t:"decimal", readonly:true },
-  { n:"Cancel_Location_Lon", l:"Cancel Location (Lon)", t:"decimal", readonly:true },
+  { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Service_Reject_Time", l:"Reject Time", t:"text" },
+  { n:"Reach_Time", l:"Reached Breakdown Time", t:"text" },
+  { n:"Pickup_Time", l:"Vehicle Picked Up Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Cancellation_Time", l:"Cancellation Time", t:"text" },
+  { n:"Cancel_Location_Lat", l:"Cancel Location (Lat)", t:"decimal" },
+  { n:"Cancel_Location_Lon", l:"Cancel Location (Lon)", t:"decimal" },
   // Relabeled 2026-08-04 (user request) — this field is now reused for a
   // second GPS fix: TOW's own "Reached Drop Location" action overwrites it
   // with the driver/vendor's live position at drop, same field, not a
@@ -1449,8 +1891,8 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // comment above). So this row shows whichever fix was written most
   // recently — Accept-time for RSR and for TOW tickets that haven't reached
   // their drop location yet, Drop-time after they have.
-  { n:"RSP_Start_Latitude", l:"RSP Location — Accept/Drop (Lat)", t:"text", readonly:true },
-  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text", readonly:true }
+  { n:"RSP_Start_Latitude", l:"RSP Location — Accept/Drop (Lat)", t:"text" },
+  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text" }
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -1797,8 +2239,22 @@ async function syncInvites(recordId, vendorNames){
   const names=(Array.isArray(vendorNames)?vendorNames:(vendorNames?[vendorNames]:[])).filter(Boolean);
   if(!recordId || !names.length) return;
   let existingVendorIds=[];
+  // Real bug fixed (2026-08-07, user-reported live, confirmed via a real
+  // Zoho error): "(RSID == recordId)" as a server-side criteria string
+  // against a Lookup field never actually worked — Zoho rejects it outright
+  // with code 3330, "Invalid criteria specified - Variable RSID does not
+  // exist in Invites" (this exact report/field). This existing-invite check
+  // has been silently failing (caught, logged, treated as "no existing
+  // invites") this whole time — meaning every re-save of the Assignment step
+  // has likely been creating duplicate Invites records instead of actually
+  // deduplicating, exactly the "low-risk, not yet confirmed" scenario this
+  // function's own header comment already flagged. Fetches every Invites
+  // record with no server-side criteria at all and filters client-side by
+  // matching RSID's own unwrapped id instead — same pattern loadMyInvites()
+  // in vendorTicket already uses successfully for this identical field.
   try{
-    const existing = await apiGetReport(CONFIG.invitesReport, "(RSID == "+recordId+")", 200);
+    const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+    const existing = all.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
     existingVendorIds = existing.map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); }).filter(Boolean);
   }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
   const fn=resolve("addRecords"); if(!fn) return;
@@ -1978,7 +2434,7 @@ function calcQuote(){
 // itself — the one unambiguous "this ticket is done" signal) — see
 // openTicket()/openFieldEditor()/renderClosure()'s own comments for what
 // this actually locks down.
-const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0, editing:false, rejectionHistory:[], closureReadOnly:false };
+const state = { record:{}, files:{}, recordId:null, path:[], stepIndex:0, maxStepIndex:0, editing:false, rejectionHistory:[], closureReadOnly:false, inviteStatuses:[] };
 // Loads every Task_Rejections entry for one ticket (2026-08-06) — see
 // CONFIG.taskRejectionsReport's own comment. Best-effort: an empty/failed
 // result just means the Final Closure section below has nothing to show,
@@ -1993,18 +2449,252 @@ async function loadRejectionHistory(recordId){
   try{
     const fn = resolve("getRecords");
     if(!fn){ state.rejectionHistory=[]; return; }
-    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.taskRejectionsReport, field_config:"all", max_records:200, criteria:"(RSID == "+recordId+")" });
+    // Real bug fixed (2026-08-07) — same "(RSID == recordId)" server-side
+    // criteria against a Lookup field that's now CONFIRMED broken elsewhere
+    // in this file (loadInviteStatuses()/syncInvites() against Invites_Report
+    // hit a real Zoho error — code 3330, "Invalid criteria specified" — with
+    // this exact guessed pattern). Never independently confirmed working
+    // here either, so applying the same defensive fix rather than waiting
+    // for a second live failure to prove it: fetch with no server-side
+    // criteria, filter client-side by RSID's own unwrapped id instead.
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.taskRejectionsReport, field_config:"all", max_records:200 });
     if(r && r.code===3000 && Array.isArray(r.data)){
       // Not re-sorted — fmtDateTime()'s own "DD-MMM-YYYY" format doesn't sort
       // correctly as a plain string, and the API already returns these in
       // creation order (= chronological, since rejectService() only ever adds
       // one at the moment it happens).
-      state.rejectionHistory = r.data;
+      state.rejectionHistory = r.data.filter(function(rj){ return String(unwrapLookup(rj.RSID)||"")===String(recordId); });
     } else {
       state.rejectionHistory=[];
       console.warn("[Get-Rescue] loadRejectionHistory: unexpected response for report", CONFIG.taskRejectionsReport, "— code:", r&&r.code, "| full response:", r, "— if code isn't 3000, the guessed report name is likely wrong (see CONFIG.taskRejectionsReport's own comment).");
     }
   }catch(e){ console.warn("[Get-Rescue] loadRejectionHistory threw for report", CONFIG.taskRejectionsReport, e); state.rejectionHistory=[]; }
+}
+// Vendor Invite Status (2026-08-07, user-reported live: "if we send an
+// invite to a vendor, if the vendor rejects the service then the name of
+// vendor and status of invite is not being displayed on the assignment
+// page") — the Assignment step's own Vendors1 field is just the agent's pick
+// list; it never reflected what actually happened to each invite afterwards
+// (accepted/rejected/still pending). Invites_Report already has exactly that
+// per-vendor outcome (Service_Acceptance_Next/Status/Reject_Reason — see
+// syncInvites()'s own comment and FIELDS.md's Form 3), just never read back
+// into this widget. Same "call getRecords directly, don't use apiGetReport()"
+// pattern as loadRejectionHistory(), for the same reason (so a wrong
+// CONFIG.invitesReport guess shows up as a console warning, not silence) —
+// though invitesReport is already used (and presumably working) for
+// syncInvites()'s own duplicate-check read, so this is lower-risk than
+// taskRejectionsReport was.
+async function loadInviteStatuses(recordId){
+  if(!recordId){ state.inviteStatuses=[]; return; }
+  try{
+    const fn = resolve("getRecords");
+    if(!fn){ state.inviteStatuses=[]; return; }
+    // Real bug fixed (2026-08-07, user-reported live, confirmed via a real
+    // Zoho error — code 3330, "Invalid criteria specified - Variable RSID
+    // does not exist in Invites"): the server-side "(RSID == recordId)"
+    // criteria against this Lookup field has never actually worked — every
+    // call here silently fell into the catch/warn branch below and returned
+    // an empty list, which read identically to "this ticket genuinely has no
+    // invites" (the exact ambiguity this function's own original comment
+    // worried about, now confirmed real). Fetches with NO server-side
+    // criteria and filters client-side by RSID's own unwrapped id instead —
+    // same fix applied to syncInvites()'s own matching read.
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:200 });
+    if(r && r.code===3000 && Array.isArray(r.data)){
+      state.inviteStatuses = r.data.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
+      // Diagnostic (2026-08-07, user-reported live: a vendor's rejection
+      // wasn't removing them from Vendors1 — this line settles WHY: if the
+      // vendor's own Invites row here still shows an empty Status/
+      // Service_Acceptance_Next, the WRITE side (vendorTicket's
+      // updateMyInvite(), best-effort/no-op if it can't find a matching
+      // invite) never landed, not this widget's own read/prune logic.
+      console.log("[Get-Rescue] loadInviteStatuses: fetched", state.inviteStatuses.length, "Invites row(s) for RSID", recordId, "(out of", r.data.length, "total) —", state.inviteStatuses.map(function(inv){ return { Vendor:unwrapLookup(inv.Vendor), Status:inv.Status, Service_Acceptance_Next:inv.Service_Acceptance_Next, Reject_Reason:inv.Reject_Reason }; }));
+    } else {
+      state.inviteStatuses=[];
+      console.warn("[Get-Rescue] loadInviteStatuses: unexpected response for report", CONFIG.invitesReport, "— code:", r&&r.code, "| full response:", r);
+    }
+  }catch(e){ console.warn("[Get-Rescue] loadInviteStatuses threw for report", CONFIG.invitesReport, e); state.inviteStatuses=[]; }
+}
+// One row per invited VENDOR (Technician-only Invites rows, from the
+// vendor's own fleet hand-off, are a different concept and left out here —
+// this panel is specifically "who did the agent invite, and what did they
+// say"). Status priority mirrors what actually gets written: Status
+// ("RSP REJECT", written on Reject — see updateMyInvite() call sites)
+// wins over Service_Acceptance_Next ("Yes", written on Accept) since a vendor
+// can't do both; anything else still just means "invited, no response yet".
+function inviteStatusFor(inv){
+  if(String(inv.Status||"").trim().toUpperCase()==="RSP REJECT") return {label:"Rejected", color:"var(--stop)"};
+  if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return {label:"Accepted", color:"var(--ok)"};
+  return {label:"Awaiting response", color:"var(--wait)"};
+}
+// Real bug fixed (2026-08-07, user-reported live: "if a vendor rejects the
+// service then the name of the vendor is still being displayed in the
+// 'Vendors' field") — Vendors1 is purely the agent's own pick list; nothing
+// ever removed a vendor from it once THEY rejected, so it just kept showing
+// every vendor ever invited, rejected or not, and a re-save of this step kept
+// resending the same rejected vendor's id straight back to Zoho. The full
+// invite history (including the rejection + reason) is already preserved
+// separately in Invites_Report and shown via the panel below — Vendors1
+// itself should only reflect vendors still actually in play.
+function rejectedVendorIds(){
+  return (state.inviteStatuses||[])
+    .filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; })
+    .filter(function(inv){ return inviteStatusFor(inv).label==="Rejected"; })
+    .map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); })
+    .filter(Boolean);
+}
+function pruneRejectedVendorsFromPick(){
+  const rejIds=rejectedVendorIds();
+  if(!rejIds.length || !Array.isArray(state.record.Vendors1) || !state.record.Vendors1.length) return;
+  const before=state.record.Vendors1.length;
+  state.record.Vendors1=state.record.Vendors1.filter(function(v){ return rejIds.indexOf(String(v))<0; });
+  if(state.record.Vendors1.length!==before) console.log("[Get-Rescue] pruneRejectedVendorsFromPick: dropped", before-state.record.Vendors1.length, "rejected vendor(s) from Vendors1 — see Vendor Invite Status panel for the full history.");
+}
+// Fallback for when the Invites-report match above finds nothing (2026-08-07,
+// user-reported live: the vendor's name was STILL showing in Vendors1 after
+// they rejected, even with the Invites-based prune above already in place) —
+// most likely cause: vendorTicket's own updateMyInvite() (which mirrors a
+// reject onto the vendor's Invites row) is itself best-effort and silently
+// no-ops if it can't find a matching invite for that ticket, so the Invites
+// row's Status/Service_Acceptance_Next can stay blank even though the vendor
+// genuinely rejected — see loadInviteStatuses()'s own new diagnostic log to
+// confirm this live. The ticket's OWN Status, by contrast, is written
+// directly and unconditionally by every reject path (rejectService() in
+// vendorTicket/technicianTicket/driverTicket all set it inline, not through
+// any Invites lookup) — it's the one signal proven reliable here (the
+// dashboard's own "RSP REJECT" pill already confirms it fired). Only safe to
+// act on when there's exactly ONE vendor left in Vendors1 — with 2+ invited
+// there's no way to tell WHICH one rejected from a ticket-level field alone,
+// so this intentionally does nothing in that case (the Invites-report path
+// above is the real per-vendor mechanism there). Only called right after
+// openTicket()'s own FRESH apiGetById re-fetch, never after a same-session
+// save, so state.record's own Status here can't be stale from a save that
+// already moved it on to "RSP IRA (INVITE RESPONSE AWAITED)".
+function pruneSingleVendorIfTicketRejected(){
+  const status=String(state.record[CONFIG.stageField]||"").trim().toUpperCase();
+  if(status!=="RSP REJECT") return;
+  if(!Array.isArray(state.record.Vendors1) || state.record.Vendors1.length!==1) return;
+  const vendorId=state.record.Vendors1[0];
+  console.log("[Get-Rescue] pruneSingleVendorIfTicketRejected: ticket Status is RSP REJECT with exactly one vendor left in Vendors1 and no matching Invites-report row for it — dropping it via this ticket-level fallback:", vendorId);
+  // Keep the Vendor Invite Status panel honest too — if the Invites-report
+  // row for this vendor never actually got the reject mirrored onto it (the
+  // exact failure this fallback exists for), the panel would otherwise show
+  // nothing at all once Vendors1 is cleared, as if this vendor was never
+  // invited. Only synthesizes an entry if a real one isn't already there.
+  const already=(state.inviteStatuses||[]).some(function(inv){ return String(unwrapLookup(inv.Vendor)||"")===String(vendorId); });
+  // Reject_Reason (RSR) vs Reject_Reason1 (TOW) — see `acceptance`'s and
+  // `acceptanceTow`'s own field defs; rejectService() in the field-facing
+  // widgets writes whichever one matches this ticket's own Service_Type.
+  if(!already) state.inviteStatuses=(state.inviteStatuses||[]).concat([{ Vendor:vendorId, Status:"RSP REJECT", Reject_Reason: state.record.Reject_Reason||state.record.Reject_Reason1||"" }]);
+  state.record.Vendors1=[];
+}
+function assignInviteStatusHtml(){
+  const invites = (state.inviteStatuses||[]).filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; });
+  if(!invites.length) return "";
+  const rows = invites.map(function(inv){
+    const name = lookupNamesFor(inv.Vendor, OPTIONS.vendors) || "—";
+    const st = inviteStatusFor(inv);
+    const reason = st.label==="Rejected" ? (readVal(inv,"Reject_Reason")||"") : "";
+    return `<div class="crow" style="cursor:default">
+      <span class="k">${esc(name)}</span>
+      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${reason?(" — "+esc(reason)):""}</span>
+    </div>`;
+  }).join("");
+  return `<div class="form-card" style="margin-top:14px">
+    <h3 style="margin:0 0 8px">Vendor Invite Status</h3>
+    <div class="summary editable">${rows}</div>
+  </div>`;
+}
+// Show/hide the Accept step's technician fields (2026-08-07, user request) —
+// "Assigned Technician"/"Technician Email (Assignment)" only make sense for a
+// FLEET vendor who might hand the job to one of their own technicians; an
+// Individual vendor never will, so showing an empty, permanently-irrelevant
+// picker for them is just clutter. Resolves "the vendor this ticket is
+// actually about" with the same priority order used elsewhere in this file:
+// prefer the one who actually accepted (Assigned_Vendor), fall back to
+// whoever's still actively invited (Vendors1), fall back further to whoever
+// was EVER invited (state.inviteStatuses) — covers a rejected ticket where
+// Vendors1 has already been pruned empty (see pruneRejectedVendorsFromPick())
+// but there's still a vendor identity worth checking.
+function relevantVendorIdForAcceptance(r){
+  if(r.Assigned_Vendor) return String(r.Assigned_Vendor);
+  if(Array.isArray(r.Vendors1) && r.Vendors1.length) return String(r.Vendors1[0]);
+  const withVendor = (state.inviteStatuses||[]).find(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; });
+  if(withVendor){ const id=unwrapLookup(withVendor.Vendor); if(id!=null && id!=="") return String(id); }
+  return null;
+}
+// Real bug fixed (2026-08-07, user-reported live: technician fields hidden
+// even for the "get rescue" vendor, which genuinely does have technicians) —
+// this used to ONLY check the vendor's own Technicians multi-lookup
+// (Vendors_Report.Technicians). vendorTicket's own showHandoffPanel() already
+// found that exact same primary lookup can come back empty even for a real
+// fleet vendor, and had to add a fallback: reverse-match Technicians_Report's
+// OWN "Vendor Name" column back to the vendor, by id or by name (see that
+// function's own comment — its warning literally says "consider switching
+// CONFIG.vendorTechniciansField/the multi-lookup approach off if this
+// fallback is what's actually working", which is exactly the situation here).
+// Ported the same two-tier approach — OPTIONS.technicians already keeps every
+// technician's own full raw record (pull()'s own `raw:r`), so this fallback
+// needs no separate fetch either, just a client-side scan of what's already loaded.
+function vendorHasTechnicians(r){
+  const vid = relevantVendorIdForAcceptance(r);
+  if(!vid) return false;
+  const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===vid; });
+  if(vopt && vopt.raw){
+    const list = vopt.raw[CONFIG.vendorTechniciansField];
+    if(Array.isArray(list) ? list.length>0 : !!list) return true;
+  }
+  const vname = vopt ? String(vopt.label||"").trim().toLowerCase() : "";
+  const candidates=["Vendor_Name","Fleet_Vendor"];
+  return OPTIONS.technicians.some(function(t){
+    const raw=t.raw||{};
+    for(const field of candidates){
+      const v=raw[field]; if(v==null || v==="") continue;
+      const linkId=(v && typeof v==="object") ? (v.ID!=null?v.ID:v.id) : v;
+      if(linkId!=null && String(linkId)===vid) return true;
+      const linkLabel=(v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : String(v);
+      if(vname && String(linkLabel).trim().toLowerCase()===vname) return true;
+    }
+    return false;
+  });
+}
+// Real bug fixed (2026-08-07, user-reported live, same screenshot as
+// vendorHasTechnicians() above): Vendor Email / Vendor Email (Assignment) /
+// Assigned Vendor all showed blank on the Accept step despite a vendor
+// clearly already being on this ticket. Root cause: all three are written
+// ONLY by the vendor's OWN accept action (see each field's own comment in
+// STAGES) — nothing ever backfilled them from the agent's side of the
+// assignment, so a ticket sitting here before (or without ever getting) a
+// formal vendor-side accept just shows empty boxes. Seeds them here, ONLY
+// while still genuinely blank (never overwrites whatever the vendor's own
+// accept action already wrote), using the same "relevant vendor" resolution
+// vendorHasTechnicians() uses — so the screen shows the vendor everyone
+// already knows is on this ticket instead of a bare "— select —". Because
+// this only fills a blank, re-saving this step with nothing else touched now
+// does persist this best-known value to Assigned_Vendor — an intentional
+// trade-off for actually seeing something useful here, not a side effect to
+// silently undo later.
+// GATED 2026-08-07 (real bug fixed, user-reported live: "when agent assign
+// vendor to the ticket first it show accepted but vendor not accepted
+// request") — this used to run unconditionally, so a vendor who'd only just
+// been INVITED (never actually accepted) still showed up here pre-selected,
+// looking exactly like a done deal. Now only fires once the agent has
+// explicitly said so via the new Acceptance_Mode field (see its own STAGES
+// comment) — left on the default "Vendor Accepting via App", this function
+// is a no-op and the fields stay genuinely blank until something real backs
+// them, same as before any of this seeding existed.
+function seedAcceptanceVendorFields(r){
+  if(r.Acceptance_Mode!=="Agent Entering on Behalf of Vendor") return;
+  const vid = relevantVendorIdForAcceptance(r);
+  if(!vid) return;
+  if(!r.Assigned_Vendor) r.Assigned_Vendor = vid;
+  const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===vid; });
+  const email = (vopt && vopt.raw && vopt.raw.Email) ? vopt.raw.Email : "";
+  if(email){
+    if(!r.Vendor_Email) r.Vendor_Email = email;
+    if(!r.Vendor_Email1) r.Vendor_Email1 = email;
+    if(!r.Vendor_Email2) r.Vendor_Email2 = email;
+  }
 }
 
 async function getTickets(criteria){ return apiGet(criteria); }
@@ -2042,6 +2732,67 @@ function parseDateTime12(str){
   let hour=Number(m[4])%12; if(/pm/i.test(m[7])) hour+=12;
   const d=new Date(Number(m[3]), monIdx, Number(m[1]), hour, Number(m[5]), Number(m[6]));
   return isNaN(d) ? null : d;
+}
+// Reverse of fmtDateTime() (2026-08-07, needed for expectedArrivalTime() below)
+// — Service_Acceptance/Service_Acceptance_For_Tow are stamped with
+// fmtDateTime(), the 24-hour "DD-MMM-YYYY HH:mm:00" format (no AM/PM), NOT
+// fmtDateTime12()'s 12-hour one parseDateTime12() above already covers —
+// different fields, different formats, needs its own parser.
+function parseDateTime24(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+// e.g. "12:20 PM" — just the clock-time portion, no date. Shared by
+// expectedArrivalTime() below; kept separate from fmtDateTime12() (which
+// always includes the date) since this is specifically for "what time will
+// they arrive", not a full timestamp.
+function fmtClockTime(d){
+  const h24=d.getHours(); const ampm=h24<12?"AM":"PM"; const h12=(h24%12)||12;
+  return h12+":"+pad(d.getMinutes())+" "+ampm;
+}
+// Expected Arrival Time (2026-08-07, user request) — the "Reach Breakdown"
+// screen only ever showed a bare ETA duration in minutes (buried in Final
+// Closure's own Distance & ETA Metrics group, not even on this screen at
+// all) — the agent wants a real clock time here instead, e.g. "12:20 PM".
+// Anchor is the vendor/technician's own acceptance timestamp (Service_
+// Acceptance / Service_Acceptance_For_Tow) plus the matching ETA/ETA_TOW
+// minutes computed at that SAME moment — deliberately NOT "now + ETA", which
+// would keep drifting later the longer the agent waits before opening this
+// screen, even though the vendor's actual ETA was fixed at accept time.
+function expectedArrivalTime(r){
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
+  // Real bug fixed (2026-08-07, user-reported live: ETA=57 showing correctly
+  // in Final Closure, but this screen said "Not available yet" regardless) —
+  // Service_Acceptance/Service_Acceptance_For_Tow are real Zoho Date-Time
+  // fields (confirmed — FIELDS.md), not Single Line Text, even though this
+  // widget writes them via fmtDateTime()'s 24-hour string. Zoho's own
+  // Date-Time storage/read-back doesn't necessarily preserve that exact
+  // format — Computed_Service_Time (a different field, same Date-Time type)
+  // is separately confirmed LIVE to come back from the API in 12-hour AM/PM
+  // instead (see parseDateTime12()'s own comment), regardless of what was
+  // sent on write. Tries 12-hour first (the format actually confirmed for
+  // this field type in this app), then 24-hour as a fallback, rather than
+  // assuming either one — whichever the API is really returning, this
+  // now handles it instead of guessing wrong and silently failing.
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  // Agent_ETA_Override(_TOW) (2026-08-07, user request — see reach/reachTow's
+  // own field comment) takes priority over the vendor's own Google-Maps-
+  // derived ETA/ETA_TOW the moment the agent actually enters one — that's the
+  // whole point of letting them override it before notifying the customer.
+  const overrideMins = isTow ? r.Agent_ETA_Override_TOW : r.Agent_ETA_Override;
+  const etaMins = (overrideMins!=null && overrideMins!=="") ? Number(overrideMins) : Number(isTow ? r.ETA_TOW : r.ETA);
+  if(!etaMins || isNaN(etaMins)) return "";
+  if(!acceptAt){
+    if(acceptRaw) console.warn("[Get-Rescue] expectedArrivalTime: could not parse acceptance timestamp as either 12h or 24h — raw value:", JSON.stringify(acceptRaw), "| ETA mins:", etaMins, "— check this string's real shape against parseDateTime12()/parseDateTime24()'s own regexes.");
+    return "";
+  }
+  return fmtClockTime(new Date(acceptAt.getTime()+etaMins*60000));
 }
 // Real change (2026-08-06, user request, detailed spec) — decides the
 // SCHEDULED-vs-READY split once both Booking Fee and Location are settled
@@ -2111,6 +2862,14 @@ async function loadDashboard(){
   let recs = await getTickets(null);
   recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
   renderReportLists(recs);
+  // Real-time-ish mechanic-update notifications (2026-08-07) — silently
+  // (re)baselines the snapshot every normal load (initial boot, manual
+  // Refresh click, returning from the wizard) so this specific call never
+  // itself triggers a false "something changed" notification; only the
+  // background timer below ever compares against this baseline. See
+  // pollDashboardForMechanicUpdates()'s own comment for the full mechanism.
+  updateDashboardSnapshot(recs);
+  startDashboardPollIfNeeded();
 }
 // Collapsible report sections (2026-07-31, user request — "a lot to scroll to
 // go to second report"). Keyed by bucket name so the collapsed/expanded state
@@ -2142,21 +2901,23 @@ function renderReportLists(recs){
   document.querySelectorAll("#columns .rrow").forEach(el=>{
     el.onclick=()=>{ const rec=recs.find(r=>String(r.ID)===el.dataset.id); if(rec) openTicketOrClosure(rec); };
   });
-  // the new sibling action opens the Final Closure screen instead — stops
-  // propagation defensively even though it's not actually nested inside .rrow
+  // the new sibling action opens the wizard straight onto its "Agent Closure"
+  // step instead (2026-08-07, was the separate Final Closure screen — see
+  // STAGES' own comment on that stage) — stops propagation defensively even
+  // though it's not actually nested inside .rrow.
   document.querySelectorAll("#columns .rrow-close-btn").forEach(el=>{
-    // Fresh single-record fetch first (2026-08-04) — same reasoning as
-    // openTicket()'s own fix: `rec` here is the dashboard's bulk-fetched
-    // copy, which can carry a truncated Remarks value. Falls back to the
-    // bulk copy if the fetch is unavailable/fails.
     el.onclick=async (e)=>{
       e.stopPropagation();
       const rec=recs.find(r=>String(r.ID)===el.dataset.closeId); if(!rec) return;
-      const fresh=await apiGetById(rec.ID);
       // Dedicated "Close" action is a deliberate close/edit request, never
       // read-only, even for a ticket that happens to already be CLOSED.
       state.closureReadOnly=false;
-      openClosure(fresh||rec);
+      // openTicket() does its own fresh apiGetById re-fetch internally
+      // (see its own comment) — the separate pre-fetch this handler used to
+      // do here (only needed because openClosure() itself never re-fetched)
+      // is no longer necessary now that this routes through openTicket().
+      await openTicket(rec);
+      jumpToAgentClosureStep();
     };
   });
 }
@@ -2227,7 +2988,22 @@ function lookupNamesFor(rawValue, optionsList){
     return (item && typeof item==="object") ? (item.display_value||item.zc_display_value||item.value||"") : String(item||"");
   }).filter(Boolean).join(", ");
 }
+// Real bug fixed (2026-08-07, user-reported live: "ensure assigned vendor
+// details are captured correctly even when the call center accepts the case
+// on behalf of the mechanic") — this only ever read Vendors1, the agent's
+// ORIGINAL invite list from the Assignment step, never Assigned_Vendor —
+// the field that actually holds who's confirmed on the job, whether written
+// by the vendor's own accept action or typed in manually by the call center
+// (see seedAcceptanceVendorFields()'s own comment). Once someone's actually
+// assigned, that's the authoritative answer for "which vendor is on this
+// job" — Vendors1 can still list several originally-invited vendors (or one
+// who's since rejected but hasn't been pruned from this particular
+// bulk-fetched dashboard copy, which never goes through openTicket()'s own
+// pruning), exactly the kind of stale/ambiguous display this line shouldn't
+// show once a real assignment exists.
 function vendorNamesFor(r){
+  const assigned = lookupNamesFor(r.Assigned_Vendor, OPTIONS.vendors);
+  if(assigned) return assigned;
   return lookupNamesFor(r.Vendors1, OPTIONS.vendors);
 }
 function rowHtml(r){
@@ -2240,7 +3016,15 @@ function rowHtml(r){
   // Paid/Loc flags: New & Open rows only. Vendor line: Work In Progress rows only.
   const showFlags = !!bucket && bucket.name==="New & Open";
   const showVendor = !!bucket && bucket.name==="Work In Progress";
-  const paid=isPaidFlag(r), loc=hasLocFlag(r);
+  // Real bug fixed (2026-08-07, user-reported live): this "Loc" dashboard flag
+  // used to tick green off hasLocFlag(r) alone — breakdown location only —
+  // even for a TOW ticket still missing its drop location, which the
+  // `locations` stage's own canAdvance/status already correctly treat as NOT
+  // ready (see locationReady()'s own comment). The flag was silently telling
+  // the agent "location done" for a ticket that couldn't actually advance to
+  // Assignment yet. Now uses locationReady(r) so TOW tickets need BOTH points
+  // before this shows success, matching the real advance gate exactly.
+  const paid=isPaidFlag(r), loc=locationReady(r);
   const vendor = vendorNamesFor(r)||r.Vendor_Email||"";
   const serviceTime = readVal(r,"Computed_Service_Time");
   return `<button class="rrow" data-id="${esc(r.ID)}" type="button">
@@ -2328,6 +3112,29 @@ function scrollToTop(){
 }
 function showView(v){
   state.view=v;
+  // Auto-refresh (2026-08-07, user request — see startAgentClosurePollIfNeeded()'s
+  // own comment) only ever runs while actually on the Agent Closure step
+  // inside the wizard; leaving the wizard entirely (dashboard, or the dead
+  // standalone closure screen) always stops it. renderWizard() is what
+  // (re)starts it, per step, since navigating BETWEEN steps doesn't call
+  // showView() again.
+  if(v!=="wizard") stopAgentClosurePoll();
+  // Dashboard-wide mechanic-update poll (2026-08-07) — only ever runs while
+  // sitting on the plain ticket list; leaving it for the wizard/closure
+  // always stops it. loadDashboard() is what (re)starts it, every time it's
+  // called (see that function's own comment).
+  if(v!=="dashboard") stopDashboardPoll();
+  // Real bug fixed (2026-08-07, user-reported live, with screenshot pointing
+  // at this exact bar): the "+ Create Ticket"/search TopBar used to stay
+  // visible through the entire wizard/closure flow — it's dashboard-only
+  // chrome (browse/search/start-new), redundant once a specific ticket is
+  // open (the wizard has its own header — case id, X close, stepper). Now
+  // hidden for both "wizard" and "closure" and only ever reappears once
+  // back on the plain ticket-list "dashboard" view (whether reached via
+  // wizClose's X, Cancel, Save-and-exit, or the Final Closure back button —
+  // every one of those routes through backToDash()/showView("dashboard"),
+  // so this one toggle covers all of them without touching each caller).
+  $("topbar").style.display = v==="dashboard" ? "" : "none";
   $("dashboard").classList.toggle("off", v!=="dashboard");
   $("wizard").classList.toggle("on", v==="wizard");
   $("closureView").classList.toggle("on", v==="closure");
@@ -2350,6 +3157,17 @@ function showView(v){
    ===================================================================== */
 function newTicket(){
   state.record={}; state.files={}; state.recordId=null; state.editing=false;
+  // Real bug fixed (2026-08-07): without this, opening a brand-new ticket
+  // right after viewing an existing one's Assignment step left the previous
+  // ticket's Vendor Invite Status panel showing until this new one reached
+  // its own assignment step and (re-)loaded — state.inviteStatuses is
+  // otherwise only ever cleared by loadInviteStatuses() itself.
+  state.inviteStatuses=[];
+  // Real bug fixed (2026-08-07): without this, starting a brand-new ticket
+  // right after viewing an already-CLOSED one left the WHOLE new wizard
+  // locked read-only (state.closureReadOnly is otherwise only ever reset by
+  // openTicketOrClosure()/the dedicated Close actions, none of which run here).
+  state.closureReadOnly=false;
   setPath(); state.stepIndex=0; state.maxStepIndex=0;
   showView("wizard"); renderWizard();
 }
@@ -2387,10 +3205,18 @@ function unwrapLookup(v){
 // function's own comment), so it's the one unambiguous signal to route on.
 // Both row-click paths (dashboard + search) go through this now instead of
 // calling openTicket() directly.
+// 2026-08-07 (user request — Final Closure merged into the stepper as its own
+// "Agent Closure" step, see STAGES' own comment on that entry): both branches
+// now just call openTicket() — a CLOSED ticket's own Status is already in
+// agentClosure.statuses, so stageIndexForStatus() naturally lands right on
+// that step without any separate routing; state.closureReadOnly (set here,
+// same as before) is what actually locks the WHOLE wizard read-only in that
+// case (see renderWizard()'s own generalized viewOnly check), not which
+// function got called to open it.
 function openTicketOrClosure(rec){
   const isClosed = String(rec.Status||"").trim().toUpperCase()==="CLOSED";
   state.closureReadOnly = isClosed;
-  if(isClosed) openClosure(rec); else openTicket(rec);
+  openTicket(rec);
 }
 async function openTicket(rec){
   // Diagnostic logging (2026-07-31, user-reported "fields show empty when
@@ -2435,14 +3261,15 @@ async function openTicket(rec){
   // separate vendorDisplayName() pass needed anymore (that was only for the
   // old composite-string save format).
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
-  // Baseline for the Rate_Breakup/Total_Service_Fee auto-refresh check in
-  // renderWizard() (2026-08-06) — without this, reopening a ticket would look
-  // exactly like a "Vehicle_Issue just changed" event on the very first
+  // Baseline for the Rate_Breakup auto-refresh check in renderWizard()
+  // (2026-08-06, extended 2026-08-07 to also cover Distance_For_Quote_RT_KM —
+  // see that block's own comment) — without this, reopening a ticket would
+  // look exactly like a "something just changed" event on the very first
   // render (no marker yet vs. whatever's already saved), overwriting any
   // manual edit the agent made in a PREVIOUS session even though nothing
   // actually changed this time. Seeding it here means it only fires for a
   // real, active change made within this same open session.
-  state.record._rateBreakupForIssues=JSON.stringify(state.record.Vehicle_Issue||[]);
+  state.record._rateBreakupSignature=JSON.stringify([state.record.Vehicle_Issue||[], state.record.Distance_For_Quote_RT_KM||""]);
   console.log("[Get-Rescue] openTicket state.record after unwrap:", state.record);
   // Targeted diagnostic (2026-08-05, user-reported live: "Vendors" still
   // blank on the Assign step) — Vendors1 goes through the exact same
@@ -2455,16 +3282,47 @@ async function openTicket(rec){
   const st=readVal(rec,CONFIG.stageField);
   state.stepIndex = stageIndexForStatus(state.path, st);
   state.maxStepIndex = state.stepIndex; // can revisit anything already reached, not skip ahead of it
+  // Vendor Invite Status (2026-08-07) — loaded before the first render so a
+  // ticket reopened at "RSP IRA"/"RSP REJECT" (both resume straight back onto
+  // the assignment step) shows every invited vendor's real response right
+  // away, not just the Vendors1 picker.
+  await loadInviteStatuses(state.recordId);
+  pruneRejectedVendorsFromPick(); // see its own comment — drops any vendor who's actually rejected out of the active Vendors1 picker
+  pruneSingleVendorIfTicketRejected(); // see its own comment — ticket-level fallback for when the Invites-report row itself never got the reject mirrored onto it
+  // Rejection History (2026-08-07) — used to only load inside the separate
+  // openClosure(); now that its content is reachable as this same wizard's
+  // own "Agent Closure" step (see STAGES' own comment), load it unconditionally
+  // here too, so it's ready the moment the agent navigates there, however
+  // they got into this ticket.
+  await loadRejectionHistory(state.recordId);
+  // seedAcceptanceVendorFields() is now called from renderWizard() itself
+  // (2026-08-07), specifically for the acceptance/acceptanceTow steps, not
+  // here — see that call's own comment for why (needs to re-run every time
+  // the agent flips Acceptance_Mode, not just once on open).
   showView("wizard"); renderWizard();
 }
-/* Opens the Final Closure screen directly for an existing ticket — NOT part
+/* SUPERSEDED 2026-08-07 — no longer called from anywhere (see
+   openTicketOrClosure() and wizClosureBtn's own onclick, both updated to
+   route through openTicket()+jumpToAgentClosureStep() instead). Left in
+   place, not deleted, per this file's own convention of marking retired code
+   rather than erasing the history of why it changed (see the old "closure"
+   stage's own removal note a bit above STAGES' "agentClosure" entry for the
+   precedent). Final Closure's content is now the wizard's own "Agent
+   Closure" step; #closureView/closureFields/closureSaveBtn/closureCancelBtn/
+   closureBack are all likewise dead — nothing sets state.view="closure" or
+   shows that div anymore. renderClosure() below is the one exception worth
+   knowing about: it's still real, dead code, but closureFieldGroups()/
+   closureSummaryHtml()/CLOSURE_FIELDS/saveClosure() it depends on are very
+   much ALIVE — those are exactly what the new step reuses.
+   Original comment, describing what this did while it was still reachable:
+   "Opens the Final Closure screen directly for an existing ticket — NOT part
    of the step wizard's path/stepper (state.path/stepIndex are left alone),
    so it works regardless of which step the ticket is actually on. Reached
    from a dashboard row's dedicated Close action (rec = a freshly-fetched full
-   record) or the wizard's own "Close Case" button (rec = the wizard's own
+   record) or the wizard's own 'Close Case' button (rec = the wizard's own
    state.record, so any unsaved edits on the current step carry over — the
    click handler runs collectStep(false) first to snapshot them). Either way
-   this clones rec fresh, same pattern as openTicket. */
+   this clones rec fresh, same pattern as openTicket." */
 async function openClosure(rec){
   // Diagnostic logging (2026-08-04, user-reported live: Customer Name/Client/
   // Vehicle Issue/Vendors/photos still blank here even after the field_config
@@ -2484,11 +3342,17 @@ async function openClosure(rec){
   // See openTicket()'s own matching comment — same baseline, in case the
   // agent navigates from Final Closure into the wizard without a fresh
   // reopen in between.
-  state.record._rateBreakupForIssues=JSON.stringify(state.record.Vehicle_Issue||[]);
+  state.record._rateBreakupSignature=JSON.stringify([state.record.Vehicle_Issue||[], state.record.Distance_For_Quote_RT_KM||""]);
   console.log("[Get-Rescue] openClosure state.record after unwrap — Client:", JSON.stringify(state.record.Client), "| Vehicle:", JSON.stringify(state.record.Vehicle), "| Vehicle_Issue:", JSON.stringify(state.record.Vehicle_Issue));
   await loadRejectionHistory(state.recordId);
   showView("closure"); renderClosure(); scrollToTop();
 }
+// SUPERSEDED 2026-08-07, same as openClosure() just above — dead code, never
+// called (showView("closure") never runs either). renderWizard()'s own
+// agentClosure-step block re-implements this function's two bits of extra
+// wiring (collapsible groups + hydrateFilePreviewsIn) against #fields instead
+// of #closureFields; renderFields()/CLOSURE_FIELDS/closureSummaryHtml() etc.
+// underneath are shared and unchanged.
 function renderClosure(){
   $("closureCaseId").textContent = state.recordId ? caseLabel(state.record) : "unsaved";
   // viewOnly:state.closureReadOnly (2026-08-06, user request) — renderFields()
@@ -2546,7 +3410,27 @@ function renderWizard(){
   $("saveBtn").textContent = step.save;
   // Close Case (the rich Final Closure screen) needs a real saved record to update —
   // hidden on the "create" step, same as the old Close Ticket button used to be.
-  $("wizClosureBtn").style.display = state.recordId ? "" : "none";
+  // Also hidden once state.closureReadOnly (2026-08-07) — there's nothing
+  // left to jump to and close; the agent's already looking at the Agent
+  // Closure step (or can get there via the stepper itself, now that it's a
+  // real step) and everything is locked read-only anyway.
+  $("wizClosureBtn").style.display = (state.recordId && !state.closureReadOnly) ? "" : "none";
+  // Save/"Close Case" bottom button hidden entirely for a ticket opened
+  // read-only (2026-08-07) — every step is locked, and clicking it on any
+  // step OTHER than Agent Closure would otherwise recompute and write a
+  // fresh (non-"CLOSED") Status via that step's own computeStatus(), silently
+  // reopening an already-closed ticket (see saveStep()'s own guard, which
+  // backs this up defensively even if this button were somehow still shown).
+  $("saveBtn").style.display = state.closureReadOnly ? "none" : "";
+  $("wizClosureReadOnlyBanner").style.display = state.closureReadOnly ? "" : "none";
+  // Real bug fixed (2026-08-07) — seedAcceptanceVendorFields() now runs from
+  // right here instead of once in openTicket(), specifically so flipping the
+  // new Acceptance_Mode radio (see its own STAGES comment, and RERENDER's
+  // own entry for this field name) immediately seeds the vendor fields on
+  // the very next render, not just on the ticket's initial open.
+  if(step.key==="acceptance" || step.key==="acceptanceTow"){
+    seedAcceptanceVendorFields(state.record);
+  }
   if(step.key==="quote"){
     const q=calcQuote();
     state.record.Suggested_Rate=q.total; // readonly/computed — always kept in sync
@@ -2561,9 +3445,16 @@ function renderWizard(){
     // Vehicle_Issue selection's own signature actually changes, not just
     // once — a manual edit still sticks as long as the issue selection
     // itself hasn't changed since.
-    const issueSig = JSON.stringify(state.record.Vehicle_Issue||[]);
-    const issueChanged = state.record._rateBreakupForIssues!==issueSig;
-    if(state.record.Rate_Breakup==null || state.record.Rate_Breakup==="" || issueChanged) state.record.Rate_Breakup=q.breakup;
+    // Real bug fixed (2026-08-07, user-reported live): the signature below
+    // only tracked Vehicle_Issue, so entering/changing Distance_For_Quote_RT_KM
+    // (needed for a FORMULA-type TOW rate) never counted as "something
+    // changed" — Rate_Breakup kept showing its original "-- (enter distance —
+    // distance needed for this issue)" placeholder forever after, even once
+    // a real distance made Suggested_Rate compute a real number right above
+    // it. Signature now covers both inputs calcQuote() actually depends on.
+    const quoteSig = JSON.stringify([state.record.Vehicle_Issue||[], state.record.Distance_For_Quote_RT_KM||""]);
+    const inputsChanged = state.record._rateBreakupSignature!==quoteSig;
+    if(state.record.Rate_Breakup==null || state.record.Rate_Breakup==="" || inputsChanged) state.record.Rate_Breakup=q.breakup;
     // Real bug fixed (2026-08-06, user-reported live): Total_Service_Fee used
     // to auto-seed from Suggested_Rate the moment this step rendered, same as
     // Rate_Breakup above — but unlike Rate_Breakup (just a computed reference
@@ -2575,7 +3466,7 @@ function renderWizard(){
     // though nothing was ever actually typed in. No longer auto-filled —
     // Suggested_Rate stays visible right above it as a reference the agent
     // can copy manually if they want to accept it as-is.
-    state.record._rateBreakupForIssues=issueSig;
+    state.record._rateBreakupSignature=quoteSig;
     state.record.Remaining_Fee=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Booking_Fee)||0);
   }
   // fields
@@ -2590,7 +3481,50 @@ function renderWizard(){
   // reasoning as the heading above, just the description line underneath it.
   $("stepDesc").style.display = step.key==="create" ? "none" : "";
   $("stepDesc").textContent = step.desc||"";
-  renderFields(step);
+  // state.closureReadOnly (2026-08-07) forces EVERY step read-only, not just
+  // Agent Closure's own — see this flag's own comment on STAGES' "agentClosure"
+  // entry. Clones rather than mutating `step` itself, same reasoning as
+  // renderFields()'s own per-field cloning for step.viewOnly: STAGES objects
+  // are shared/reused across renders and must not carry a one-time lock
+  // forward into a later, editable open of the same ticket.
+  renderFields(state.closureReadOnly ? Object.assign({}, step, {viewOnly:true}) : step);
+  // Vendor Invite Status panel — assignment step only, see its own
+  // assignInviteStatusHtml() comment. state.inviteStatuses is loaded by
+  // openTicket() (on reopen) and refreshed by saveStep() (right after a
+  // fresh syncInvites() call) — this just renders whatever's already there.
+  $("assignInviteStatus").innerHTML = step.key==="assignment" ? assignInviteStatusHtml() : "";
+  // Real bug fixed (2026-08-07, user-reported live: Receipt Photo on the
+  // Payment step showed "Already uploaded" text but the thumbnail above it
+  // stayed a placeholder icon forever) — this was WRONGLY believed to only
+  // matter for the Agent Closure step's own read-only summary rows; every
+  // OTHER step's own live file fields (Receipt Photo, Arrival Photo, etc. —
+  // buildField()'s own `t:"file"` branch, see its "big" thumbnail comment)
+  // render the EXACT SAME data-thumb-field placeholder whenever a photo's
+  // already uploaded, but nothing was ever calling hydrateFilePreviewsIn()
+  // for them outside the agentClosure special-case below. Now runs
+  // unconditionally, every render, for every step.
+  hydrateFilePreviewsIn("#fields");
+  // Agent Closure step (2026-08-07) — its `fields` starts with a `t:"summary"`
+  // entry (see CLOSURE_FIELDS) whose HTML is the same closureFieldGroups()/
+  // closureGroupHtml() grouped, collapsible markup the old standalone Final
+  // Closure screen rendered into #closureFields — now landing in this same
+  // wizard's own #fields instead, so it needs this same step's own OTHER bit
+  // of wiring renderClosure() used to apply there: the collapsible group headers.
+  if(step.key==="agentClosure"){
+    document.querySelectorAll("#fields .closure-group .cg-head").forEach(el=>{
+      el.onclick=()=>{
+        const box=el.closest(".closure-group"); const name=box.dataset.group;
+        if(EXPANDED_CLOSURE_GROUPS.has(name)) EXPANDED_CLOSURE_GROUPS.delete(name); else EXPANDED_CLOSURE_GROUPS.add(name);
+        box.classList.toggle("collapsed");
+      };
+    });
+  }
+  // Auto-refresh (2026-08-07, user request — see its own function comment)
+  // — checked/(re)started on every render, not just when first landing on
+  // this step, since renderWizard() is also what runs every time the agent
+  // navigates AWAY from this step to another one; that call's own check
+  // will see step.key isn't "agentClosure" anymore and stop it then.
+  startAgentClosurePollIfNeeded();
 }
 /* fields sharing the same "row" tag render side-by-side in one full-width
    row (e.g. Customer_Name/Phone_Number1/Email on the create step), instead of
@@ -2607,11 +3541,18 @@ function renderWizard(){
    objects are also read by closureFieldGroups() for the Final Closure
    summary, which was NOT asked to change — mutating them in place would leak
    into that screen too), renderFields() clones each field here and forces
-   `readonly:true` only on the clone, only when rendering a viewOnly step. */
+   `readonly:true` only on the clone, only when rendering a viewOnly step.
+   f.agentEditable:true (2026-08-07, user request: an agent-entered ETA
+   override on the otherwise-viewOnly `reach`/`reachTow` stages) is the one
+   escape hatch from this — a field marked this way stays exactly as it
+   already declared itself (editable unless it separately sets its own
+   readonly:true), even inside a viewOnly stage, for the rare case where the
+   AGENT (not the vendor) is meant to fill something in on an otherwise
+   locked screen. */
 function renderFields(step, targetId){
   const box=$(targetId||"fields"); box.innerHTML="";
   const visible = step.fields.filter(f=> !(f.when && !f.when(state.record)) && f.t!=="badge")
-    .map(f=> step.viewOnly ? Object.assign({},f,{readonly:true}) : f);
+    .map(f=> (step.viewOnly && !f.agentEditable) ? Object.assign({},f,{readonly:true}) : f);
   let i=0;
   while(i<visible.length){
     const f=visible[i];
@@ -2816,6 +3757,16 @@ function buildField(f){
     wrap.innerHTML = href
       ? lab+`<a href="${esc(href)}" target="_blank" rel="noopener" class="btn ghost" style="width:100%;justify-content:center;text-decoration:none">🧭 Navigate to Breakdown</a>`
       : lab+`<span class="hint">Breakdown location not captured yet — capture it on the Locations step.</span>`;
+  } else if(f.t==="computed"){
+    // Read-only computed display, nothing stored — same "computed at render
+    // time, not saved" pattern as navlink above (see collectStep()'s own
+    // matching skip), just plain text instead of a link. f.compute(record)
+    // returns the display string directly; f.emptyHint is shown instead
+    // when it can't be computed yet (e.g. no acceptance time/ETA recorded).
+    const val = typeof f.compute==="function" ? f.compute(state.record) : "";
+    wrap.innerHTML = val
+      ? lab+`<input type="text" readonly value="${esc(val)}">`
+      : lab+`<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`;
   } else {
     const map={tel:"tel",email:"email",number:"number",decimal:"number",date:"date",datetime:"datetime-local",time:"time",text:"text"};
     const step2 = (f.t==="decimal")?' step="any"':"";
@@ -2833,7 +3784,12 @@ const RERENDER=["Time_of_service","Vehicle","Client","Preferred_Vendor",
   // PAID) — without this, flipping Payment_Status wouldn't re-render the
   // step, so Booking_Fee's new isReadonly() check wouldn't visually take
   // effect until the agent navigated away and back.
-  "Payment_Status"];
+  "Payment_Status",
+  // Added 2026-08-07 — flipping Acceptance_Mode to "Agent Entering on Behalf
+  // of Vendor" needs an immediate re-render so renderWizard()'s own
+  // seedAcceptanceVendorFields() call actually fires and fills in the vendor
+  // fields right away, not just after the agent navigates away and back.
+  "Acceptance_Mode"];
 /* Radio-field changes force a full re-render (see wireField's radio branch,
    above RERENDER's own declaration) — this app now has two different top-level
    views that can be "current" (the step wizard vs. the Final Closure screen),
@@ -2858,6 +3814,184 @@ function preservingFocus(fn){
   if(activeId){ const el=document.getElementById(activeId); if(el) el.focus(); }
 }
 function rerenderCurrentView(){ preservingFocus(()=>{ if(state.view==="closure") renderClosure(); else renderWizard(); }); }
+// Auto-refresh (2026-08-07, user request — "show the real time data... end
+// user not need to refresh page again and again") — the Agent Closure step
+// is mostly a live summary of what the vendor/technician/driver do on their
+// OWN separate apps (photos, timestamps, rejections, acceptance...); without
+// this, an agent watching that screen only ever sees it update by fully
+// closing and reopening the ticket. Polls every 20s while — and ONLY while —
+// the agent is actually on this exact step (see showView()'s and
+// renderWizard()'s own start/stop calls); never runs anywhere else in the
+// wizard, so it can't ever fight an agent actively filling in an ordinary
+// step's own fields. Even here it never overwrites the handful of fields the
+// agent themselves might be actively typing into on THIS SAME screen
+// (Refund/Closure Status/Remarks/GST — see agentClosureEditableFieldNames())
+// — collectStep(false) also snapshots whatever's currently in those boxes
+// FIRST, so an in-progress, not-yet-saved edit survives the refresh instead
+// of being silently discarded by the DOM rebuild mid-keystroke.
+let AGENT_CLOSURE_POLL_TIMER=null;
+const AGENT_CLOSURE_POLL_MS=20000;
+function agentClosureEditableFieldNames(){
+  return CLOSURE_FIELDS.filter(function(f){ return f.t!=="summary" && f.t!=="file" && !f.readonly; }).map(function(f){ return f.n; });
+}
+function stopAgentClosurePoll(){ if(AGENT_CLOSURE_POLL_TIMER){ clearInterval(AGENT_CLOSURE_POLL_TIMER); AGENT_CLOSURE_POLL_TIMER=null; } }
+function startAgentClosurePollIfNeeded(){
+  stopAgentClosurePoll(); // never let two timers stack across re-renders
+  if(state.view!=="wizard" || !state.recordId) return;
+  const step=state.path[state.stepIndex];
+  if(!step || step.key!=="agentClosure") return;
+  AGENT_CLOSURE_POLL_TIMER=setInterval(pollAgentClosureRefresh, AGENT_CLOSURE_POLL_MS);
+}
+async function pollAgentClosureRefresh(){
+  // Re-check we're still actually here — covers any transition that didn't
+  // happen to go through showView()/renderWizard() (defensive; both already
+  // stop this in the normal case).
+  if(state.view!=="wizard" || !state.recordId){ stopAgentClosurePoll(); return; }
+  const step=state.path[state.stepIndex];
+  if(!step || step.key!=="agentClosure"){ stopAgentClosurePoll(); return; }
+  try{
+    const fresh=await apiGetById(state.recordId);
+    if(!fresh) return;
+    // Captured BEFORE merging — see the notification check at the bottom of
+    // this function (2026-08-07).
+    const prevStatus=state.record[CONFIG.stageField];
+    collectStep(false); // snapshot any in-progress typing BEFORE merging in fresh data
+    const protectedFields=agentClosureEditableFieldNames();
+    Object.keys(fresh).forEach(function(k){
+      if(protectedFields.indexOf(k)>=0) return; // never overwrite what the agent might be actively editing right now
+      state.record[k]=fresh[k];
+    });
+    STAGES.forEach(function(st){ st.fields.forEach(function(f){ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }); });
+    await loadInviteStatuses(state.recordId); pruneRejectedVendorsFromPick(); pruneSingleVendorIfTicketRejected();
+    await loadRejectionHistory(state.recordId);
+    rerenderCurrentView();
+    // Notification (2026-08-07, user request — "real-time notifications...
+    // when mechanics... update assigned cases") — only on an ACTUAL change,
+    // not every 20s tick, and only once we already had a real baseline to
+    // compare against (prevStatus null on the very first poll after landing
+    // here would otherwise fire a false alarm for a ticket that was simply
+    // already at this status when the agent opened it).
+    const newStatus=state.record[CONFIG.stageField];
+    if(prevStatus!=null && newStatus!==prevStatus) notifyMechanicUpdates([{rec:state.record, from:prevStatus, to:newStatus}]);
+  }catch(e){ console.warn("[Get-Rescue] pollAgentClosureRefresh failed (non-blocking)", e); }
+}
+// Real-time-ish mechanic-update notifications (2026-08-07, user request:
+// "Enable real-time notifications (including sound alerts) when mechanics
+// receive or update assigned cases" — agent side first, per explicit
+// direction chosen). This SDK/platform has no push or WebSocket mechanism
+// at all, so "real-time" here means periodic polling while the relevant
+// screen is open — same approach as the Agent Closure poll just above,
+// which now also feeds into this same notification. The OTHER trigger is
+// dashboard-wide: while the agent is sitting on the plain ticket list (not
+// actively editing anything), ANY ticket's Status changing between one poll
+// and the next can only mean something happened in the background — the
+// agent themselves isn't touching any ticket's Status while parked here —
+// most likely a mechanic's own action via their own separate app.
+const NOTIF_SOUND_STATE = { ctx:null };
+// Browsers block audio from starting without a prior real user gesture —
+// this creates (or resumes) a single shared AudioContext on the FIRST
+// genuine click anywhere on the page, so by the time a background poll
+// actually wants to play a sound, it's already unlocked. Cheap to call
+// repeatedly; only does real work the first time (or after the tab's been
+// backgrounded long enough for the browser to suspend it).
+function unlockNotifSound(){
+  try{
+    if(!NOTIF_SOUND_STATE.ctx) NOTIF_SOUND_STATE.ctx = new (window.AudioContext||window.webkitAudioContext)();
+    else if(NOTIF_SOUND_STATE.ctx.state==="suspended") NOTIF_SOUND_STATE.ctx.resume().catch(function(){});
+  }catch(e){}
+}
+document.addEventListener("click", unlockNotifSound);
+// Two short beeps, generated on the fly via a Web Audio oscillator rather
+// than an embedded/hosted audio file — nothing extra to bundle or fetch.
+function playNotifSound(){
+  try{
+    unlockNotifSound();
+    const ctx=NOTIF_SOUND_STATE.ctx; if(!ctx) return;
+    [0,0.18].forEach(function(offset){
+      const osc=ctx.createOscillator(), gain=ctx.createGain();
+      osc.type="sine"; osc.frequency.value=880;
+      const t=ctx.currentTime+offset;
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.linearRampToValueAtTime(0.28,t+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t); osc.stop(t+0.17);
+    });
+  }catch(e){ console.warn("[Get-Rescue] playNotifSound failed", e); }
+}
+// One stacking card per changed ticket (separate from the single-slot
+// toast(), which auto-hides in 2.6s and would just get overwritten by a
+// second simultaneous event — see #mechNotifStack's own CSS/HTML comment).
+// Clicking the card opens that ticket, unless the agent's already mid-edit
+// on a DIFFERENT ticket right now — don't yank them out of that.
+function showMechUpdateNotification(rec, fromStatus, toStatus){
+  const box=$("mechNotifStack"); if(!box) return;
+  const card=document.createElement("div");
+  card.className="mech-notif-card";
+  card.innerHTML = `<div class="mech-notif-body">
+      <b>${esc(caseLabel(rec))}</b> ${esc(readVal(rec,CONFIG.nameField)||"")}
+      <div class="mech-notif-status">${esc(fromStatus||"—")} → ${esc(toStatus||"—")}</div>
+    </div>
+    <button type="button" class="mech-notif-close" aria-label="Dismiss">&times;</button>`;
+  card.querySelector(".mech-notif-body").onclick=function(){
+    card.remove();
+    if(state.view==="wizard") return; // already editing something — don't interrupt that
+    openTicketOrClosure(rec);
+  };
+  card.querySelector(".mech-notif-close").onclick=function(e){ e.stopPropagation(); card.remove(); };
+  box.appendChild(card);
+  setTimeout(function(){ if(card.parentNode) card.remove(); }, 12000);
+}
+// Caps how many cards stack at once (a burst of many simultaneous updates —
+// e.g. right after a bulk operation — would otherwise fill the whole
+// screen); anything beyond the cap is folded into one plain toast instead.
+function notifyMechanicUpdates(changedList){
+  if(!changedList.length) return;
+  playNotifSound();
+  changedList.slice(0,5).forEach(function(c){ showMechUpdateNotification(c.rec, c.from, c.to); });
+  if(changedList.length>5) toast((changedList.length-5)+" more ticket(s) also updated","ok");
+}
+// ticketId -> last-seen Status, purely to detect a background change worth
+// notifying about (see pollDashboardForMechanicUpdates() below) — updated
+// silently on every normal loadDashboard() call (initial boot, manual
+// refresh, returning from the wizard) so the AGENT's own just-made edit
+// never looks like a "background" change the instant they're back here;
+// only the timer-driven poll below ever compares against it.
+let DASHBOARD_STATUS_SNAPSHOT={};
+function updateDashboardSnapshot(recs){
+  recs.forEach(function(r){ DASHBOARD_STATUS_SNAPSHOT[String(r.ID)] = readVal(r, CONFIG.stageField); });
+}
+let DASHBOARD_POLL_TIMER=null;
+const DASHBOARD_POLL_MS=30000;
+function stopDashboardPoll(){ if(DASHBOARD_POLL_TIMER){ clearInterval(DASHBOARD_POLL_TIMER); DASHBOARD_POLL_TIMER=null; } }
+function startDashboardPollIfNeeded(){
+  stopDashboardPoll(); // never let two timers stack across repeated loadDashboard() calls
+  if(state.view!=="dashboard") return;
+  DASHBOARD_POLL_TIMER=setInterval(pollDashboardForMechanicUpdates, DASHBOARD_POLL_MS);
+}
+async function pollDashboardForMechanicUpdates(){
+  if(state.view!=="dashboard"){ stopDashboardPoll(); return; }
+  try{
+    const recs = await getTickets(null);
+    const changed=[];
+    recs.forEach(function(r){
+      const id=String(r.ID);
+      const newStatus=readVal(r,CONFIG.stageField);
+      const oldStatus=DASHBOARD_STATUS_SNAPSHOT[id];
+      // oldStatus==null means this ticket simply wasn't in the last snapshot
+      // (brand new since boot, or the very first poll) — not something that
+      // changed WHILE the agent was watching, so it doesn't notify; only a
+      // genuinely OBSERVED change does.
+      if(oldStatus!=null && oldStatus!==newStatus) changed.push({rec:r, from:oldStatus, to:newStatus});
+    });
+    updateDashboardSnapshot(recs);
+    if(changed.length){
+      notifyMechanicUpdates(changed);
+      recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}));
+      renderReportLists(recs);
+    }
+  }catch(e){ console.warn("[Get-Rescue] pollDashboardForMechanicUpdates failed (non-blocking)", e); }
+}
 /* any field change that forces a full re-render must snapshot the DOM into
    state.record FIRST (via collectStep(false)) — otherwise every other field
    on the step (plain text inputs have no live listener of their own) reverts
@@ -2926,7 +4060,34 @@ function wireField(f,id){
       collectStep(false); rerenderCurrentView();
     };
   } else if(f.t==="file"){
-    el.onchange=()=>{ if(el.files&&el.files[0]) state.files[f.n]=el.files[0]; };
+    // Auto-upload the moment a photo is picked (2026-08-07, user request:
+    // "do not need every time to click save") — same fire-and-forget pattern
+    // vendorTicket's own uploadPhotoNow() already uses, ported here. Stashes
+    // into state.files first regardless (so the "Selected: ..."/thumbnail
+    // hint has something to show immediately, and so nothing's lost if
+    // there's no saved record yet to upload to). If a record already
+    // exists, immediately uploads too — uploadPendingFiles() on Save becomes
+    // a no-op for this field at that point (state.files[f.n] already
+    // cleared), so clicking Save is no longer what actually persists the photo.
+    el.onchange=async ()=>{
+      if(!(el.files&&el.files[0])) return;
+      const file=el.files[0];
+      state.files[f.n]=file;
+      if(!state.recordId) return; // no record yet (still on Create, unsaved) — uploadPendingFiles() picks this up on the first Save instead
+      const ok=await apiUpload(state.recordId, f.n, file);
+      if(ok){
+        delete state.files[f.n];
+        // Same "fetch the real filepath, not a placeholder" fix as
+        // uploadPendingFiles()/saveFieldEditor() — see those functions' own
+        // comments; zohoFileDownloadUrl() needs the real value to preview.
+        try{ const fresh=await apiGetById(state.recordId); state.record[f.n]=(fresh && fresh[f.n]!=null) ? fresh[f.n] : true; }
+        catch(e){ state.record[f.n]=true; }
+        toast("Photo uploaded","ok");
+        rerenderCurrentView(); // refreshes this field's hint text ("Already uploaded") without losing the agent's place
+      } else {
+        toast("Photo upload failed — will retry when you save","err");
+      }
+    };
   } else if(f.t==="select"){
     el.onchange=()=>{
       state.record[f.n]=el.value;
@@ -2959,11 +4120,24 @@ function wireField(f,id){
       if(f.parseTarget){
         // e.g. "28.647, 65.546" -> Latitude/Longitude (or the drop-location pair)
         // capped at 17 decimal places via roundCoord() — see its own comment.
-        const parts=String(state.record[f.n]||"").split(",").map(s=>s.trim()).filter(Boolean);
+        const raw=String(state.record[f.n]||"");
+        const parts=raw.split(",").map(s=>s.trim()).filter(Boolean);
         if(parts.length>=2){
           const lat=Number(parts[0]), lon=Number(parts[1]);
           if(!isNaN(lat)) state.record[f.parseTarget[0]]=roundCoord(lat);
           if(!isNaN(lon)) state.record[f.parseTarget[1]]=roundCoord(lon);
+        } else if(!raw.trim()){
+          // Real bug fixed (2026-08-07, user-reported live: "if we return and
+          // try to remove the lat long then we are not able to make it
+          // null") — this branch only ever WROTE a freshly-parsed pair; there
+          // was no path that cleared Latitude/Longitude (or the drop pair)
+          // when the paste box was emptied back out, so a once-pasted
+          // coordinate stayed stuck permanently. Only clears on a genuinely
+          // EMPTY paste box, not merely unparsable text (a half-typed/invalid
+          // paste is left alone rather than silently wiping an otherwise
+          // still-valid previous value).
+          state.record[f.parseTarget[0]]="";
+          state.record[f.parseTarget[1]]="";
         }
       }
       // This is the exact handler that was causing "Tab jumps back to the
@@ -3191,7 +4365,7 @@ function closureFieldGroups(){
     keys.forEach(function(k){
       const st=byKey[k]; if(!st) return;
       st.fields.forEach(function(f){
-        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink") return; // no meaningful value to show/edit here
+        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||f.t==="computed") return; // no meaningful value to show/edit here
         if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
         fields.push(f);
       });
@@ -3288,13 +4462,23 @@ function closureFieldValueDisplay(f){
 const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 function closureFieldRowHtml(f){
   const d=closureFieldValueDisplay(f);
-  // Thumbnail placeholder for an already-uploaded photo (2026-08-04, user
-  // req
-  // uest) — hydrated to a real <img> after render by
-  // hydrateFilePreviewsIn(), see that function's own comment.
-  const showThumb = f.t==="file" && !state.files[f.n] && state.record[f.n];
+  // Real change (2026-08-07, user request) — photo rows get their own
+  // bigger, stacked layout (thumbnail full-width above the label/value line)
+  // instead of the small inline thumbnail every other field type's row
+  // uses. Hydrated to a real <img> after render by hydrateFilePreviewsIn(),
+  // see that function's own comment — this just renders the placeholder.
+  if(f.t==="file"){
+    const showThumb = !state.files[f.n] && state.record[f.n];
+    return `<button type="button" class="crow crow-photo" data-field="${esc(f.n)}">
+      ${showThumb?`<span class="crow-thumb big" data-thumb-field="${esc(f.n)}"><span class="thumb-ph">🖼</span></span>`:""}
+      <span class="crow-photo-meta">
+        <span class="k">${esc(f.l)}</span>
+        <span class="v${d.empty?" empty":""}">${esc(d.text)}</span>
+        ${EDIT_ICON}
+      </span>
+    </button>`;
+  }
   return `<button type="button" class="crow" data-field="${esc(f.n)}">
-    ${showThumb?`<span class="crow-thumb" data-thumb-field="${esc(f.n)}"><span class="thumb-ph">🖼</span></span>`:""}
     <span class="k">${esc(f.l)}</span>
     <span class="v${d.empty?" empty":""}">${esc(d.text)}</span>
     ${EDIT_ICON}
@@ -3316,6 +4500,16 @@ const FILE_PREVIEW_CACHE={};
 function hydrateFilePreviewsIn(containerSelector){
   document.querySelectorAll(containerSelector+" [data-thumb-field]").forEach(function(el){
     const fieldName=el.dataset.thumbField;
+    // Real fix (2026-08-07) — direct URL first (see zohoFileDownloadUrl()'s
+    // own comment); this is the actual fix, not a fallback-of-a-fallback.
+    const directUrl = zohoFileDownloadUrl(state.recordId, fieldName, state.record[fieldName]);
+    if(directUrl){ el.innerHTML='<img src="'+esc(directUrl)+'">'; return; }
+    // Falls back to the old readFile()-based path only if a real URL
+    // couldn't be built yet (e.g. state.record[fieldName] is still the
+    // `true` placeholder because a fresh re-fetch hasn't happened) — kept as
+    // a last resort even though it's proven broken for genuinely binary
+    // files, since SOME response is better than none for a field type
+    // readFile() might still handle fine (e.g. plain-text file uploads).
     const key=state.recordId+"|"+fieldName;
     const cached=FILE_PREVIEW_CACHE[key];
     if(cached){ el.innerHTML='<img src="'+esc(cached)+'">'; return; }
@@ -3440,15 +4634,36 @@ async function saveFieldEditor(){
   const f=editingField; if(!f) return;
   collectSingleField(f);
   if(!state.recordId){
-    closeFieldEditor(); renderClosure();
+    // rerenderCurrentView() (2026-08-07, was a hardcoded renderClosure() call)
+    // — the closure summary this popup edits is now ALSO reachable as the
+    // wizard's own "Agent Closure" step, not just the separate closure
+    // screen; this already dispatches on state.view so the refresh lands in
+    // whichever one is actually on screen.
+    closeFieldEditor(); rerenderCurrentView();
     toast("Saved — will be written to Zoho when you Close Case","ok");
     return;
   }
   $("fieldModalSave").disabled=true;
   try{
     if(f.t==="file"){
+      // Same bug/fix as uploadPendingFiles() — was fire-and-forget-looking
+      // (awaited, but never checked success, never marked state.record[f.n]
+      // or cleared state.files[f.n]), so a genuine failure here looked
+      // identical to success, and even a real success wouldn't reflect in
+      // this SAME session's "Uploaded"/thumbnail display until a full
+      // close-and-reopen. Re-fetches the real filepath value on success now
+      // too (2026-08-07) — see uploadPendingFiles()'s own matching comment;
+      // zohoFileDownloadUrl() needs the real value, not the `true` placeholder.
       const file=state.files[f.n];
-      if(file) await apiUpload(state.recordId,f.n,file);
+      if(file){
+        const ok=await apiUpload(state.recordId,f.n,file);
+        if(ok){
+          delete state.files[f.n];
+          try{ const fr=await apiGetById(state.recordId); state.record[f.n]=(fr && fr[f.n]!=null) ? fr[f.n] : true; }
+          catch(e){ state.record[f.n]=true; }
+        }
+        else throw new Error("Photo upload failed — try again.");
+      }
     } else {
       const payload={};
       let v=state.record[f.n];
@@ -3471,7 +4686,12 @@ async function saveFieldEditor(){
       }
       if(Object.keys(payload).length) await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
     }
-    closeFieldEditor(); renderClosure();
+    // rerenderCurrentView() (2026-08-07, was a hardcoded renderClosure() call)
+    // — the closure summary this popup edits is now ALSO reachable as the
+    // wizard's own "Agent Closure" step, not just the separate closure
+    // screen; this already dispatches on state.view so the refresh lands in
+    // whichever one is actually on screen.
+    closeFieldEditor(); rerenderCurrentView();
     toast("Saved","ok");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
   finally{ $("fieldModalSave").disabled=false; }
@@ -3500,6 +4720,7 @@ function collectStep(validate){
     if(f.t==="badge") return; // read-only, value already set by Vehicle_Issue handler
     if(f.t==="button") return; // no DOM value to read — its own onclick sets state.record directly
     if(f.t==="navlink") return; // computed display only, nothing stored — see buildField's own comment
+    if(f.t==="computed") return; // same "computed display only" reasoning as navlink — see buildField's own comment
     if(f.t==="remarks") return; // state.record kept current by the Add-button handler (see wireField) — nothing to scrape from the DOM
     let v;
     if(f.t==="multiselect"){
@@ -3596,7 +4817,23 @@ function buildPayload(step){
       if(f.useId) arr=idsFor(f,arr);
       p[f.n]=arr; return;
     }
-    if(v===""||v==null) return;
+    if(v===""||v==null){
+      // Real bug fixed (2026-08-07, user-reported live: clearing the paste
+      // box couldn't actually null out a coordinate — "not able to make it
+      // null") — every OTHER blank field is deliberately OMITTED from the
+      // payload here (so an agent who never touched an optional field
+      // doesn't accidentally wipe it), but that same behavior meant an
+      // explicit clear of Latitude/Longitude/DropLocationLat/DropLocationLong
+      // (see wireField's own parseTarget-clearing fix) never actually reached
+      // Zoho — the field just got silently left out of the update, so the
+      // OLD coordinate survived there regardless of what the UI showed
+      // locally. These four are the one exception: send null explicitly
+      // instead of omitting, so a genuine clear actually persists. Harmless
+      // when the field was already blank (never set) — setting an already-
+      // null field to null again is a no-op.
+      if(COORD_FIELDS.indexOf(f.n)>=0) p[f.n]=null;
+      return;
+    }
     if(f.useId) v=idsFor(f,v);
     if(f.t==="date") v=fmtDate(v);
     else if(f.t==="datetime") v=fmtDateTime(v);
@@ -3615,6 +4852,13 @@ function buildPayload(step){
 /* ---- actions ---- */
 async function saveStep(advance){
   const step=state.path[state.stepIndex];
+  // Defense in depth (2026-08-07) — the Save/"Close Case" button is already
+  // hidden whenever state.closureReadOnly (see renderWizard()'s own comment),
+  // so this shouldn't normally be reachable; guarded here too since every
+  // OTHER step's own computeStatus() has no awareness that this ticket is
+  // already done, and would otherwise silently write a fresh, non-"CLOSED"
+  // Status the moment this ran, reopening an already-closed ticket.
+  if(state.closureReadOnly) return;
   const chk=collectStep(true);
   if(!chk.ok){ toast("Please fill: "+chk.missing,"err"); return; }
   setPath();
@@ -3652,16 +4896,35 @@ async function saveStep(advance){
     if(step.key==="assignment"){
       try{ await syncInvites(state.recordId, state.record.Vendors1); }
       catch(e){ console.warn("[Get-Rescue] syncInvites failed (non-blocking)", e); }
+      // Refresh the invite-status panel right after (re)syncing — covers the
+      // case where saveStep() re-renders THIS same step instead of advancing
+      // (e.g. a re-save with no other changes), so a newly-added vendor shows
+      // up as "Awaiting response" immediately rather than only after a
+      // full close-and-reopen.
+      try{ await loadInviteStatuses(state.recordId); pruneRejectedVendorsFromPick(); }
+      catch(e){ console.warn("[Get-Rescue] loadInviteStatuses refresh failed (non-blocking)", e); }
     }
-    // best-effort file uploads (won't block)
-    for(const k in state.files){ if(state.files[k]) apiUpload(state.recordId,k,state.files[k]); }
+    // best-effort file uploads (never blocks the record save itself) — see
+    // uploadPendingFiles()'s own comment for why this is awaited now.
+    const failedUploads = await uploadPendingFiles(state.recordId);
     $("wizCaseId").textContent=caseLabel(state.record)||("#"+state.recordId);
-    toast("Saved","ok");
+    // Folded into ONE toast (not a second call right after "Saved") — see
+    // uploadPendingFiles()'s own comment on why a second toast() call would
+    // otherwise just silently replace this one before the agent ever saw it.
+    toast(failedUploads.length ? ("Saved, but "+(failedUploads.length>1?"photos":"photo")+" failed to upload: "+failedUploads.join(", ")+" — try again from this step.") : "Saved", failedUploads.length?"err":"ok");
     // required action not done yet (e.g. location/payment) -> save as-is and
     // close the wizard back to the dashboard, same as Cancel, rather than
     // blocking the agent on this page. Reopening the ticket from the dashboard
     // resumes on this same step (stageIndexForStatus).
     const blocked = typeof step.canAdvance==="function" && !step.canAdvance(state.record);
+    // Diagnostic (2026-08-07, user-reported live: saving Accept with
+    // Acceptance_Mode="Vendor Accepting via App" exits to the dashboard
+    // instead of advancing to Reach, but "Agent Entering on Behalf of Vendor"
+    // advances correctly) — this step has no canAdvance at all, so `blocked`
+    // should always be false here; this line settles definitively whether
+    // that's actually true live, or something else is setting it, before
+    // guessing any further.
+    console.log("[Get-Rescue] saveStep decision — step:", step.key, "| blocked:", blocked, "| advance:", advance, "| stepIndex:", state.stepIndex, "/ path.length:", state.path.length);
     if(blocked){
       // blockedMessage can be a plain string or, since 2026-08-04 (see
       // `locations`'s own TOW-vs-RSR wording), a function of state.record —
@@ -3698,7 +4961,30 @@ function friendlySaveError(e){
 }
 function prevStep(){ if(state.stepIndex===0) return; collectStep(false); state.stepIndex--; console.log("[Get-Rescue] prevStep -> state.record:", state.record); renderWizard(); scrollToTop(); }
 function jumpTo(i){ if(i===state.stepIndex || i>state.maxStepIndex) return; collectStep(false); setPath(); state.stepIndex=Math.min(i,state.path.length-1); console.log("[Get-Rescue] jumpTo("+i+") -> state.record:", state.record); renderWizard(); scrollToTop(); }
+// Jumps straight to the "Agent Closure" step from ANY other step (2026-08-07,
+// see STAGES' own comment on that entry) — used by the dedicated "Close Case"
+// button (wizClosureBtn) and the dashboard's own per-row Close action, same
+// role the old openClosure() played before the merge. Deliberately bypasses
+// jumpTo()'s own state.maxStepIndex gate (rather than reusing it) — Close
+// Case has always been reachable from ANY point in a ticket's timeline, even
+// steps not yet actually completed (e.g. cancelling right after Create), and
+// unlocking the step here is exactly what makes that still true post-merge.
+function jumpToAgentClosureStep(){
+  const idx=state.path.findIndex(function(s){ return s.key==="agentClosure"; });
+  if(idx<0) return; // shouldn't happen — buildPath() always includes the "pay" branch
+  if(idx>state.maxStepIndex) state.maxStepIndex=idx;
+  state.stepIndex=idx;
+  renderWizard(); scrollToTop();
+}
 async function cancelWizard(){
+  // Viewing an already-closed ticket (state.closureReadOnly) — every field on
+  // every step is locked read-only and nothing here has touched the live
+  // record, so this is plain navigation, not an in-progress save to confirm —
+  // same reasoning the old standalone closure screen's own cancelClosure()
+  // used. Skips the best-effort persist below entirely, which otherwise would
+  // call THIS step's own computeStatus() and could silently write a fresh,
+  // non-"CLOSED" Status, reopening an already-closed ticket.
+  if(state.closureReadOnly){ backToDash(); return; }
   const yes=await confirmBox("Stop filling?","Your current progress on this step will be saved as-is before you leave.","Yes, stop");
   if(!yes) return;
   // best-effort: persist whatever's on screen (incl. its computed Status, e.g.
@@ -3736,14 +5022,22 @@ async function saveClosure(){
     [CONFIG.stageField]:"CLOSED"
   };
   if(r.Closure_Status==="Completed" || r.Closure_Status==="Cancelled") payload.Total_Service_Fee=computeClosureTSF(r);
-  $("closureSaveBtn").disabled=true;
+  // Real bug fixed (2026-08-07): this used to only disable closureSaveBtn —
+  // harmless while that was the actual button being clicked, but now that
+  // saveClosure() is also triggered from the wizard's own shared #saveBtn
+  // (see that button's own onclick routing), disabling the OTHER, invisible
+  // one did nothing to stop a double-click on the button actually on screen.
+  // Disabling both covers whichever one is really showing.
+  $("closureSaveBtn").disabled=true; $("saveBtn").disabled=true;
   try{
     await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
-    for(const k in state.files){ if(state.files[k]) apiUpload(state.recordId,k,state.files[k]); }
-    toast("Ticket closed","ok");
+    // See uploadPendingFiles()'s own comment (awaited + folded into one toast
+    // now, same fix as saveStep()'s matching call).
+    const failedUploads = await uploadPendingFiles(state.recordId);
+    toast(failedUploads.length ? ("Ticket closed, but "+(failedUploads.length>1?"photos":"photo")+" failed to upload: "+failedUploads.join(", ")) : "Ticket closed", failedUploads.length?"err":"ok");
     backToDash();
   }catch(e){ toast((e&&e.message)||"Could not close","err"); }
-  finally{ $("closureSaveBtn").disabled=false; }
+  finally{ $("closureSaveBtn").disabled=false; $("saveBtn").disabled=false; }
 }
 function backToDash(){ showView("dashboard"); loadDashboard(); }
 
@@ -3754,23 +5048,48 @@ $("newBtn").onclick=newTicket;
 $("refreshBtn").onclick=loadDashboard;
 $("wizClose").onclick=cancelWizard;
 $("prevBtn").onclick=prevStep;
-$("saveBtn").onclick=()=>saveStep(true);
+// 2026-08-07 (Agent Closure merge, see STAGES' own comment) — the bottom
+// Save button is shared across every step, including the new closing one;
+// on THAT step specifically it needs saveClosure()'s own bespoke payload/TSF
+// reconciliation, not the generic per-stage buildPayload() flow every other
+// step uses. saveStep() itself still refuses to run at all when
+// state.closureReadOnly, as a backstop (see its own comment).
+$("saveBtn").onclick=()=>{
+  const step=state.path[state.stepIndex];
+  if(step && step.key==="agentClosure") saveClosure(); else saveStep(true);
+};
 $("cancelBtn").onclick=cancelWizard;
 // permanent "Close Case" button inside the wizard — snapshots whatever's on
-// the current step first so the closure screen's summary reflects it too
+// the current step first so the closure step's own summary reflects it too.
 // Mid-wizard "Close Case" — the agent is actively editing a not-yet-closed
 // ticket right now, so this is always the editable path, never read-only.
-$("wizClosureBtn").onclick=()=>{ collectStep(false); state.closureReadOnly=false; openClosure(state.record); };
+// 2026-08-07: jumps to the "Agent Closure" STEP within this same wizard now
+// (see jumpToAgentClosureStep()) instead of switching to the old separate
+// closure screen — no reopen needed, state.record is already current.
+$("wizClosureBtn").onclick=()=>{ collectStep(false); state.closureReadOnly=false; jumpToAgentClosureStep(); };
+// closureBack/closureCancelBtn/closureSaveBtn (the old standalone Final
+// Closure screen's OWN buttons) are left wired but effectively dead now —
+// nothing sets state.view="closure"/shows #closureView anymore (see
+// openTicketOrClosure()'s and wizClosureBtn's own 2026-08-07 comments), so
+// these can never actually be clicked. Left in place rather than removed —
+// see openClosure()/renderClosure()'s own "SUPERSEDED" comment for why.
 $("closureBack").onclick=cancelClosure;
 $("closureCancelBtn").onclick=cancelClosure;
 $("closureSaveBtn").onclick=saveClosure;
 // click-any-field-to-edit popup — delegated so it keeps working across every
-// renderClosure() re-render (the summary's rows are rebuilt from scratch
-// each time, plain .onclick assignments on them wouldn't survive that)
-$("closureFields").addEventListener("click", (e)=>{
+// re-render (the summary's rows are rebuilt from scratch each time, plain
+// .onclick assignments on them wouldn't survive that). Bound to BOTH
+// #closureFields (the old, now-dead standalone screen) AND #fields (2026-08-07
+// — the same summary markup now also renders here, as the wizard's own
+// "Agent Closure" step) so the popup keeps working regardless of which one
+// actually has it on screen; harmless no-op on every OTHER step, since only
+// the closure summary's own rows ever carry a "crow" class + data-field.
+function handleClosureRowClick(e){
   const row = e.target.closest(".crow");
   if(row) openFieldEditor(row.dataset.field);
-});
+}
+$("closureFields").addEventListener("click", handleClosureRowClick);
+$("fields").addEventListener("click", handleClosureRowClick);
 $("fieldModalCancel").onclick=closeFieldEditor;
 $("fieldModalSave").onclick=saveFieldEditor;
 $("fieldModal").addEventListener("click", (e)=>{ if(e.target.id==="fieldModal") closeFieldEditor(); });
@@ -3785,7 +5104,11 @@ async function boot(){
   // widget never tracked the logged-in agent's own identity before now,
   // unlike the vendor/technician/driver widgets, which already fetch their
   // own profile record.
-  try{ const params=await ZOHO.CREATOR.UTIL.getInitParams(); LOGIN_EMAIL=(params&&params.loginUser)||""; }catch(e){}
+  // INIT_PARAMS (2026-08-07) — kept in full (not just loginUser) now that
+  // zohoAppLinkName() also needs params.envUrlFragment (e.g.
+  // "environment/development") to build a real photo-preview URL — see that
+  // function's own comment.
+  try{ INIT_PARAMS=await ZOHO.CREATOR.UTIL.getInitParams(); LOGIN_EMAIL=(INIT_PARAMS&&INIT_PARAMS.loginUser)||""; console.log("[Get-Rescue] boot: getInitParams() ->", INIT_PARAMS); }catch(e){}
   await loadOptions();
   // AGENT_DISPLAY_NAME (2026-08-05, reapplied 2026-08-06) — needs
   // OPTIONS.agents, so this can only resolve after loadOptions() above finishes.

@@ -130,6 +130,17 @@ img,svg{max-width:100%}
 /* ---------- toast ---------- */
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* "New case assigned" notifications (2026-08-07) — see notifyNewCases()'s
+   own comment. Stacks top-right, above everything else on screen. */
+.mech-notif-stack{position:fixed;top:16px;right:16px;z-index:90;display:flex;flex-direction:column;gap:8px;max-width:min(340px,calc(100vw - 32px))}
+.mech-notif-card{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--signal);
+  border-radius:10px;padding:11px 12px;box-shadow:var(--sh-2);animation:mechNotifIn .2s ease-out}
+.mech-notif-body{flex:1;cursor:pointer;font-size:13px;line-height:1.45}
+.mech-notif-body b{display:block;font-size:13.5px;margin-bottom:2px}
+.mech-notif-status{color:var(--muted);font-size:11.5px;margin-top:3px}
+.mech-notif-close{flex:none;border:0;background:transparent;color:var(--muted-2);font-size:18px;line-height:1;cursor:pointer;padding:0 2px}
+.mech-notif-close:hover{color:var(--stop)}
+@keyframes mechNotifIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
 .toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
 
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -186,6 +197,13 @@ img,svg{max-width:100%}
 <input type="file" id="galleryInput" accept="image/*" style="display:none">
 
 <div class="toast" id="toast"></div>
+
+<!-- Real-time-ish "new case assigned" notifications (2026-08-07, user
+     request) — see notifyNewCases()'s own comment. Separate from the
+     single-slot toast above (auto-hides in 2.6s, would get stomped by a
+     second simultaneous event); cards here stack and persist until
+     dismissed or their own 12s timeout. -->
+<div class="mech-notif-stack" id="mechNotifStack"></div>
 
 <script>
 /* =====================================================================
@@ -288,8 +306,17 @@ async function updateMyInvite(ticketId, data){
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
 }
+// Real bug fixed (2026-08-07, same root cause diagnosed live in getRescueTicket
+// — "Invalid Configuration...!!!" on every upload) — see vendorTicket's own
+// matching comment: resolve()'s generic namespace probe could silently pick
+// the wrong "uploadFile"-named function from an earlier namespace; the real,
+// documented method is specifically ZOHO.CREATOR.FILE.uploadFile. Calls it
+// directly now, falling back to the old generic probe only if an older SDK
+// build has no FILE namespace.
 async function apiUpload(id, fieldName, file){
-  const fn=resolve("uploadFile"); if(!fn || !file) return false;
+  const C=window.ZOHO && ZOHO.CREATOR;
+  const fn=(C && C.FILE && typeof C.FILE.uploadFile==="function") ? C.FILE.uploadFile.bind(C.FILE) : resolve("uploadFile");
+  if(!fn || !file) return false;
   try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
 }
@@ -514,16 +541,123 @@ async function loadMyInvites(){
   mine.forEach(function(inv){ const tid=lookupId(inv.RSID); if(tid!=null) map[String(tid)]=inv; });
   return map;
 }
-async function loadDashboard(){
-  $("ticketList").innerHTML='<div class="spin"></div>';
+// Extracted 2026-08-07 (was inline in loadDashboard() below) so the new
+// background poll (pollForNewCases()) can fetch the exact same "my tickets"
+// list without duplicating this filtering logic — see that function's own
+// comment for why a separate fetch (rather than just reusing state.tickets)
+// is what actually detects a newly-arrived case.
+async function fetchMyTickets(){
   let inviteMap={};
   try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[Get-Rescue] loadMyInvites failed (falling back to email match only)", e); }
   state.inviteByTicketId = inviteMap;
   const criteria = '(Service_Type == "RSR")';
   const recs = await apiGetReport(CONFIG.reportName, criteria, 200);
-  state.tickets = recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; })
+  return recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; })
     .filter(function(r){ return inviteMap[String(r.ID)]!=null || isMine(r); });
+}
+async function loadDashboard(){
+  $("ticketList").innerHTML='<div class="spin"></div>';
+  state.tickets = await fetchMyTickets();
   renderDashboard();
+  // Real-time-ish "new case assigned" notifications (2026-08-07) — silently
+  // (re)baselines the known-ticket-ids snapshot on every NORMAL load
+  // (initial boot, pull-to-refresh, returning from a ticket) so none of
+  // those ever themselves trigger a false "new case" alert; only the
+  // background timer below ever compares against this baseline. See
+  // pollForNewCases()'s own comment for the full mechanism.
+  updateKnownTicketIds(state.tickets);
+  startDashboardPollIfNeeded();
+}
+// Real-time-ish "new case assigned" notifications (2026-08-07, user request:
+// "Enable real-time notifications (including sound alerts) when mechanics
+// receive or update assigned cases" — mechanic side; the agent side was
+// already built in getRescueTicket this same session). This platform has no
+// push/WebSocket channel at all, so "real-time" here means periodic polling
+// while the dashboard list is actually on screen — same approach used there.
+// Detects a ticket ID showing up in "my tickets" that WASN'T there on the
+// previous check, i.e. a brand-new invite/assignment just landed.
+let KNOWN_TICKET_IDS=null; // null = not yet baselined (covers the very first load); a Set thereafter
+function updateKnownTicketIds(recs){ KNOWN_TICKET_IDS=new Set(recs.map(function(r){ return String(r.ID); })); }
+const NOTIF_SOUND_STATE={ctx:null};
+// Browsers block audio without a prior real user gesture — this creates (or
+// resumes) a single shared AudioContext on the FIRST genuine click anywhere
+// on the page, so a later background poll's sound is already unlocked by
+// the time it actually needs to play. Cheap to call repeatedly.
+function unlockNotifSound(){
+  try{
+    if(!NOTIF_SOUND_STATE.ctx) NOTIF_SOUND_STATE.ctx=new (window.AudioContext||window.webkitAudioContext)();
+    else if(NOTIF_SOUND_STATE.ctx.state==="suspended") NOTIF_SOUND_STATE.ctx.resume().catch(function(){});
+  }catch(e){}
+}
+document.addEventListener("click", unlockNotifSound);
+// Two short beeps, generated on the fly via a Web Audio oscillator — no
+// audio file to bundle or host.
+function playNotifSound(){
+  try{
+    unlockNotifSound();
+    const ctx=NOTIF_SOUND_STATE.ctx; if(!ctx) return;
+    [0,0.18].forEach(function(offset){
+      const osc=ctx.createOscillator(), gain=ctx.createGain();
+      osc.type="sine"; osc.frequency.value=880;
+      const t=ctx.currentTime+offset;
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.linearRampToValueAtTime(0.28,t+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t); osc.stop(t+0.17);
+    });
+  }catch(e){ console.warn("[Get-Rescue] playNotifSound failed", e); }
+}
+// One stacking card per new case (see #mechNotifStack's own HTML/CSS
+// comment) — clicking it opens that ticket, unless a different one is
+// already open right now (don't yank the technician out of an active job screen).
+function showNewCaseNotification(rec){
+  const box=$("mechNotifStack"); if(!box) return;
+  const card=document.createElement("div");
+  card.className="mech-notif-card";
+  card.innerHTML = `<div class="mech-notif-body">
+      <b>New case: ${esc(caseLabel(rec))}</b>
+      <div class="mech-notif-status">${esc(vehicleDisplayFor(rec)||"")} · ${esc(readVal(rec,CONFIG.nameField)||"")}</div>
+    </div>
+    <button type="button" class="mech-notif-close" aria-label="Dismiss">&times;</button>`;
+  card.querySelector(".mech-notif-body").onclick=function(){
+    card.remove();
+    if(!isDashboardVisible()) return; // already viewing a different ticket — don't interrupt that
+    openTicket(rec.ID);
+  };
+  card.querySelector(".mech-notif-close").onclick=function(e){ e.stopPropagation(); card.remove(); };
+  box.appendChild(card);
+  setTimeout(function(){ if(card.parentNode) card.remove(); }, 12000);
+}
+// Caps how many cards stack at once — a burst of many simultaneous new
+// invites would otherwise fill the whole screen; anything past the cap
+// folds into one plain toast instead.
+function notifyNewCases(list){
+  if(!list.length) return;
+  playNotifSound();
+  list.slice(0,5).forEach(showNewCaseNotification);
+  if(list.length>5) toast((list.length-5)+" more new case(s) also arrived","ok");
+}
+function isDashboardVisible(){
+  const el=$("dashboard"); return !!el && el.style.display!=="none" && !el.classList.contains("off");
+}
+let DASHBOARD_POLL_TIMER=null;
+const DASHBOARD_POLL_MS=30000;
+function stopDashboardPoll(){ if(DASHBOARD_POLL_TIMER){ clearInterval(DASHBOARD_POLL_TIMER); DASHBOARD_POLL_TIMER=null; } }
+function startDashboardPollIfNeeded(){
+  stopDashboardPoll(); // never let two timers stack across repeated loadDashboard() calls
+  if(!isDashboardVisible()) return;
+  DASHBOARD_POLL_TIMER=setInterval(pollForNewCases, DASHBOARD_POLL_MS);
+}
+async function pollForNewCases(){
+  if(!isDashboardVisible()){ stopDashboardPoll(); return; }
+  try{
+    const fresh=await fetchMyTickets();
+    const newOnes = KNOWN_TICKET_IDS ? fresh.filter(function(r){ return !KNOWN_TICKET_IDS.has(String(r.ID)); }) : [];
+    updateKnownTicketIds(fresh);
+    state.tickets=fresh;
+    if(newOnes.length){ notifyNewCases(newOnes); renderDashboard(); }
+  }catch(e){ console.warn("[Get-Rescue] pollForNewCases failed (non-blocking)", e); }
 }
 const STATUS_PILL = {
   "RSP IRA (INVITE RESPONSE AWAITED)": {cls:"invite", label:"New Invite"},
@@ -557,6 +691,12 @@ function openTicket(id){
   state.photos = {}; state.files = {};
   $("dashboard").classList.add("off"); $("dashboard").style.display="none";
   $("actionScreen").classList.remove("off");
+  // Stop the "new case" background poll the instant a ticket's own screen
+  // opens (2026-08-07) — isDashboardVisible() would eventually catch this on
+  // its own next tick anyway, but stopping it immediately here avoids up to
+  // one full poll interval of pointless background fetching right after
+  // navigating away.
+  stopDashboardPoll();
   renderActionScreen();
 }
 function backToDashboard(){

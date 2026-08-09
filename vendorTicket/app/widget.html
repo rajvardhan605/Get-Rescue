@@ -146,6 +146,17 @@ img,svg{max-width:100%}
 
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;background:var(--ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13.5px;font-weight:600;z-index:80;transition:.25s;box-shadow:var(--sh-2);max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* "New case assigned" notifications (2026-08-07) — see notifyNewCases()'s
+   own comment. Stacks top-right, above everything else on screen. */
+.mech-notif-stack{position:fixed;top:16px;right:16px;z-index:90;display:flex;flex-direction:column;gap:8px;max-width:min(340px,calc(100vw - 32px))}
+.mech-notif-card{display:flex;align-items:flex-start;gap:10px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--signal);
+  border-radius:10px;padding:11px 12px;box-shadow:var(--sh-2);animation:mechNotifIn .2s ease-out}
+.mech-notif-body{flex:1;cursor:pointer;font-size:13px;line-height:1.45}
+.mech-notif-body b{display:block;font-size:13.5px;margin-bottom:2px}
+.mech-notif-status{color:var(--muted);font-size:11.5px;margin-top:3px}
+.mech-notif-close{flex:none;border:0;background:transparent;color:var(--muted-2);font-size:18px;line-height:1;cursor:pointer;padding:0 2px}
+.mech-notif-close:hover{color:var(--stop)}
+@keyframes mechNotifIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
 .toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
 
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -198,6 +209,13 @@ img,svg{max-width:100%}
 <input type="file" id="galleryInput" accept="image/*" style="display:none">
 
 <div class="toast" id="toast"></div>
+
+<!-- Real-time-ish "new case assigned" notifications (2026-08-07, user
+     request) — see notifyNewCases()'s own comment. Separate from the
+     single-slot toast above (auto-hides in 2.6s, would get stomped by a
+     second simultaneous event); cards here stack and persist until
+     dismissed or their own 12s timeout. -->
+<div class="mech-notif-stack" id="mechNotifStack"></div>
 
 <script>
 /* =====================================================================
@@ -357,8 +375,21 @@ async function updateMyInvite(ticketId, data){
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[GR-Vendor] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
 }
+// Real bug fixed (2026-08-07, same root cause diagnosed live in getRescueTicket
+// — "Invalid Configuration...!!!" on every upload) — resolve()'s generic
+// namespace probe tries [DATA,PUBLISH,META,UTIL,FILE] in that order and
+// returns the FIRST one with a function literally named "uploadFile", but
+// Zoho's own JS API v2 docs confirm the real, only-correct method is
+// specifically ZOHO.CREATOR.FILE.uploadFile — if an earlier namespace also
+// happens to expose something called "uploadFile" for a different purpose,
+// the probe would silently call the wrong one, which is exactly what a
+// generic "invalid config" rejection looks like regardless of how correct
+// our own config object is. Calls FILE.uploadFile directly now; only falls
+// back to the old generic probe if an older SDK build has no FILE namespace.
 async function apiUpload(id, fieldName, file){
-  const fn=resolve("uploadFile"); if(!fn || !file) return false;
+  const C=window.ZOHO && ZOHO.CREATOR;
+  const fn=(C && C.FILE && typeof C.FILE.uploadFile==="function") ? C.FILE.uploadFile.bind(C.FILE) : resolve("uploadFile");
+  if(!fn || !file) return false;
   try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
 }
@@ -622,16 +653,20 @@ async function loadMyInvites(){
   });
   return map;
 }
-async function loadDashboard(){
-  $("ticketList").innerHTML='<div class="spin"></div>';
+// Extracted 2026-08-07 (was inline in loadDashboard() below) so the new
+// background poll (pollForNewCases()) can fetch the exact same "my tickets"
+// list without duplicating this filtering logic — see that function's own
+// comment for why a separate fetch (rather than just reusing state.tickets)
+// is what actually detects a newly-arrived case.
+async function fetchMyTickets(){
   let inviteMap={};
   try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[GR-Vendor] loadMyInvites failed (falling back to Vendor_Emails/name match only)", e); }
   state.inviteByTicketId = inviteMap;
   const recs = await apiGetReport(CONFIG.reportName, null, 200);
-  console.log("[GR-Vendor] loadDashboard: fetched "+recs.length+" total records; LOGIN_EMAIL="+LOGIN_EMAIL+", MY_VENDOR_NAME="+MY_VENDOR_NAME);
+  console.log("[GR-Vendor] fetchMyTickets: fetched "+recs.length+" total records; LOGIN_EMAIL="+LOGIN_EMAIL+", MY_VENDOR_NAME="+MY_VENDOR_NAME);
   const statusMatched = recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; });
-  console.log("[GR-Vendor] loadDashboard: "+statusMatched.length+" match MY_STATUSES ("+MY_STATUSES.join(", ")+")");
-  state.tickets = statusMatched.filter(function(r){
+  console.log("[GR-Vendor] fetchMyTickets: "+statusMatched.length+" match MY_STATUSES ("+MY_STATUSES.join(", ")+")");
+  const mine = statusMatched.filter(function(r){
     if(!(inviteMap[String(r.ID)]!=null || isMine(r))) return false;
     const st=String(r[CONFIG.stageField]||"").trim().toUpperCase();
     if(st==="RSP IRA (INVITE RESPONSE AWAITED)") return true; // still open to every invited candidate
@@ -647,8 +682,112 @@ async function loadDashboard(){
     if(assignedId==null || assignedId==="") return true;
     return currentVendorRecord && String(assignedId)===String(currentVendorRecord.id);
   });
-  console.log("[GR-Vendor] loadDashboard: "+state.tickets.length+" remain after Invites/isMine()/Assigned_Vendor filter", state.tickets.map(function(r){ return caseLabel(r); }));
+  console.log("[GR-Vendor] fetchMyTickets: "+mine.length+" remain after Invites/isMine()/Assigned_Vendor filter", mine.map(function(r){ return caseLabel(r); }));
+  return mine;
+}
+async function loadDashboard(){
+  $("ticketList").innerHTML='<div class="spin"></div>';
+  state.tickets = await fetchMyTickets();
   renderDashboard();
+  // Real-time-ish "new case assigned" notifications (2026-08-07) — silently
+  // (re)baselines the known-ticket-ids snapshot on every NORMAL load
+  // (initial boot, pull-to-refresh, returning from a ticket) so none of
+  // those ever themselves trigger a false "new case" alert; only the
+  // background timer below ever compares against this baseline. See
+  // pollForNewCases()'s own comment for the full mechanism.
+  updateKnownTicketIds(state.tickets);
+  startDashboardPollIfNeeded();
+}
+// Real-time-ish "new case assigned" notifications (2026-08-07, user request:
+// "Enable real-time notifications (including sound alerts) when mechanics
+// receive or update assigned cases" — mechanic side; the agent side was
+// already built in getRescueTicket this same session). This platform has no
+// push/WebSocket channel at all, so "real-time" here means periodic polling
+// while the dashboard list is actually on screen — same approach used there.
+// Detects a ticket ID showing up in "my tickets" that WASN'T there on the
+// previous check, i.e. a brand-new invite/assignment just landed.
+let KNOWN_TICKET_IDS=null; // null = not yet baselined (covers the very first load); a Set thereafter
+function updateKnownTicketIds(recs){ KNOWN_TICKET_IDS=new Set(recs.map(function(r){ return String(r.ID); })); }
+const NOTIF_SOUND_STATE={ctx:null};
+// Browsers block audio without a prior real user gesture — this creates (or
+// resumes) a single shared AudioContext on the FIRST genuine click anywhere
+// on the page, so a later background poll's sound is already unlocked by
+// the time it actually needs to play. Cheap to call repeatedly.
+function unlockNotifSound(){
+  try{
+    if(!NOTIF_SOUND_STATE.ctx) NOTIF_SOUND_STATE.ctx=new (window.AudioContext||window.webkitAudioContext)();
+    else if(NOTIF_SOUND_STATE.ctx.state==="suspended") NOTIF_SOUND_STATE.ctx.resume().catch(function(){});
+  }catch(e){}
+}
+document.addEventListener("click", unlockNotifSound);
+// Two short beeps, generated on the fly via a Web Audio oscillator — no
+// audio file to bundle or host.
+function playNotifSound(){
+  try{
+    unlockNotifSound();
+    const ctx=NOTIF_SOUND_STATE.ctx; if(!ctx) return;
+    [0,0.18].forEach(function(offset){
+      const osc=ctx.createOscillator(), gain=ctx.createGain();
+      osc.type="sine"; osc.frequency.value=880;
+      const t=ctx.currentTime+offset;
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.linearRampToValueAtTime(0.28,t+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t); osc.stop(t+0.17);
+    });
+  }catch(e){ console.warn("[GR-Vendor] playNotifSound failed", e); }
+}
+// One stacking card per new case (see #mechNotifStack's own HTML/CSS
+// comment) — clicking it opens that ticket, unless a different one is
+// already open right now (don't yank the vendor out of an active job screen).
+function showNewCaseNotification(rec){
+  const box=$("mechNotifStack"); if(!box) return;
+  const card=document.createElement("div");
+  card.className="mech-notif-card";
+  card.innerHTML = `<div class="mech-notif-body">
+      <b>New case: ${esc(caseLabel(rec))}</b>
+      <div class="mech-notif-status">${esc(vehicleDisplayFor(rec)||"")} · ${esc(readVal(rec,CONFIG.nameField)||"")}</div>
+    </div>
+    <button type="button" class="mech-notif-close" aria-label="Dismiss">&times;</button>`;
+  card.querySelector(".mech-notif-body").onclick=function(){
+    card.remove();
+    if(!isDashboardVisible()) return; // already viewing a different ticket — don't interrupt that
+    openTicket(rec.ID);
+  };
+  card.querySelector(".mech-notif-close").onclick=function(e){ e.stopPropagation(); card.remove(); };
+  box.appendChild(card);
+  setTimeout(function(){ if(card.parentNode) card.remove(); }, 12000);
+}
+// Caps how many cards stack at once — a burst of many simultaneous new
+// invites would otherwise fill the whole screen; anything past the cap
+// folds into one plain toast instead.
+function notifyNewCases(list){
+  if(!list.length) return;
+  playNotifSound();
+  list.slice(0,5).forEach(showNewCaseNotification);
+  if(list.length>5) toast((list.length-5)+" more new case(s) also arrived","ok");
+}
+function isDashboardVisible(){
+  const el=$("dashboard"); return !!el && el.style.display!=="none" && !el.classList.contains("off");
+}
+let DASHBOARD_POLL_TIMER=null;
+const DASHBOARD_POLL_MS=30000;
+function stopDashboardPoll(){ if(DASHBOARD_POLL_TIMER){ clearInterval(DASHBOARD_POLL_TIMER); DASHBOARD_POLL_TIMER=null; } }
+function startDashboardPollIfNeeded(){
+  stopDashboardPoll(); // never let two timers stack across repeated loadDashboard() calls
+  if(!isDashboardVisible()) return;
+  DASHBOARD_POLL_TIMER=setInterval(pollForNewCases, DASHBOARD_POLL_MS);
+}
+async function pollForNewCases(){
+  if(!isDashboardVisible()){ stopDashboardPoll(); return; }
+  try{
+    const fresh=await fetchMyTickets();
+    const newOnes = KNOWN_TICKET_IDS ? fresh.filter(function(r){ return !KNOWN_TICKET_IDS.has(String(r.ID)); }) : [];
+    updateKnownTicketIds(fresh);
+    state.tickets=fresh;
+    if(newOnes.length){ notifyNewCases(newOnes); renderDashboard(); }
+  }catch(e){ console.warn("[GR-Vendor] pollForNewCases failed (non-blocking)", e); }
 }
 const STATUS_PILL = {
   "RSP IRA (INVITE RESPONSE AWAITED)": {cls:"invite", label:"New Invite"},
@@ -686,6 +825,12 @@ function openTicket(id){
   state.photos = {}; state.files = {};
   $("dashboard").classList.add("off"); $("dashboard").style.display="none";
   $("actionScreen").classList.remove("off");
+  // Stop the "new case" background poll the instant a ticket's own screen
+  // opens (2026-08-07) — isDashboardVisible() would eventually catch this on
+  // its own next tick anyway, but stopping it immediately here avoids up to
+  // one full poll interval of pointless background fetching right after
+  // navigating away.
+  stopDashboardPoll();
   renderActionScreen();
 }
 function backToDashboard(){
@@ -1295,7 +1440,9 @@ async function confirmCxReject(){
 /* ===== Action 7a: WIP - Loading / Cx Reject (TOW) ===== */
 function renderLoadingScreen(){
   const r=state.current;
-  // See driverTicket's own matching comment — same real bug, same fix.
+  // See driverTicket's own matching comment — same real bug, same fix
+  // (2026-08-07): button is always clickable now; vehiclePicked() itself
+  // validates and toasts a real error instead of a silent `disabled`.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
   const dropReady=!!r.Navigate_To_Drop_Link || (dropLat!=null && dropLon!=null);
   $("ascreenBody").innerHTML = `
@@ -1304,7 +1451,7 @@ function renderLoadingScreen(){
     <div class="card">${photoFieldHtml("VCRF","VCRF Form",1,1,true)}</div>
     <div class="btn-row">
       <button class="btn ghost" id="cxRejectBtn" type="button">Customer Rejected</button>
-      <button class="btn primary" id="vehiclePickedBtn" type="button" ${dropReady?"":"disabled"}>Vehicle Picked</button>
+      <button class="btn primary" id="vehiclePickedBtn" type="button">Vehicle Picked</button>
     </div>
     ${dropReady?"":'<div class="empty-state" style="padding:10px"><p style="font-size:12px">Waiting on a drop location before this can be confirmed.</p></div>'}
     <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
@@ -1324,6 +1471,14 @@ function renderLoadingScreen(){
   $("confirmCxRejectBtn").onclick=confirmCxRejectLoading;
 }
 async function vehiclePicked(){
+  const r0=state.current;
+  // Real bug fixed (2026-08-07, same as driverTicket) — explicit click-time
+  // guard so a TOW ticket can never be marked picked up without a real drop
+  // location, with an actual error toast instead of relying on the button's
+  // `disabled` state alone.
+  const dropLat0=parseCoord(r0.DropLocationLat), dropLon0=parseCoord(r0.DropLocationLong);
+  const dropReady0=!!r0.Navigate_To_Drop_Link || (dropLat0!=null && dropLon0!=null);
+  if(!dropReady0){ toast("Drop location is required before the vehicle can be marked picked up — ask dispatch to add it, then try again.","err"); return; }
   if((state.photos.Pre_service_Photo||[]).length<4){ toast("4 pre-service photos required","err"); return; }
   if((state.photos.Image_Upload_On_truck||[]).length<3){ toast("3 on-truck photos required","err"); return; }
   if((state.photos.VCRF||[]).length<1){ toast("VCRF upload required","err"); return; }
