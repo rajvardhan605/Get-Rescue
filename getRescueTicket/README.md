@@ -682,3 +682,92 @@ Live screenshot showed the Assignment-step vendor picker displaying raw record I
 - **Vendor lat/lon live nested inside Zoho's own composite `Address` field** (`Address.latitude`/`Address.longitude`), not flat top-level `Latitude`/`Longitude` fields as originally assumed. Added `vendorLatLon()`, which reads the nested `Address` field first and only falls back to flat fields if `Address` itself is absent — `vendorInfo()` now calls this instead of reading `CONFIG.vendorLatField`/`vendorLonField` directly.
 
 All three corrections are also in `FIELDS.md` now. The diagnostic logging stays in place (tightened to not re-warn about the now-explained missing Phone field) since it's generically useful for catching the same class of live-schema surprise on any other field later.
+
+### 2026-08-07 — WhatsApp integration wired for real (whatsportal.io), replacing the flag-only placeholder buttons
+
+Every "Send ... Link" button previously just flipped a one-way "done" flag with no actual message — noted as a `TODO(WhatsApp integration)` in several places since 2026-07-31. User provided real `whatsportal.io` API credentials and two example requests; added a shared `sendWhatsAppTemplate(phone, templateName, params)` helper (near `formatIndianPhone()`, whose formatting it reuses for the `to` number) and wired it into three buttons:
+
+- **`quote`'s `Send_Link_For_The_Breakdown_Location`** ("Request Location", shown when `Booking_Fee` is not >0) and **`locations`'s own copy of the same field** — both send the `"location"` template, 1 parameter (`Customer_Name`, a reasonable guess not confirmed against the actual approved template text).
+- **`quote`'s `Send_Payment_Link`** ("Send Payment Link & Request Location") — sends the `"booking_fees_link"` template, 2 parameters (`Booking_Fee` then `Total_Service_Fee`, in that order — also a guess; swap the order in `buildField`'s STAGES entry if the live message renders wrong).
+
+All three fire-and-forget (not awaited by the button's own onclick, matching how every other best-effort side-effect write in this file behaves) and toast an error if the send fails, without blocking the existing "mark as done" behavior.
+
+**Security note flagged to the user at the time**: the API key is a live, non-domain-restricted secret embedded directly in this widget's own client-side source — visible in plain text to anyone who opens dev tools on the page. Recommended asking `whatsportal.io` about domain-restricted keys, or eventually proxying this through a server-side function (e.g. Zoho Deluge) instead of calling it straight from the browser. Not fixed here — implemented exactly as the user explicitly asked, with the caveat surfaced rather than silently working around it.
+
+### 2026-08-07 (later) — Real bug fixed: direct `fetch()` to whatsportal.io blocked by Zoho's own widget CSP; moved to a Deluge Custom Function
+
+User-reported live console error confirmed the direct `fetch()` from the entry above never actually reaches `whatsportal.io` at all: **"Refused to connect because it violates the document's Content Security Policy."** This is a hard Zoho Creator widget platform restriction (the browser blocks the request before it leaves the page) — not fixable from this widget's own JS, no matter how the fetch call itself is written.
+
+Fixed by moving the actual HTTP call server-side, the standard Zoho Creator workaround for this exact situation: a Deluge script (not subject to the widget's CSP) does the real `invokeurl` to whatsportal.io; the widget now calls it through the SDK instead of `fetch()` directly. The user created this as a typed **Custom Function** (`string sendWhatsAppMessage(string phone, string templateName, string param1, string param2)`), a different Zoho Creator feature from a "Custom API" REST endpoint — its Deluge body:
+
+```
+string sendWhatsAppMessage(string phone, string templateName, string param1, string param2)
+{
+	headers = Map();
+	headers.put("Content-Type","application/json");
+	headers.put("x-api-key","wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+	headers.put("Authorization","Bearer wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+
+	params_list = List();
+	params_list.add(param1);
+	if(param2 != null && param2.trim() != "")
+	{
+		params_list.add(param2);
+	}
+
+	template_map = Map();
+	template_map.put("name",templateName);
+	template_map.put("language","en_US");
+	template_map.put("parameters",params_list);
+
+	body_map = Map();
+	body_map.put("type","template");
+	body_map.put("to",phone);
+	body_map.put("template",template_map);
+
+	response = invokeurl
+	[
+		url :"https://api.whatsportal.io/v1/messages"
+		type :POST
+		parameters: body_map.toString()
+		headers: headers
+	];
+
+	info response;
+	return response.toString();
+}
+```
+
+- **Also resolves the earlier security note**: the API key now lives only in this server-side Deluge script — removed entirely from this widget's own client-side source.
+
+### 2026-08-07 (later still) — Real bug fixed: `invokeCustomApi()` needs an actual Custom API, not the Custom Function above
+
+User-reported live console error: `"Invalid Configuration...!!!"`. The logged config confirmed `invokeCustomApi()` is real and does exist on this SDK — it auto-merged its own `version`/`workspace_name`/`envUrlFragment` defaults into what was logged, which only a genuine SDK method would do — but it invokes a **Custom API** (a REST endpoint with its own `api_name`), a different Zoho Creator feature from the typed Custom Function created in the entry above. The first attempt passed `function_name`/`params` (Custom Function terminology), which doesn't match what `invokeCustomApi()` actually validates against.
+
+Fixed two ways together:
+1. **User created a real Custom API named `sendWhatsAppMessage`** (POST, OAuth2/All users, Key-and-Value args, Standard response) via Zoho Creator's own wizard — bound directly to the existing Custom Function in its "Actions" step (Zoho's own wizard supports this binding natively; no manual wrapper Deluge script was actually needed, unlike this entry's own original plan).
+2. **`sendWhatsAppTemplate()`'s own config switched to the real Custom API keys**: `api_name`/`http_method` instead of `function_name`, keeping `app_name`/`params` as before.
+
+### 2026-08-10 — Real bug fixed: `invokeCustomApi()` (via `resolve()`) hits the wrong domain — `creatorapp.zoho.in` instead of `www.zohoapis.in`
+
+User-reported live network tab: `POST https://creatorapp.zoho.in/creator/custom/getrescued/sendWhatsAppMessage` → **404**, body `{code: 2930, message: "Error Occurred..."}`. The Custom API's own detail page in Zoho Creator documents its real endpoint as `https://www.zohoapis.in/creator/custom/getrescued/sendWhatsAppMessage` — **identical path, different domain**. `creatorapp.zoho.in` is the Creator builder/app-hosting domain (where the widget itself is served from); `www.zohoapis.in` is the actual API domain Custom APIs are documented to live on.
+
+`resolve()`'s own scan order (`[DATA, PUBLISH, META, UTIL, FILE]`) means it found `invokeCustomApi` on `ZOHO.CREATOR.DATA` and never tried any other namespace. Tried three things in order as a diagnostic round (`ZOHO.CREATOR.PUBLISH.invokeCustomApi` directly, the `DATA` version, and a direct `fetch()` to the documented `www.zohoapis.in` URL) — user's console output from testing this ruled out all three cleanly: `PUBLISH.invokeCustomApi` doesn't exist on this SDK at all, `DATA`'s version still 404'd exactly as before, and the direct `fetch()` was **blocked by CSP** — confirmed the widget's `connect-src` allowlist is just five specific domains (`*.zappsusercontent.in`, `*.zohostatic.in`, `*.sigmausercontent.com`, `*.qntrlusercontent.com`, `maps.googleapis.com`), and `www.zohoapis.in` isn't one of them. So no direct `fetch()` from this widget will ever reach ANY external domain not on that exact list — ruled out entirely as an approach, not just for `whatsportal.io`.
+
+### 2026-08-10 (later) — Real bug fixed: wrong `invokeCustomApi()` config keys entirely — confirmed against Zoho's own official docs instead of guessing further
+
+With raw `fetch()` ruled out and three guessed config shapes all failing, looked up [Zoho's own JS API v2 Custom API docs](https://www.zoho.com/creator/help/js-api/v2/custom-api.html) instead of guessing a fourth time. The real config shape was different from every previous attempt in two ways that likely explain all of the earlier failures:
+
+- **There is no `app_name` key at all.** Every previous attempt sent one — it's simply not a real parameter, silently ignored.
+- **The real key is `workspace_name`, not `app_name`** — and it's the Zoho account/workspace name (`"getrescued"`), not `CONFIG.appName` (`"get-rescue"`) — two different strings for two different things, easy to conflate.
+- **The real payload key is `payload`, not `params`.** `params` isn't documented anywhere in Zoho's own spec — sending it instead of `payload` most likely means the SDK had no valid request body to work with on every prior attempt, which plausibly explains why it fell back to building a malformed/wrong-domain URL rather than a normal validation error.
+
+`sendWhatsAppTemplate()` now sends `{api_name, workspace_name, http_method, content_type, payload}` per the official spec, and the earlier `PUBLISH`-namespace/raw-fetch diagnostic branches were removed — they were solving the wrong problem, kept only while the real config shape was still unknown.
+
+**Confirmed working live** — user's next screenshot showed the Locations step's button flip to "Location Link Sent" with no error toast. First real end-to-end success across this whole multi-day WhatsApp integration effort.
+
+### 2026-08-10 (later still) — Auto-send on arrival + stays resendable (user request)
+
+Two related changes to `Send_Link_For_The_Breakdown_Location` (Locations step only — the Quote step's own copy of this field, and `Send_Payment_Link`, are unchanged):
+- **`repeatable:true` added** — this button used to lock permanently into a green "Location Link Sent" state after one click (same one-time-lock pattern `Payment_Method`/other done-flag buttons use). User asked for it to "stay enabled" so a message can be resent (wrong number, missed notification, etc.). Same `repeatable` mechanism `Calculate_Distance`/`Send_ETA_To_Customer` already use elsewhere in this file — trades the persistent green "done" state for a one-off toast on each send instead (that's how every other repeatable button here already behaves, not a new tradeoff invented for this one).
+- **Auto-fires once per ticket** — `renderWizard()` now sends the same WhatsApp template automatically the instant the agent reaches the Locations step, instead of waiting for a manual click, per "customer automatically receives location link" — guarded on the field's own flag so it only fires once (not on every re-render of this step, e.g. typing into the lat/long paste box) and updates that flag synchronously before the async send resolves, so a second re-render mid-flight can't double-fire it. The button stays there afterward purely for manual resends.

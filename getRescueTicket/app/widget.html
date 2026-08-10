@@ -1188,9 +1188,27 @@ const STAGES = [
        at once, so this row always has exactly 2 members. */
     { n:"Send_Payment_Link", l:"Send Payment Link", t:"button", when:(s)=>Number(s.Booking_Fee)>0, row:"rate4",
       buttonLabel:"Send Payment Link & Request Location", doneLabel:"Payment Link & Location Sent",
-      action:(r)=>{ r.Send_Link_For_The_Breakdown_Location=true; } },
+      // Real WhatsApp send wired 2026-08-07 (user request, "booking_fees_link"
+      // template, 2 parameters) — param order (Booking_Fee then
+      // Total_Service_Fee) is a reasonable guess, not confirmed against the
+      // actual approved template text; swap the order below if the message
+      // renders wrong. Phone_Number1 per the user's own explicit instruction.
+      action:(r)=>{
+        r.Send_Link_For_The_Breakdown_Location=true;
+        sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Booking_Fee||0), String(r.Total_Service_Fee||0)])
+          .then(function(ok){ if(!ok) toast("Saved, but the WhatsApp payment link message failed to send — check console","err"); });
+      } },
     { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", when:(s)=>!(Number(s.Booking_Fee)>0), row:"rate4",
-      buttonLabel:"Request Location", doneLabel:"Location Requested" },
+      buttonLabel:"Request Location", doneLabel:"Location Requested",
+      // Real WhatsApp send wired 2026-08-07 (user request, "location"
+      // template, 1 parameter) — same send as the Locations step's own copy
+      // of this exact button/field below, for the no-booking-fee case.
+      // param1 (Customer_Name) is a reasonable guess, not confirmed against
+      // the actual approved template text.
+      action:(r)=>{
+        sendWhatsAppTemplate(r.Phone_Number1, "location", [r.Customer_Name||"Customer"])
+          .then(function(ok){ if(!ok) toast("Saved, but the WhatsApp location-request message failed to send — check console","err"); });
+      } },
     // Real change (2026-08-07, explicit user request) — labels only, "please
     // rename not change the api name just for the layout": still the exact
     // same Payment_Status field, just relabeled "BF..." to distinguish it
@@ -1272,13 +1290,26 @@ const STAGES = [
     // confirmed via an actual API error elsewhere in this file.
     extra:(r)=> (hasLocFlag(r) && !r.Location_Received_Time) ? { Location_Received_Time: fmtDateTime(new Date()) } : {},
     fields:[
-    // Both "send link" actions are WhatsApp-message placeholders, same
-    // situation as the `quote` step's fee/booking-fee link buttons — no real
-    // WhatsApp integration exists yet (user-confirmed 2026-07-31), so these
-    // just flip a one-way "done" flag with no actual send. TODO(WhatsApp
-    // integration): wire a real send into each `action`/onclick once built.
-    { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true,
-      buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent" },
+    // Real WhatsApp send wired 2026-08-07 (user request, "location" template,
+    // 1 parameter) — replaces the flag-only placeholder this comment used to
+    // describe (see sendWhatsAppTemplate's own header comment for the
+    // security caveat that came with this). param1 (Customer_Name) is a
+    // reasonable guess, not confirmed against the actual approved template
+    // text — same guess as `quote`'s own copy of this button/field.
+    // repeatable:true added 2026-08-10 (user request — "this button should
+    // be enable") — stays clickable after a successful send instead of
+    // locking permanently, so the agent can resend if the customer didn't
+    // get it (wrong number, missed notification, etc.). See renderWizard's
+    // own "locations" auto-send block for the companion change ("customer
+    // automatically receives location link" when the agent reaches this
+    // step) — that one fires this exact same action once per ticket; this
+    // flag only controls whether the BUTTON stays enabled afterward.
+    { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true, repeatable:true,
+      buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent",
+      action:(r)=>{
+        sendWhatsAppTemplate(r.Phone_Number1, "location", [r.Customer_Name||"Customer"])
+          .then(function(ok){ toast(ok?"Location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
+      } },
     // 2026-07-31: user explicitly confirmed location is captured ONLY this
     // way for now (paste "lat, long" text, split into the two real decimal
     // fields) — the flow spec's "[Location field type]" wording does NOT mean
@@ -1492,11 +1523,11 @@ const STAGES = [
     // wire a real send into this action once built. agentEditable:true is
     // moot in practice for a button (wireField's own button branch never
     // actually checks f.readonly either way) — kept for documentation.
-    // repeatable:true (unlike Send_Link_For_The_Breakdown_Location's own
-    // one-time lock) — an ETA can change (traffic, a later override) and may
-    // need re-sending, so this deliberately never locks into a permanent
+    // repeatable:true — an ETA can change (traffic, a later override) and
+    // may need re-sending, so this deliberately never locks into a permanent
     // "done" state — see wireField's own button branch/this file's other
-    // repeatable button (Calculate_Distance) for the same reasoning.
+    // repeatable buttons (Calculate_Distance, and Send_Link_For_The_
+    // Breakdown_Location as of 2026-08-10) for the same reasoning.
     { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
       buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
       action:(r)=>{ const eta=expectedArrivalTime(r); toast(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer","ok"); } },
@@ -1589,11 +1620,11 @@ const STAGES = [
     // Agent_ETA_Override_TOW is ALSO a brand-new field, not yet in Create_Case.
     { n:"Agent_ETA_Override_TOW", l:"Agent ETA Override (mins)", t:"number", agentEditable:true,
       hint:"Overrides the ETA above before sending it to the customer." },
-    // repeatable:true (unlike Send_Link_For_The_Breakdown_Location's own
-    // one-time lock) — an ETA can change (traffic, a later override) and may
-    // need re-sending, so this deliberately never locks into a permanent
+    // repeatable:true — an ETA can change (traffic, a later override) and
+    // may need re-sending, so this deliberately never locks into a permanent
     // "done" state — see wireField's own button branch/this file's other
-    // repeatable button (Calculate_Distance) for the same reasoning.
+    // repeatable buttons (Calculate_Distance, and Send_Link_For_The_
+    // Breakdown_Location as of 2026-08-10) for the same reasoning.
     { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
       buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
       action:(r)=>{ const eta=expectedArrivalTime(r); toast(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer","ok"); } },
@@ -2838,6 +2869,72 @@ function formatIndianPhone(v){
   const digits=s.replace(/\D/g,""); if(!digits) return "";
   return "+91"+digits;
 }
+/* ---------- WhatsApp notifications (whatsportal.io) ----------
+   Added 2026-08-07 (user request) — real send wired into the two "Send ...
+   Link" buttons (Locations/Quote), replacing the flag-only placeholders each
+   field's own TODO comment previously described. The API key itself now
+   lives ONLY in the server-side Deluge script (see the comment right below)
+   — moved there after discovering the direct-fetch approach doesn't work at
+   all (see that same comment), which also resolves the earlier security
+   concern about the key being visible in this widget's own client-side
+   source: it no longer appears here. */
+// Real bug fixed (2026-08-07, user-reported live console error): a direct
+// fetch() to whatsportal.io is refused outright by Zoho Creator's own widget
+// Content Security Policy — "Refused to connect because it violates the
+// document's Content Security Policy". This is a hard platform restriction
+// (the browser blocks it before the request ever leaves the page), not
+// something fixable from this widget's own JS. The standard Zoho Creator
+// workaround: a server-side Deluge script makes the actual HTTP call instead
+// (Deluge isn't subject to the widget's CSP), and the widget invokes THAT via
+// the SDK.
+// Real bug fixed (2026-08-07, later): first attempt called invokeCustomApi()
+// with function_name/params (Custom FUNCTION terminology) and got "Invalid
+// Configuration...!!!" back — confirmed live that invokeCustomApi() is real
+// (the SDK auto-merged its own version/workspace_name/envUrlFragment defaults
+// into the logged config) but it invokes a **Custom API** (a REST endpoint
+// with its own api_name), a different Zoho Creator feature from the typed
+// Custom Function the user originally created. Fixed by having the user wrap
+// that existing function in a thin Custom API of the same name
+// ("sendWhatsAppMessage", POST) whose Deluge body just calls the function and
+// returns its result — and switching this config to the real Custom API keys
+// (api_name/http_method) invokeCustomApi() actually expects.
+// Real bug fixed (2026-08-10, confirmed against Zoho's own official docs —
+// https://www.zoho.com/creator/help/js-api/v2/custom-api.html — rather than
+// guessing further): every prior attempt sent the wrong config keys
+// entirely. There is no "app_name" key at all; the real keys are
+// "workspace_name" (the Zoho account/workspace — "getrescued", NOT
+// CONFIG.appName's "get-rescue", a different string for a different thing)
+// and, critically, "payload" for a POST body — not "params", which isn't a
+// real key at all. Sending "params" instead of "payload" is the likely root
+// cause of every wrong-domain/404 result seen so far, since the SDK had no
+// valid payload to work with. This also means the earlier PUBLISH-namespace
+// and raw-fetch fallbacks were solving the wrong problem — removed now that
+// the real config shape is confirmed, rather than kept as unnecessary hedges.
+async function sendWhatsAppTemplate(phone, templateName, params){
+  const to=formatIndianPhone(phone);
+  if(!to){ console.warn("[Get-Rescue] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
+  const fn=resolve("invokeCustomApi");
+  if(!fn){
+    console.warn("[Get-Rescue] sendWhatsAppTemplate: no \"invokeCustomApi\" method found on ZOHO.CREATOR.{DATA,PUBLISH,META,UTIL,FILE} — cannot send template", templateName, ".");
+    return false;
+  }
+  const config = {
+    api_name: "sendWhatsAppMessage",
+    workspace_name: "getrescued",
+    http_method: "POST",
+    content_type: "application/json",
+    payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"" }
+  };
+  console.log("[Get-Rescue] sendWhatsAppTemplate: calling invokeCustomApi with", config);
+  try{
+    const res=await fn(config);
+    console.log("[Get-Rescue] sendWhatsAppTemplate: sent", templateName, "to", to, "with params", params, "-> response:", res);
+    return true;
+  }catch(e){
+    console.warn("[Get-Rescue] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
+    return false;
+  }
+}
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.first_name&&((v.first_name||"")+" "+(v.last_name||"")).trim()||v.value||""; return String(v); }
 function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
 let toastT;
@@ -3468,6 +3565,19 @@ function renderWizard(){
     // can copy manually if they want to accept it as-is.
     state.record._rateBreakupSignature=quoteSig;
     state.record.Remaining_Fee=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Booking_Fee)||0);
+  }
+  // Auto-send the location-request WhatsApp message the moment the agent
+  // reaches this step (2026-08-10, user request — "customer automatically
+  // receives location link"), instead of waiting on a manual button click.
+  // Guarded on the field's own flag so this fires ONCE per ticket, not on
+  // every re-render of this step (typing in the lat/long paste box, etc.) —
+  // the button itself stays enabled afterward (repeatable:true, see its own
+  // field comment) purely so the agent can still resend by hand if needed;
+  // it no longer needs to be clicked for the first send to go out.
+  if(step.key==="locations" && !state.record.Send_Link_For_The_Breakdown_Location){
+    state.record.Send_Link_For_The_Breakdown_Location=true;
+    sendWhatsAppTemplate(state.record.Phone_Number1, "location", [state.record.Customer_Name||"Customer"])
+      .then(function(ok){ toast(ok?"Location link sent to customer":"Couldn't send the WhatsApp location-request message — check console", ok?"ok":"err"); });
   }
   // fields
   // Create step's own heading hidden (2026-08-05, user request, reapplied
