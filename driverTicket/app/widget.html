@@ -231,6 +231,15 @@ const CONFIG = {
   techStatusField: "Availability_Status",
   techEmailField: "Email",
   techNameField: "Technician_Name",
+  // Added 2026-08-17 (user request — see pingCurrentLocation()'s own
+  // comment). Same field names getRescueTicket's own vendor-assignment picker
+  // expects on Technicians_Report, written here directly through this
+  // driver's own techReport record (this widget's toggle already targets
+  // Technicians_Report itself, same shared report technicianTicket's own
+  // toggle writes to — no separate Drivers_Report in between). Brand-new
+  // fields, not yet created in Zoho Studio — see FIELDS.md's own note.
+  techCurrentLatField: "Current_Latitude",
+  techCurrentLonField: "Current_Longitude",
   // Invites (2026-08-03, user-confirmed — "invite covers all") — see
   // technicianTicket's own comment on this same config entry.
   invitesReport: "Invites_Report"
@@ -822,6 +831,21 @@ async function markReached(){
     if(odo!=="") payload.Odometer_reading_at_Reached_Location=Number(odo);
     // ETA_TOW manual-entry input hidden from this screen 2026-08-05 (user
     // request) — see vendorTicket's/technicianTicket's own matching comment.
+    // Reach Location + Distance_Reach_To_Breakdown_TOW (2026-08-11, user
+    // request, "Missing Fields & Field Behavior" spec) — Reach never
+    // captured a live GPS fix before this at all, unlike Accept
+    // (RSP_Start_Latitude/Longitude) and Cancel (Cancel_Location_Lat/Lon),
+    // both of which already do. Distance_Reach_To_Breakdown_TOW is a BRAND
+    // NEW field. Best-effort — a denied/unavailable location just means
+    // these two fields are skipped, same tolerance Accept/Cancel's own GPS
+    // fixes already have.
+    const reachPos = await getPositionSafe();
+    if(reachPos){
+      payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
+      const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+      const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon);
+      if(reachDist) payload.Distance_Reach_To_Breakdown_TOW=reachDist.distanceKm;
+    }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -846,6 +870,14 @@ async function confirmCancel(){
       const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
       const dist = !isNaN(startLat) && !isNaN(startLon) ? await calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
       if(dist) payload.Cancel_Distance=dist.distanceKm;
+      // Distance_Cancel_To_Breakdown (2026-08-11, user request, "Missing
+      // Fields & Field Behavior" spec item 2) — BRAND NEW field, deliberately
+      // different from Cancel_Distance just above (Accept location → Cancel
+      // location) — this is Cancel location → the ticket's own static
+      // breakdown location, which no field/calc covered before this at all.
+      const bLatC=Number(r.Latitude), bLonC=Number(r.Longitude);
+      const cancelToBreakdown = !isNaN(bLatC) && !isNaN(bLonC) ? await calcDistanceETA(pos.lat,pos.lon,bLatC,bLonC) : null;
+      if(cancelToBreakdown) payload.Distance_Cancel_To_Breakdown=cancelToBreakdown.distanceKm;
       // Client-requested addition (2026-08-04) — see technicianTicket's own
       // matching comment: round trip office -> this driver's current
       // (cancel-click) position -> office, reusing calc4PointRoundtrip()
@@ -1328,7 +1360,45 @@ async function loadAvailability(){
   $("techName").textContent=MY_TECH_NAME||"Driver";
   const isOnline=String(mine[CONFIG.techStatusField])==="Online";
   $("availToggle").classList.toggle("on", isOnline);
+  // Reopening the app while already Online (2026-08-17) — start the
+  // heartbeat here too, not just from onToggleClick()'s own toggle action,
+  // so location stays fresh across a page refresh/reopen without the
+  // driver having to toggle off and back on.
+  if(isOnline) startLocationHeartbeat();
 }
+/* Live location heartbeat (2026-08-17, user request: "when vendor is online
+   it is supposed to show the distance from the vendor's current location
+   (latest location from app); ... this applies to Technicians/Drivers too,
+   not just Vendors") — while toggled Online, refreshes this driver's own
+   Current_Latitude/Current_Longitude every ~2.5 minutes (the midpoint of the
+   user's own requested 2-3 min range), read by getRescueTicket's own
+   Assignment-step vendor picker once Online — see vendorTicket's own/
+   technicianTicket's own matching comment for the fuller cross-widget
+   picture. An immediate fix is taken the moment they toggle online, rather
+   than waiting for the first interval tick — see startLocationHeartbeat().
+   Best-effort throughout: a denied/unavailable fix, or a failed write, just
+   silently skips that one tick — never blocks the toggle itself or any
+   other part of this app. */
+const LOCATION_HEARTBEAT_MS=150000; // 2.5 min
+let locationHeartbeatTimer=null;
+async function pingCurrentLocation(){
+  if(!currentTechRecord) return;
+  try{
+    const pos=await getPositionSafe();
+    if(!pos) return;
+    const fn=resolve("updateRecordById"); if(!fn) return;
+    const payload={};
+    payload[CONFIG.techCurrentLatField]=pos.lat;
+    payload[CONFIG.techCurrentLonField]=pos.lon;
+    await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
+  }catch(e){ console.warn("[Get-Rescue] pingCurrentLocation failed (non-fatal, retries next tick):", e); }
+}
+function startLocationHeartbeat(){
+  stopLocationHeartbeat(); // never let two timers stack
+  pingCurrentLocation(); // immediate fix now, don't wait for the first interval tick
+  locationHeartbeatTimer=setInterval(pingCurrentLocation, LOCATION_HEARTBEAT_MS);
+}
+function stopLocationHeartbeat(){ if(locationHeartbeatTimer){ clearInterval(locationHeartbeatTimer); locationHeartbeatTimer=null; } }
 async function onToggleClick(){
   if(!currentTechRecord) return;
   const el=$("availToggle");
@@ -1340,6 +1410,7 @@ async function onToggleClick(){
     const payload={}; payload[CONFIG.techStatusField]=wantOnline?"Online":"Offline";
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
+    if(wantOnline) startLocationHeartbeat(); else stopLocationHeartbeat();
   }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
   finally{ el.classList.remove("locked"); }
 }

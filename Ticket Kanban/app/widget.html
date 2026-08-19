@@ -614,7 +614,13 @@ const STAGES = [
     // 2026-08-03: "Action_field" dropped — same fix as `acceptance` above.
     status:(r)=> r.Status==="RSP CANCELLED" ? "RSP CANCELLED" : "RSP ON THE WAY",
     fields:[
-    { n:"ETA", l:"ETA (mins)", t:"number" },
+    // readonly (2026-08-11, user request — see getRescueTicket/README.md's
+    // matching entry) — ETA is calculated by the vendor/technician's own app
+    // at Accept time via Google/Haversine and needs to stay intact for
+    // reporting; locks only once a real value already exists so this still
+    // works as a manual-entry fallback for a ticket the vendor's app never
+    // touched at all.
+    { n:"ETA", l:"ETA (mins)", t:"number", readonly:(s)=>s.ETA!=null && String(s.ETA).trim()!=="" },
     { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", t:"number" },
     { n:"Navigation_Link", l:"Navigation Link", t:"textarea", full:true },
     { n:"Image_Upload2", l:"Arrival Photo", t:"file" },
@@ -1290,6 +1296,12 @@ function renderFields(step){
     box.appendChild(buildField(f));
   });
 }
+// Supports function-form readonly (2026-08-11, ported from getRescueTicket's
+// own isReadonly() — see that file's matching comment) — needed so ETA's own
+// "readonly once a real value already exists" rule (see that field's own
+// definition below) can be evaluated against the CURRENT record instead of
+// only ever being a fixed true/false at field-definition time.
+function isReadonly(f){ return typeof f.readonly==="function" ? f.readonly(state.record) : f.readonly; }
 function buildField(f){
   const wrap=document.createElement("div");
   wrap.className="fld"+(f.full?" full":"");
@@ -1381,7 +1393,7 @@ function buildField(f){
   } else {
     const map={tel:"tel",email:"email",number:"number",decimal:"number",date:"date",datetime:"datetime-local",time:"time",text:"text"};
     const step2 = (f.t==="decimal")?' step="any"':"";
-    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${f.readonly?" readonly":""} value="${esc(cur||"")}">`+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(cur||"")}">`+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
   }
   // interactions
   setTimeout(()=>wireField(f,id),0);

@@ -295,6 +295,16 @@ const CONFIG = {
   availabilityReport: "My_Availability_Vendor",
   availabilityEmailField: "Email",
   availabilityStatusField: "Availability_Status",
+  // Added 2026-08-17 (user request — see pingCurrentLocation()'s own
+  // comment). Same field names getRescueTicket's own CONFIG.vendorCurrentLatField/
+  // vendorCurrentLonField expect on Vendors_Report — written here through
+  // My_Availability_Vendor's own record, same as Availability_Status itself
+  // already is; that report's writes are already confirmed to reflect
+  // correctly into Vendors_Report's own reads (the Online/Offline toggle
+  // already works this way live). Brand-new fields, not yet created in Zoho
+  // Studio — see FIELDS.md's own note.
+  availabilityCurrentLatField: "Current_Latitude",
+  availabilityCurrentLonField: "Current_Longitude",
   fleetTechnicianReport: "Technicians_Report",
   // Superseded 2026-08-06 (user request) — see showHandoffPanel()'s own
   // comment for the full switch from a Fleet_Vendor name-match to a real
@@ -957,6 +967,34 @@ async function acceptService(){
     const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
     const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
+    // Real bug fixed 2026-08-19 (user-reported live, TWICE — RSID396825 and
+    // RSID396829 — Assigned_Vendor/Vendor_Email still blank on the agent's
+    // own Accept screen after a DIRECT vendor acceptance on their own phone,
+    // even with the same-day accept-time fix already redeployed). The
+    // payload below only ever carried a real Assigned_Vendor/Vendor_Email if
+    // currentVendorRecord had resolved at boot (loadAvailability()'s own
+    // match, see resolveVendorRecord()'s own comment) — a vendor being able
+    // to see/accept the ticket at all only ever proves the SEPARATE
+    // Vendor_Emails/Invites/isMine() match worked, not this one, so the two
+    // reports going out of sync for a given vendor was silently possible.
+    // Retries the SAME real Vendors_Report query once, right here, before
+    // giving up — a real re-check, not a guess, so it directly fixes a slow-
+    // network/boot-timing race outright.
+    if(!currentVendorRecord){
+      console.warn("[GR-Vendor] acceptService — currentVendorRecord was NULL at accept time; retrying the "+CONFIG.vendorReport+" match once before falling back. LOGIN_EMAIL:", JSON.stringify(LOGIN_EMAIL));
+      await resolveVendorRecord("acceptService retry");
+    }
+    // Still no match after the retry — a genuine Vendors_Report data gap for
+    // this vendor's login email, not a timing issue. Assigned_Vendor (a real
+    // Lookup targeting Vendors_Report) is deliberately left blank rather than
+    // guessed — writing the wrong vendor's id in would be worse than a
+    // clearly blank one. The plain Vendor_Email fields don't carry that same
+    // risk though: LOGIN_EMAIL is the actual authenticated login that just
+    // tapped Accept, a real fact rather than a guess, so it's used as the
+    // fallback for those below instead of leaving them blank too.
+    if(!currentVendorRecord){
+      console.warn("[GR-Vendor] acceptService — currentVendorRecord STILL NULL after retry: Assigned_Vendor will stay blank (see this block's own comment on why it's not guessed). Vendor_Email/Vendor_Email1(2) will use LOGIN_EMAIL itself instead. LOGIN_EMAIL:", JSON.stringify(LOGIN_EMAIL), "| currentAvailabilityRecord resolved:", !!currentAvailabilityRecord, currentAvailabilityRecord ? ("(id "+currentAvailabilityRecord.id+", own email field "+JSON.stringify(currentAvailabilityRecord.data && currentAvailabilityRecord.data[CONFIG.availabilityEmailField])+")") : "", "— see loadAvailability()'s own matching warning (fired at boot, above this in the console) for the full list of Vendors_Report records that were checked.");
+    }
     // Assigned_Vendor (2026-08-04, now buildable — the Vendors_Report/
     // My_Availability_Vendor schema merge means currentVendorRecord.id IS a
     // real Vendors_Report ID, unlike before the schema rebuild). Per the
@@ -976,8 +1014,16 @@ async function acceptService(){
     // set on their own equivalent paths — direct technician acceptance, or a
     // fleet vendor's own hand-off). Assigned_Vendor itself was always set
     // correctly; this vendor's own email just never rode along with it.
-    const myEmail = currentVendorRecord && currentVendorRecord.data && currentVendorRecord.data[CONFIG.vendorEmailField];
-    if(myEmail){ if(isTow) payload.Vendor_Email2=myEmail; else payload.Vendor_Email1=myEmail; }
+    // Real bug fixed 2026-08-19 (user-reported live, screenshot: Vendor
+    // Email/Vendor Email (Assignment)/Assigned Vendor ALL still blank on the
+    // agent's own Accept screen) — this 2026-08-06 fix's own comment claimed
+    // "Vendor Email (Assignment)" was covered too, but the code only ever
+    // set Vendor_Email1/Vendor_Email2 — the bare Vendor_Email field
+    // (getRescueTicket's own "Vendor Email (Assignment)" label) was never
+    // actually written here at all. Added below, alongside the branch-
+    // specific field, using the same vendor identity.
+    const myEmail = (currentVendorRecord && currentVendorRecord.data && currentVendorRecord.data[CONFIG.vendorEmailField]) || LOGIN_EMAIL;
+    if(myEmail){ payload.Vendor_Email=myEmail; if(isTow) payload.Vendor_Email2=myEmail; else payload.Vendor_Email1=myEmail; }
     if(isTow){
       payload.Service_Acceptance_For_Tow=fmtDateTime(new Date());
       if(dist){ payload.ETA_TOW=dist.etaMins; payload.Distance_To_Breakdown_TOW=dist.distanceKm; }
@@ -1148,6 +1194,18 @@ async function assignTechnician(techId){
     const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
     const name=fleetTechName(tech)||"";
     const email=tech[CONFIG.fleetTechnicianEmailField]||"";
+    // Same retry/fallback as acceptService()'s own 2026-08-19 fix a few
+    // dozen lines up: if currentVendorRecord itself never resolved at boot,
+    // this hand-off's own Assigned_Vendor/Vendor_Email write (below) would
+    // otherwise silently have nothing to write, even though the fleet vendor
+    // is clearly logged in and actively handing this job off right now.
+    if(!currentVendorRecord){
+      console.warn("[GR-Vendor] assignTechnician — currentVendorRecord was NULL at hand-off time; retrying the "+CONFIG.vendorReport+" match once. LOGIN_EMAIL:", JSON.stringify(LOGIN_EMAIL));
+      await resolveVendorRecord("assignTechnician retry");
+    }
+    if(!currentVendorRecord){
+      console.warn("[GR-Vendor] assignTechnician — currentVendorRecord STILL NULL after retry: Assigned_Vendor will stay blank (not guessed). Vendor_Email will use LOGIN_EMAIL itself instead. LOGIN_EMAIL:", JSON.stringify(LOGIN_EMAIL), "| currentAvailabilityRecord resolved:", !!currentAvailabilityRecord);
+    }
     // Real bug fixed (2026-08-05) — Assigned_Technician is a confirmed
     // useId:true Lookup in getRescueTicket (live "[object Object]" screenshot
     // investigation the same week), but this sent the technician's NAME, not
@@ -1162,9 +1220,30 @@ async function assignTechnician(techId){
     // still direct-assigns a single technician rather than requesting
     // several at once (see QUESTIONS_TO_ASK.md — will hold a comma-separated
     // list instead, once that multi-request flow exists).
+    // Real bug fixed (2026-08-19, user-reported live, screenshot: a ticket
+    // handed off to a technician showed Vendor Email/Vendor Email
+    // (Assignment)/Assigned Vendor ALL blank on the agent's own Accept
+    // screen, even though the technician clearly went on to accept —
+    // Expected Arrival Time was populated). Root cause: this hand-off never
+    // recorded the FLEET VENDOR's own identity anywhere — only the
+    // technician's. technicianTicket's own direct acceptance (acceptService())
+    // has no reliable way to know which vendor a job came through, so THIS
+    // function is the right place to fix it — currentVendorRecord (this
+    // logged-in fleet vendor, handing the job off right now) is directly,
+    // reliably available here, exactly like a direct Individual-vendor
+    // acceptance's own acceptService() already records for itself. Sets the
+    // SAME three fields that path writes (Assigned_Vendor, the branch-
+    // specific Vendor_Email1/Vendor_Email2, and the bare Vendor_Email — see
+    // that function's own matching 2026-08-19 fix) so a fleet hand-off looks
+    // identical, from the agent's own Accept screen, to a vendor accepting
+    // directly.
+    const vendorId = currentVendorRecord && currentVendorRecord.id;
+    const vendorEmail = (currentVendorRecord && currentVendorRecord.data && currentVendorRecord.data[CONFIG.vendorEmailField]) || LOGIN_EMAIL;
     const payload = isTow
-      ? { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email1:email, Technician_Emails:email }
-      : { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email:email, Technician_Emails:email };
+      ? { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email1:email, Technician_Emails:email,
+          Assigned_Vendor:vendorId, Vendor_Email:vendorEmail, Vendor_Email2:vendorEmail }
+      : { Assigned_Technician:tech.ID, Assigned_Technician_Email:email, Technician_Email:email, Technician_Emails:email,
+          Assigned_Vendor:vendorId, Vendor_Email:vendorEmail, Vendor_Email1:vendorEmail };
     await apiUpdate(r.ID, payload);
     // Invites (2026-08-03, user-confirmed "invite covers all") — same
     // mechanism as the agent's own vendor invites, one record per assigned
@@ -1232,6 +1311,24 @@ async function markReachedRsr(){
     // simply not included in this payload, same as leaving the old manual
     // box blank always did (Zoho keeps the existing stored value untouched).
     const payload={ Reach_Time: fmtDateTime(new Date()), Roundtrip_Distance: rt, Status:"WORK IN PROGRESS" };
+    // Reach Location + Distance_Reach_To_Breakdown (2026-08-11, user
+    // request, "Missing Fields & Field Behavior" spec) — Reach never
+    // captured a live GPS fix before this at all, unlike Accept
+    // (RSP_Start_Latitude/Longitude) and Cancel (Cancel_Location_Lat/Lon),
+    // both of which already do. Distance_Reach_To_Breakdown is a BRAND NEW
+    // field, deliberately separate from Roundtrip_Distance just above —
+    // that one is Office→Breakdown→Office and stays untouched; this is a
+    // plain one-way distance from THIS click's own position to the
+    // breakdown location, mirroring exactly how Distance_To_Breakdown
+    // already works at Accept (see acceptService() below). Best-effort —
+    // a denied/unavailable location just means these two fields are
+    // skipped, same tolerance Accept/Cancel's own GPS fixes already have.
+    const reachPos = await getPositionSafe();
+    if(reachPos){
+      payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
+      const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon);
+      if(reachDist) payload.Distance_Reach_To_Breakdown=reachDist.distanceKm;
+    }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -1290,6 +1387,17 @@ async function markReachedTow(){
     if(odo!=="") payload.Odometer_reading_at_Reached_Location=Number(odo);
     // ETA_TOW input hidden from this screen 2026-08-05 (user request) — see
     // markReachedRsr's own matching comment.
+    // Reach Location + Distance_Reach_To_Breakdown_TOW (2026-08-11) — see
+    // markReachedRsr's own matching comment (same fields; Reach_Location_Lat/
+    // Lon are shared, not split RSR/TOW, but the distance IS split — this
+    // branch's own copy).
+    const reachPos = await getPositionSafe();
+    if(reachPos){
+      payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
+      const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
+      const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon);
+      if(reachDist) payload.Distance_Reach_To_Breakdown_TOW=reachDist.distanceKm;
+    }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
@@ -1317,6 +1425,14 @@ async function confirmCancelCommon(){
       const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
       const dist = !isNaN(startLat) && !isNaN(startLon) ? await calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
       if(dist) payload.Cancel_Distance=dist.distanceKm;
+      // Distance_Cancel_To_Breakdown (2026-08-11, user request, "Missing
+      // Fields & Field Behavior" spec item 2) — BRAND NEW field, deliberately
+      // different from Cancel_Distance just above (Accept location → Cancel
+      // location) — this is Cancel location → the ticket's own static
+      // breakdown location, which no field/calc covered before this at all.
+      const bLatC=Number(r.Latitude), bLonC=Number(r.Longitude);
+      const cancelToBreakdown = !isNaN(bLatC) && !isNaN(bLonC) ? await calcDistanceETA(pos.lat,pos.lon,bLatC,bLonC) : null;
+      if(cancelToBreakdown) payload.Distance_Cancel_To_Breakdown=cancelToBreakdown.distanceKm;
       // Client-requested addition (2026-08-04) — see technicianTicket's/
       // driverTicket's own matching comments: round trip office -> this
       // vendor's current (cancel-click) position -> office, for both branches
@@ -1886,15 +2002,33 @@ function lockAvailabilityToggle(){
   el.classList.add("locked");
   el.title="Availability unavailable — no matching "+CONFIG.availabilityReport+" record found for your login.";
 }
-async function loadAvailability(){
-  if(!LOGIN_EMAIL){ console.warn("[GR-Vendor] loadAvailability: LOGIN_EMAIL is empty — getInitParams may have failed or returned no loginUser. Toggle stays locked."); lockAvailabilityToggle(); return; }
+// Extracted 2026-08-19 (was inline in loadAvailability() below, now also
+// called as a RETRY from acceptService()/assignTechnician()) — two live,
+// user-reported tickets (RSID396825, RSID396829) showed Expected_Arrival_Time
+// correctly stamped by a genuine Accept tap (proving the vendor really did
+// accept, on their own phone), yet Assigned_Vendor/Vendor_Email stayed blank
+// on the agent's own screen. Being visible/acceptable to the vendor at all
+// only ever requires the SEPARATE Vendor_Emails/Invites/isMine() match (see
+// isMine()'s own comment) — NOT this one — so it's fully possible for a
+// vendor to see and accept a ticket while this match had never resolved.
+// Root cause not yet pinned down to a single explanation (could be a slow
+// mobile connection racing boot()'s own one-shot fetch, or a genuine
+// Vendors_Report data mismatch for that specific vendor) — but a retry of
+// this exact, real query costs nothing and fixes the former outright without
+// guessing at anything.
+async function resolveVendorRecord(logContext){
+  if(!LOGIN_EMAIL) return currentVendorRecord;
   // Vendor identity (Vendors_Report) — used for Assigned_Vendor/Vendors1/
   // Invites ID matching elsewhere (isMine/loadMyInvites/acceptService),
   // unrelated to the toggle itself. Fetches all records and matches client-
   // side, case-insensitive + trimmed (2026-08-05 fix — a server-side exact-
   // match criteria is case-sensitive and silently returns nothing on any
-  // casing mismatch).
-  const vrecs=await apiGetReport(CONFIG.vendorReport, null, 200);
+  // casing mismatch). Fetches up to 1000 (2026-08-19, was 200 — user
+  // confirmed live a Vendors_Report record with the right email DOES exist
+  // for a vendor this still failed to match; a growing Vendors_Report
+  // quietly exceeding the old 200-record cap would produce exactly that
+  // symptom, so removing the cap costs nothing and rules it out outright).
+  const vrecs=await apiGetReport(CONFIG.vendorReport, null, 1000);
   const myVendor=vrecs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
   if(myVendor){
     currentVendorRecord={ id:myVendor.ID, data:myVendor };
@@ -1912,10 +2046,24 @@ async function loadAvailability(){
     // Only warn for a Fleet-type vendor with zero extracted ids — an
     // Individual vendor genuinely having none is the normal, expected case
     // and would otherwise spam every such login with a false-alarm warning.
-    if(IS_FLEET && !MY_TECHNICIAN_IDS.length) console.warn("[GR-Vendor] loadAvailability: Vendor_Type is Fleet but no ids extracted from", CONFIG.vendorReport+"."+CONFIG.vendorTechniciansField, "— raw value:", JSON.stringify(rawTechs), ". If this vendor genuinely has technicians assigned, the field name guess is likely wrong (see CONFIG.vendorTechniciansField's own comment) — this vendor's own record keys:", Object.keys(myVendor));
+    if(IS_FLEET && !MY_TECHNICIAN_IDS.length) console.warn("[GR-Vendor] "+logContext+": Vendor_Type is Fleet but no ids extracted from", CONFIG.vendorReport+"."+CONFIG.vendorTechniciansField, "— raw value:", JSON.stringify(rawTechs), ". If this vendor genuinely has technicians assigned, the field name guess is likely wrong (see CONFIG.vendorTechniciansField's own comment) — this vendor's own record keys:", Object.keys(myVendor));
   } else {
-    console.warn("[GR-Vendor] loadAvailability: no", CONFIG.vendorReport, "record's", CONFIG.vendorEmailField, "matched", LOGIN_EMAIL, "— ticket matching (Assigned_Vendor/Vendors1/Invites) will be affected. Records loaded:", vrecs.length, "| first record's own keys:", vrecs[0]);
+    // Enriched 2026-08-19 (user confirmed live: a Vendors_Report record with
+    // the right email genuinely exists, yet this still reported no match) —
+    // dumping every record's OWN value under CONFIG.vendorEmailField (not
+    // just the first record's raw keys) makes a wrong field-name guess
+    // obvious at a glance: every entry showing `undefined` means
+    // CONFIG.vendorEmailField ("Email") isn't this report's real API name
+    // for that column; entries showing SOME email but never a match means
+    // it's a genuine value mismatch (typo/whitespace/case Zoho didn't apply
+    // the same trim+lowercase to) instead.
+    console.warn("[GR-Vendor] "+logContext+": no", CONFIG.vendorReport, "record's", CONFIG.vendorEmailField, "matched", LOGIN_EMAIL, "— ticket matching (Assigned_Vendor/Vendors1/Invites) will be affected. Records loaded:", vrecs.length, "| every record's own "+CONFIG.vendorEmailField+" value:", vrecs.map(function(r){ return { ID:r.ID, email:r[CONFIG.vendorEmailField] }; }), "| first record's full own keys (to spot the real API name if every email above is undefined):", vrecs[0] && Object.keys(vrecs[0]));
   }
+  return currentVendorRecord;
+}
+async function loadAvailability(){
+  if(!LOGIN_EMAIL){ console.warn("[GR-Vendor] loadAvailability: LOGIN_EMAIL is empty — getInitParams may have failed or returned no loginUser. Toggle stays locked."); lockAvailabilityToggle(); return; }
+  await resolveVendorRecord("loadAvailability");
   // Availability toggle (2026-08-05, user request) — a genuinely separate
   // report from Vendors_Report, same field-name convention (Email/
   // Availability_Status) the standalone toggleGetRescue widget already used
@@ -1930,7 +2078,43 @@ async function loadAvailability(){
   currentAvailabilityRecord={ id:mine.ID, data:mine };
   const isOnline=String(mine[CONFIG.availabilityStatusField])==="Online";
   $("availToggle").classList.toggle("on", isOnline);
+  // Reopening the app while already Online (2026-08-17) — start the
+  // heartbeat here too, not just from onToggleClick()'s own toggle action,
+  // so location stays fresh across a page refresh/reopen without the vendor
+  // having to toggle off and back on.
+  if(isOnline) startLocationHeartbeat();
 }
+/* Live location heartbeat (2026-08-17, user request: "when vendor is online
+   it is supposed to show the distance from the vendor's current location
+   (latest location from app)") — while toggled Online, refreshes this
+   vendor's own Current_Latitude/Current_Longitude every ~2.5 minutes (the
+   midpoint of the user's own requested 2-3 min range), read by
+   getRescueTicket's own Assignment-step vendor picker (see that widget's own
+   vendorInfo() comment) once Online. An immediate fix is taken the moment
+   they toggle online, rather than waiting for the first interval tick — see
+   startLocationHeartbeat(). Best-effort throughout: a denied/unavailable
+   fix, or a failed write, just silently skips that one tick — never blocks
+   the toggle itself or any other part of this app. */
+const LOCATION_HEARTBEAT_MS=150000; // 2.5 min
+let locationHeartbeatTimer=null;
+async function pingCurrentLocation(){
+  if(!currentAvailabilityRecord) return;
+  try{
+    const pos=await getPositionSafe();
+    if(!pos) return;
+    const fn=resolve("updateRecordById"); if(!fn) return;
+    const payload={};
+    payload[CONFIG.availabilityCurrentLatField]=pos.lat;
+    payload[CONFIG.availabilityCurrentLonField]=pos.lon;
+    await fn({ app_name:CONFIG.appName, report_name:CONFIG.availabilityReport, id:currentAvailabilityRecord.id, payload:{data:payload} });
+  }catch(e){ console.warn("[GR-Vendor] pingCurrentLocation failed (non-fatal, retries next tick):", e); }
+}
+function startLocationHeartbeat(){
+  stopLocationHeartbeat(); // never let two timers stack
+  pingCurrentLocation(); // immediate fix now, don't wait for the first interval tick
+  locationHeartbeatTimer=setInterval(pingCurrentLocation, LOCATION_HEARTBEAT_MS);
+}
+function stopLocationHeartbeat(){ if(locationHeartbeatTimer){ clearInterval(locationHeartbeatTimer); locationHeartbeatTimer=null; } }
 async function onToggleClick(){
   if(!currentAvailabilityRecord) return;
   const el=$("availToggle");
@@ -1942,6 +2126,7 @@ async function onToggleClick(){
     const payload={}; payload[CONFIG.availabilityStatusField]=wantOnline?"Online":"Offline";
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.availabilityReport, id:currentAvailabilityRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
+    if(wantOnline) startLocationHeartbeat(); else stopLocationHeartbeat();
   }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
   finally{ el.classList.remove("locked"); }
 }

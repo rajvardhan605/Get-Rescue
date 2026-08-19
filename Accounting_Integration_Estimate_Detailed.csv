@@ -1,0 +1,95 @@
+Phase,Category,#,Task Description,Min Hours,Max Hours,Depends On,Notes / Assumptions
+1,Foundation,1,"Zoho Books org connection setup (OAuth/API scopes, verify GST registration + Karnataka CGST/SGST config in Books)",3,4,None,"One-time setup; assumes you already have Zoho Books admin access"
+1,Foundation,2a,"Zoho Books integration function: find-or-create Customer",1.5,2,Task 1,"Reusable - called by On-Demand automation and Client Invoicing"
+1,Foundation,2b,"Zoho Books integration function: find-or-create Vendor",1.5,2,Task 1,"Reusable - called by Vendor Accounting Level 2"
+1,Foundation,2c,"Zoho Books integration function: create Invoice",1.5,2,Task 1,"Reusable - called by On-Demand automation and Client Invoicing"
+1,Foundation,2d,"Zoho Books integration function: create Bill + record Payment Made",1.5,2,Task 1,"Reusable - called by Vendor Accounting Level 2"
+1,Foundation,3,"New field: Cash_Collected on Create_Case",1,1.5,None,
+1,Foundation,4,"New field: Extras (manual entry per case)",1,1.5,None,
+1,Foundation,5a,"New fields: TDS_Rate / TDS_Amount",1,1.5,None,
+1,Foundation,5b,"New fields: GST_Payable / GST_Paid / GST_Receipt / GST_Receipt_Date",1.5,2,None,
+1,Foundation,6,"New field: Settlement_Status (vendor-side workflow state)",1,2,None,
+1,Foundation,7a,"New fields: Prebill_No / Prebill_Date",1,1,None,
+1,Foundation,7b,"New fields: Invoice_No / Invoice_Date / Accounts_Comments",1,2,None,
+1,Foundation,8,"New Client Rate Card table + Zoho Studio schema (Client, Service, Base Fee, Base Kms, Rate/Km)",3,4,None,"Separate from existing Rate_Master - that one is keyed by Vehicle Type/Segment/Issue, not Client"
+1,Foundation,9,"New Vendor Rate Card table + Zoho Studio schema (Base Fee, Base Km, Km Rate, Slab Km)",3,4,None,"Also separate from Rate_Master - vendor payout rate, not customer quote rate"
+1,Foundation,10,"Reconcile new Cash_Collected/Extras/Net Fee against fields already in use (Payment_Method_Final, Payment_Status, Total_Service_Fee, Remaining_Fee, Booking_Fee)",2,3,"Tasks 3, 4","Real analysis work - flagged as a risk area, avoids two sources of truth for the same money"
+1,Foundation,11,"Decide + implement: TDS%/GST% hardcoded vs a config field",2,3,None,"Recommend config-driven so a future rate change doesn't need a redeploy"
+1,Foundation,12,"Documentation: FIELDS.md/ACCESS.md updates for every new field/form/report above",2,3,"Tasks 3-9",
+,,,SUBTOTAL - Phase 1 Foundation,28.5,41.5,,
+2,Vendor Accounting - Level 1 (Operations Approval),13,"Build Level 1 screen: read-only Case System fields (Vendor ID, Case ID, Date & Time, Case Status, Service, Vehicle, Base Fee, Travel Kms - RSR)",3,4,"Task 9",
+2,Vendor Accounting - Level 1 (Operations Approval),14,"Editable fields: Vendor Round-trip KM, Extras, Comments",1,2,"Tasks 4, 13",
+2,Vendor Accounting - Level 1 (Operations Approval),15,"KM Fee formula - RSR branch (ROUNDUP slab logic: km rate x ROUNDUP[(actual km - base km)/slab km])",2,3,"Task 9",
+2,Vendor Accounting - Level 1 (Operations Approval),16,"KM Fee formula - TOW branch (same ROUNDUP logic, driven by Vendor Roundtrip KM instead)",2,3,"Task 9",
+2,Vendor Accounting - Level 1 (Operations Approval),17,"Gross Fee / Net Fee / Balance (before TDS) calculated fields",1,2,"Tasks 15, 16",
+2,Vendor Accounting - Level 1 (Operations Approval),18,"""Operations Approved"" action + status transition (lock record after approval)",2,3,"Task 6, 17",
+2,Vendor Accounting - Level 1 (Operations Approval),19,"List/filter view of cases pending operations approval",2,3,"Task 13",
+,,,SUBTOTAL - Phase 2 Vendor Accounting Level 1,13,20,,
+3,Vendor Accounting - Level 2 (Accounts Payable),20,"Vendor ID search + vendor name lookup + date-range period picker, filtered to Status = Payable",3,4,"Task 18",
+3,Vendor Accounting - Level 2 (Accounts Payable),21a,"Consolidated multi-case selection UI (bulk-select several cases for one vendor in one payment run)",2,3,"Task 20",
+3,Vendor Accounting - Level 2 (Accounts Payable),21b,"Bulk-apply backend logic - single accounts entry (Payment Date/UTR/Amount Paid) written across every selected case",2,3,"Task 21a","""single entry for multiple cases"" per the spec - the trickiest logic piece in this workstream"
+3,Vendor Accounting - Level 2 (Accounts Payable),22,"TDS calc (Net Fee x TDS%)",1,1,"Task 5a, 17",
+3,Vendor Accounting - Level 2 (Accounts Payable),23,"Final Payable calc (Net Fee - TDS - Cash Collected)",1,1,"Task 22",
+3,Vendor Accounting - Level 2 (Accounts Payable),25a,"Zoho Books: create consolidated Bill (Vendor Payment Advice)",2,3,"Task 2d, 21b",
+3,Vendor Accounting - Level 2 (Accounts Payable),25b,"Zoho Books: record Payment Made against the Bill",2,3,"Task 25a",
+3,Vendor Accounting - Level 2 (Accounts Payable),26,"GST payable / GST paid calc + entry (from Vendor Table where applicable)",2,3,"Task 5b",
+3,Vendor Accounting - Level 2 (Accounts Payable),27,"Payment_Status calculated field (PAID / PAYABLE)",1,1,"Task 25b",
+3,Vendor Accounting - Level 2 (Accounts Payable),28,"Vendor statement / Vendor Portal view - vendor sees their own recorded payments, filterable by period",4,6,"Task 25b, 27",
+,,,SUBTOTAL - Phase 3 Vendor Accounting Level 2,20,28,,
+4,Client Accounting - State Machine + Level 1 (Prebilling),29,"Design + build the client-billing status field spanning: Eligible for Prebill -> Prebill Draft -> Reviewed -> Sent -> Awaiting Revert -> Approved / Revert Received -> Accounts Adjustment -> Final Approved -> Invoice Created -> Sent -> Payment Pending -> Part Paid / Paid -> TDS/GST Adjustment -> Balance = 0 -> Closed",3,4,None,"Recommend a NEW field - this is a separate lifecycle from the ticket's own Status field"
+4,Client Accounting - State Machine + Level 1 (Prebilling),30,"Prebilling screen: Client search + period picker, showing all cases where Prebill No. is null",3,4,"Task 7a, 29",
+4,Client Accounting - State Machine + Level 1 (Prebilling),31,"Prebill No. / Prebill Date manual entry fields",1,1,"Task 7a",
+4,Client Accounting - State Machine + Level 1 (Prebilling),32,"Prebilling case table: pull Case System fields (Date, Case ID, Vehicle No., Contact No., Service, Travel Km)",2,3,"Task 30",
+4,Client Accounting - State Machine + Level 1 (Prebilling),33,"Client Rate Card lookup (Base Fee, Base Kms, Rate/Km) per client + service",2,3,"Task 8",
+4,Client Accounting - State Machine + Level 1 (Prebilling),34,"Extra Kms / Extra Kms Fee formula (Travel Km - Base Kms, else 0; x Rate/Km)",1,2,"Task 33",
+4,Client Accounting - State Machine + Level 1 (Prebilling),35,"Manual entry fields: Toll & Permit, Waiting Charge, Others",1,2,"Task 32",
+4,Client Accounting - State Machine + Level 1 (Prebilling),36,"Taxable Amount / GST / Total Amount calculated fields",1,2,"Tasks 34, 35",
+4,Client Accounting - State Machine + Level 1 (Prebilling),37,"Client Charges field + Balance calc (Total Amount - Client Charges)",1,2,"Task 36",
+4,Client Accounting - State Machine + Level 1 (Prebilling),38,"Google Maps roundtrip link field",1,1,"Task 32",
+4,Client Accounting - State Machine + Level 1 (Prebilling),39,"""Generate Prebill"" bulk action - stamps Prebill No. + Date across every selected case at once",3,4,"Tasks 31, 37",
+4,Client Accounting - State Machine + Level 1 (Prebilling),40,"Zoho Books: create/sync the Prebill record",3,4,"Task 2c, 39",
+4,Client Accounting - State Machine + Level 1 (Prebilling),41,"""Send to Client"" action (email the prebill)",2,3,"Task 40",
+,,,SUBTOTAL - Phase 4 Client Accounting State Machine + Level 1,25,35,,
+5,Client Accounting - Level 2 (Invoicing),42a,"Client Revert handling - Add / Delete / Correct + audit comments on approved charges (Accounts-mediated internally via email/call, then edits the record)",5,7,"Task 41","BASELINE assumption used in the grand total below"
+5,Client Accounting - Level 2 (Invoicing),43,"Accounts Adjustments - ability to edit any field for amounts/kms/charges; removing the Prebill No. reopens that case for a future prebill",4,5,"Task 42a",
+5,Client Accounting - Level 2 (Invoicing),44,"Accounts Comments audit field (""reason for change"")",1,1,"Task 7b",
+5,Client Accounting - Level 2 (Invoicing),45,"Invoice No. / Invoice Date manual entry fields",1,1,"Task 7b",
+5,Client Accounting - Level 2 (Invoicing),46,"""Create Invoice"" bulk action - stamps Invoice No. + Date across every case carrying a Prebill No.",3,4,"Tasks 43, 45",
+5,Client Accounting - Level 2 (Invoicing),47,"Zoho Books: create Invoice from original values + approved adjustments, apply GST",4,5,"Task 2c, 46",
+5,Client Accounting - Level 2 (Invoicing),48,"""Invoice Sent"" action + email",2,3,"Task 47",
+,,,SUBTOTAL - Phase 5 Client Accounting Level 2,20,26,,
+6,Client Accounting - Level 3 (Receipt Accounting),49,"Receipt Accounting screen: Client search + Invoice No. search, display Taxable Amount / GST / Invoice Amount / Client Charges",3,4,"Task 48",
+6,Client Accounting - Level 3 (Receipt Accounting),50a,"Manual entry: Receipt, Receipt Date, UTR No.",1,1.5,"Task 49",
+6,Client Accounting - Level 3 (Receipt Accounting),50b,"Manual entry: TDS, GST Receipt, GST Receipt Date, Accounts Comments",1,1.5,"Task 49",
+6,Client Accounting - Level 3 (Receipt Accounting),51,"Balance Receivable calc (Invoice Total - Receipt - TDS - GST Receipt)",1,2,"Tasks 50a, 50b",
+6,Client Accounting - Level 3 (Receipt Accounting),52,"Zoho Books: link to / reconcile against Payments Received",3,4,"Task 2c, 51",
+6,Client Accounting - Level 3 (Receipt Accounting),53,"Multiple-receipt / partial-payment handling (the Part Paid state)",3,4,"Task 51",
+,,,SUBTOTAL - Phase 6 Client Accounting Level 3,12,17,,
+7,On-Demand Invoicing Automation,54,"Trigger on ticket Closed/Completed (workflow or Deluge schedule/function hook)",2,3,None,
+7,On-Demand Invoicing Automation,55,"Branch logic: On-Demand (final amount) vs other clients (only when Rescue Charges > 0)",2,3,"Task 54",
+7,On-Demand Invoicing Automation,56,"Find-or-create Customer in Zoho Books (match by phone/email; create if missing)",3,4,"Task 2a, 55",
+7,On-Demand Invoicing Automation,57,"Reverse-GST calculation (Service Charge = Total Amount x 100/118, CGST 9% + SGST 9%)",2,3,"Task 55",
+7,On-Demand Invoicing Automation,58,"Round Off / Adjustment line handling (exact-to-the-paisa reconciliation)",2,3,"Task 57",
+7,On-Demand Invoicing Automation,59,"Create Invoice via Zoho Books API with Place of Supply = Karnataka default",2,3,"Task 2c, 56, 58",
+7,On-Demand Invoicing Automation,60,"Email invoice to customer",1,2,"Task 59",
+7,On-Demand Invoicing Automation,61,"Write Invoice Number back onto the ticket record",1,1,"Task 59",
+7,On-Demand Invoicing Automation,62,"Test against the two worked examples in the spec (Rs. 2,500 and Rs. 999 cases) for exact rounding match",2,3,"Task 58",
+,,,SUBTOTAL - Phase 7 On-Demand Invoicing Automation,17,25,,
+8,Invoice Template / Branding,63,"Match Zoho Books invoice PDF template to Rescue branding (logo, layout, colors)",2,3,None,"Reference: 2858RSA.pdf sample"
+8,Invoice Template / Branding,64,"Footer legal/compliance fields (GST No., SAC, CIN, declaration text, amount-in-words)",1,2,"Task 63",
+8,Invoice Template / Branding,65,"Test print/PDF across both the On-Demand path and the Client Invoice path",1,2,"Tasks 59, 47, 63",
+,,,SUBTOTAL - Phase 8 Invoice Template / Branding,4,7,,
+9,Cross-Cutting QA & Hardening,66,"Multi-case consolidated payment run testing (Vendor Accounting Level 2)",2,3,"Task 25b",
+9,Cross-Cutting QA & Hardening,67,"Partial payment / Part Paid reconciliation testing (Client Accounting Level 3)",2,3,"Task 53",
+9,Cross-Cutting QA & Hardening,68,"TDS/GST rounding edge cases across both the vendor side and the client side",2,3,"Tasks 22, 57",
+9,Cross-Cutting QA & Hardening,69,"End-to-end regression - confirm the existing ticket flow (payment fields already built this session) still works correctly after the reconciliation in Foundation task #10",3,4,"Task 10",
+9,Cross-Cutting QA & Hardening,70,"Final documentation pass: FIELDS.md / ACCESS.md / README updates for the whole accounting layer",2,3,"All tasks",
+9,Cross-Cutting QA & Hardening,71,"UAT / client sign-off walkthrough session (walk Operations + Accounts teams through both portals)",2,3,"Task 70",
+,,,SUBTOTAL - Phase 9 Cross-Cutting QA & Hardening,13,19,,
+,,,"GRAND TOTAL - CORE SCOPE (Phases 1-9, baseline Client Revert assumption)",152.5,218.5,,"~4-6 weeks focused solo work"
+,,,,,,,
+,OPTIONAL / CONTINGENT ADD-ONS (not in the grand total above - add only if applicable),,,,,
+,Optional Add-on,O1,"Real client-facing portal for Prebill Revert, instead of Accounts handling it internally by phone/email (replaces/extends Task 42a)",8,12,"Task 42a","The single biggest scope swing factor in this whole estimate - confirm with client which model they actually want"
+,Optional Add-on,O2,"Automated reminder emails for tickets stuck in ""Awaiting Client Revert"" beyond N days",3,4,"Task 41","Not mentioned in the spec docs but common in this kind of workflow - flagging as a likely follow-up ask"
+,Optional Add-on,O3,"Multi-state GST / Place of Supply support, if any client is billed outside Karnataka",4,6,"Task 59, 47","Spec explicitly says ""Karnataka - default"" - only needed if that assumption doesn't hold for all clients"
+,Optional Add-on,O4,"Role-based screen access hardening - separate Operations-approver vs Accounts-payer permissions instead of relying on existing Zoho profile setup",4,6,"Task 18, 25a","The spec implies Operations and Accounts are different people/roles at Level 1 vs Level 2 - flagging in case that separation needs to be enforced in-app, not just organizationally"
