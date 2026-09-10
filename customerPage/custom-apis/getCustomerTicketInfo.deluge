@@ -1,0 +1,362 @@
+string getCustomerTicketInfo(string recordId, string mode)
+{
+	try
+	{
+		result = Map();
+		rec = Create_Case[ID == recordId.toLong()];
+		if(rec == null)
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Ticket not found");
+			return result.toString();
+		}
+
+		customerName = rec.Customer_Name;
+		if(customerName == null || customerName == "")
+		{
+			customerName = "Customer";
+		}
+		result.put("code", "SUCCESS");
+		result.put("customerName", customerName);
+		result.put("serviceType", rec.Service_Type);
+
+		// Vehicle / Issue / Total Service Fee (2026-09-07, user request:
+		// "in the beginning we can display to the customer vehicle name,
+		// issue and total service fee") — returned on EVERY mode (not just
+		// one), shared context strip shown across all 4 customer-facing
+		// pages. Wrapped in their own try/catch each — Vehicle/Vehicle_Issue
+		// are Lookup fields and this project has no prior confirmed pattern
+		// for traversing a Lookup's own display value inside a Deluge
+		// script (every other place that needs Vehicle Issue names resolves
+		// them client-side in getRescueTicket via a separate options report
+		// fetch, not inside Deluge) — .toString() is the safest fallback
+		// that cannot itself throw a save-time or run-time error regardless
+		// of the exact underlying value shape, but may show a raw ID rather
+		// than a friendly name until confirmed live. Flagged, not guessed
+		// silently — test this specifically and report back what actually
+		// displays.
+		// Real bug fixed 2026-09-09 (user-confirmed live: raw record IDs shown
+		// instead of names, e.g. "448881000000057692 - 448881000000056038")
+		// — .toString() on a Lookup field returns its raw ID, not its
+		// display value. FIELDS.md confirms Vehicle is a single Lookup ->
+		// Vehicle_Master (display field Name) and Vehicle_Issue is a
+		// MULTI-select Lookup -> Vehicle_Issue (display field Issue_Name),
+		// so each needs its own resolution. Each attempt below keeps the
+		// already-working raw-ID string as its fallback (set first, in the
+		// SAME try block) and only overwrites it if the friendly-name
+		// resolution actually succeeds — an inner try/catch around just the
+		// name lookup, so a wrong assumption about either field's exact
+		// shape can only fall back to today's raw-ID behavior, never break
+		// the whole response.
+		vehicleName = "";
+		try
+		{
+			if(rec.Vehicle != null)
+			{
+				vehicleName = rec.Vehicle.toString();
+				try
+				{
+					vehRec = vehicle_master[ID == rec.Vehicle.toLong()];
+					if(vehRec != null)
+					{
+						vLookupName = vehRec.Name;
+						if(vLookupName != null)
+						{
+							if(vLookupName.toString() != "")
+							{
+								vehicleName = vLookupName.toString();
+							}
+						}
+					}
+				}
+				catch (vehicleNameEx)
+				{
+				}
+			}
+		}
+		catch (vehicleEx)
+		{
+			vehicleName = "";
+		}
+		issueNames = "";
+		try
+		{
+			if(rec.Vehicle_Issue != null)
+			{
+				issueNames = rec.Vehicle_Issue.toString();
+				try
+				{
+					issueNameList = List();
+					for each issId in rec.Vehicle_Issue
+					{
+						issRec = Vehicle_Issue[ID == issId];
+						if(issRec != null)
+						{
+							issNameVal = issRec.Issue_Name;
+							if(issNameVal != null)
+							{
+								if(issNameVal.toString() != "")
+								{
+									issueNameList.add(issNameVal.toString());
+								}
+							}
+						}
+					}
+					if(issueNameList.size() > 0)
+					{
+						joined = "";
+						for each nm in issueNameList
+						{
+							if(joined == "")
+							{
+								joined = nm;
+							}
+							else
+							{
+								joined = joined + ", " + nm;
+							}
+						}
+						issueNames = joined;
+					}
+				}
+				catch (issueNameEx)
+				{
+				}
+			}
+		}
+		catch (issueEx)
+		{
+			issueNames = "";
+		}
+		// Same DECIMAL-blank-value fix as Booking_Fee/Remaining_Fee below
+		// (2026-09-09) — this field was missed the first time around and
+		// still used a plain "== null" check, which this project has already
+		// confirmed doesn't catch every blank shape a Decimal field can
+		// come back as.
+		totalFee = rec.Total_Service_Fee;
+		totalFeeText = "";
+		if(totalFee != null)
+		{
+			totalFeeText = totalFee.toString();
+		}
+		if(totalFeeText == "")
+		{
+			totalFee = 0;
+		}
+		result.put("vehicle", vehicleName);
+		result.put("issue", issueNames);
+		result.put("totalServiceFee", totalFee);
+
+		// Real bug fixed 2026-09-07 (user-reported live: "Missing return
+		// statement: Provide STRING expression to return") — this function
+		// used to have ONE shared "return result.toString();" placed after
+		// the whole if/else-if/else mode-dispatch chain below, relying on
+		// every branch falling through to it. Deluge's own static
+		// return-path checker couldn't prove every branch reaches that
+		// point (this got harder to follow once the DECIMAL/TEXT fix above
+		// added nested if-blocks inside some branches) and refused to save
+		// the script at all. Fixed the only fully robust way: every branch
+		// below now returns explicitly, on its own, so there's no shared
+		// fall-through return left to prove reachability for.
+		if(mode == "booking_payment")
+		{
+			// Real bug fixed 2026-09-09 (user-reported live: portal showed
+			// Booking Fee 200, Customer Page showed ₹0.00 for the same
+			// ticket) — plain "amount == null" wasn't catching every blank
+			// shape this Number field can come back as (same class of
+			// Deluge type quirk already fixed for Zoho_Books_Invoice_ID
+			// above/Remaining_Fee below — DECIMAL/Number fields don't
+			// always read back as a clean null when blank). Normalized via
+			// .toString() first, same established pattern, before falling
+			// back to 0 — only when genuinely blank now, not on a real
+			// non-null-but-not-exactly-null value.
+			amount = rec.Booking_Fee;
+			amountText = "";
+			if(amount != null)
+			{
+				amountText = amount.toString();
+			}
+			if(amountText == "")
+			{
+				amount = 0;
+			}
+			paid = false;
+			if(rec.Payment_Status == "PAID")
+			{
+				paid = true;
+			}
+			result.put("amountDue", amount);
+			result.put("paid", paid);
+			// Real bug fixed 2026-09-07 (user-reported live: "In Criteria left
+			// expression is of type DECIMAL and right expression is of type
+			// TEXT and the operator != is not valid") — Zoho_Books_Invoice_ID
+			// reads back as a DECIMAL here even though it was documented as
+			// Single Line Text; comparing it directly against the TEXT
+			// literal "" is exactly what Deluge's own type checker rejects.
+			// Normalized via .toString() before the empty-check (same fix
+			// applied to every other numeric-looking field in this function),
+			// and split into a nested if rather than one "!= null &&" —
+			// matching the established, already-proven-safe pattern this
+			// project's OTHER Deluge scripts already use (onDemandInvoicing.
+			// deluge, recordVendorPayment.deluge) instead of combining a
+			// null-check and a type-sensitive comparison into one expression.
+			// Real payment page (2026-09-09, user request: "open the Zoho
+			// Books payment page directly instead of opening the invoice
+			// separately") — Zoho_Payment_URL is the REAL, payable link the
+			// Zoho Payments "Payment Links" API returned (see
+			// onDemandInvoicing.deluge's own comment), now stored directly
+			// on the ticket alongside the invoice ID. Field renamed
+			// 2026-09-10 to Zoho_Payment_URL (was Zoho_Books_Payment_URL) —
+			// the user's own real, created field, replacing the earlier
+			// placeholder name that was never confirmed to exist in Zoho.
+			// Preferred over the old hand-built URL below whenever present;
+			// falls back to the exact same hand-built format as before for
+			// any ticket invoiced before this field existed, or if
+			// payment-link generation ever fails.
+			paymentUrl = rec.Zoho_Payment_URL;
+			paymentUrlText = "";
+			if(paymentUrl != null)
+			{
+				paymentUrlText = paymentUrl.toString();
+			}
+			if(paymentUrlText != "")
+			{
+				result.put("invoiceUrl", paymentUrlText);
+			}
+			else
+			{
+				invoiceId = rec.Zoho_Books_Invoice_ID;
+				if(invoiceId != null)
+				{
+					invoiceIdText = invoiceId.toString();
+					if(invoiceIdText != "")
+					{
+						result.put("invoiceUrl", "https://books.zoho.in/invoices/" + invoiceIdText + "?organization_id=60078911104");
+					}
+				}
+			}
+			return result.toString();
+		}
+		else if(mode == "remaining_payment")
+		{
+			// Same fix as booking_payment above, same date/reason —
+			// Remaining_Fee is documented as Decimal (FIELDS.md), the exact
+			// field type this file already knows can misbehave against a
+			// plain "== null" check.
+			amount = rec.Remaining_Fee;
+			amountText = "";
+			if(amount != null)
+			{
+				amountText = amount.toString();
+			}
+			if(amountText == "")
+			{
+				amount = 0;
+			}
+			paid = false;
+			if(rec.Payment_received == "Yes")
+			{
+				paid = true;
+			}
+			result.put("amountDue", amount);
+			result.put("paid", paid);
+			// Zoho_Books_Invoice_ID_Remaining (2026-09-07, user decision:
+			// "split into two invoices") — a SEPARATE invoice from the
+			// booking-payment one above, created by getRescueTicket's own
+			// Send_Payment_Link1 action for exactly Remaining_Fee. New
+			// field, mirrors the booking_payment branch's own pattern
+			// exactly (including the same 2026-09-07 DECIMAL/TEXT fix just
+			// above) so renderBookingOrRemainingPayment() (shared by both
+			// modes on the widget side) picks it up with no widget-side
+			// change needed.
+			// Same real-payment-page preference as booking_payment above —
+			// see that branch's own comment.
+			paymentUrlRemaining = rec.Zoho_Books_Payment_URL_Remaining;
+			paymentUrlRemainingText = "";
+			if(paymentUrlRemaining != null)
+			{
+				paymentUrlRemainingText = paymentUrlRemaining.toString();
+			}
+			if(paymentUrlRemainingText != "")
+			{
+				result.put("invoiceUrl", paymentUrlRemainingText);
+			}
+			else
+			{
+				invoiceIdRemaining = rec.Zoho_Books_Invoice_ID_Remaining;
+				if(invoiceIdRemaining != null)
+				{
+					invoiceIdRemainingText = invoiceIdRemaining.toString();
+					if(invoiceIdRemainingText != "")
+					{
+						result.put("invoiceUrl", "https://books.zoho.in/invoices/" + invoiceIdRemainingText + "?organization_id=60078911104");
+					}
+				}
+			}
+			return result.toString();
+		}
+		else if(mode == "feedback")
+		{
+			// Reverted 2026-09-07 (later same day, explicit user feedback:
+			// "Single feedback as you have now is good enough") — back to
+			// ONE score, matching submitCustomerFeedback.deluge's own
+			// matching revert. Kept the safe DECIMAL/TEXT-normalization
+			// pattern (nested if + .toString()) from the earlier fix rather
+			// than reverting all the way to the original riskier
+			// "!= null && != ''" combined expression — that part of the fix
+			// stands regardless of the 1-score-vs-3-score decision.
+			already = false;
+			score = rec.Cx_Feedback_Score;
+			if(score != null)
+			{
+				if(score.toString() != "")
+				{
+					already = true;
+				}
+			}
+			result.put("alreadySubmitted", already);
+			return result.toString();
+		}
+		else if(mode == "location")
+		{
+			// Same 2026-09-07 fix — Latitude/DropLocationLat are Decimal
+			// fields (confirmed elsewhere in this project), so the original
+			// "!= null && != ''" inline expressions here hit the exact same
+			// DECIMAL-vs-TEXT criteria error as the invoice checks above.
+			hasBreakdown = false;
+			lat = rec.Latitude;
+			if(lat != null)
+			{
+				if(lat.toString() != "")
+				{
+					hasBreakdown = true;
+				}
+			}
+			hasDrop = false;
+			dropLat = rec.DropLocationLat;
+			if(dropLat != null)
+			{
+				if(dropLat.toString() != "")
+				{
+					hasDrop = true;
+				}
+			}
+			result.put("hasBreakdownLocation", hasBreakdown);
+			result.put("hasDropLocation", hasDrop);
+			return result.toString();
+		}
+		else
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Unknown mode: " + mode);
+			return result.toString();
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		return errResult.toString();
+	}
+}

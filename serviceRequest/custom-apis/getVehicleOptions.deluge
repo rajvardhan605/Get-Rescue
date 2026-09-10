@@ -1,0 +1,43 @@
+string getVehicleOptions()
+{
+	returnstring = "";
+	try
+	{
+		vehicleList = List();
+		for each veh in vehicle_master[ID != 0]
+		{
+			v = Map();
+			v.put("id", veh.ID);
+			vName = veh.Name;
+			if(vName == null)
+			{
+				vName = "";
+			}
+			if(vName.toString() == "")
+			{
+				vName = "Vehicle " + veh.ID;
+			}
+			v.put("name", vName);
+			vCategory = "";
+			if(veh.Category != null)
+			{
+				vCategory = veh.Category.toString();
+			}
+			v.put("category", vCategory);
+			vehicleList.add(v);
+		}
+		result = Map();
+		result.put("code", "SUCCESS");
+		result.put("vehicles", vehicleList);
+		returnstring = result.toString();
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		errResult.put("vehicles", List());
+		returnstring = errResult.toString();
+	}
+	return returnstring;
+}

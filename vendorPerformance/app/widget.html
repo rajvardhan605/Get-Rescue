@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Vendor Performance</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:20px 18px 60px}
+.hdr{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+.hdr h1{font-family:var(--f-disp);font-size:24px;font-weight:800;color:var(--ink)}
+.hdr .sub{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:2px}
+select#filterRange{font-family:var(--f-disp);font-weight:700;font-size:13.5px;padding:9px 14px;border-radius:10px;
+  border:1.5px solid var(--line-strong);background:var(--card);color:var(--text);cursor:pointer}
+.section-title{font-family:var(--f-disp);font-weight:800;font-size:14px;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--muted);margin:22px 0 12px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+@media (max-width:520px){ .grid{grid-template-columns:1fr} }
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);
+  padding:22px 18px;text-align:center}
+.card .ic{width:46px;height:46px;border-radius:50%;background:var(--ok-soft);color:var(--ok);display:flex;
+  align-items:center;justify-content:center;margin:0 auto 10px}
+.card .ic svg{width:22px;height:22px}
+.card .num{font-family:var(--f-disp);font-size:34px;font-weight:900;color:var(--ink)}
+.card .lbl{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:4px}
+.card.warn .ic{background:var(--stop-soft);color:var(--stop)}
+.card.wait .ic{background:var(--wait-soft);color:var(--wait)}
+.hint-box{background:var(--worktop);border:1px dashed var(--line-strong);border-radius:10px;padding:14px 16px;
+  font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:18px;line-height:1.6}
+.center-state{text-align:center;padding:60px 16px;color:var(--muted)}
+.spin{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);
+  animation:spin .7s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.state-err{background:var(--stop-soft);color:var(--stop);border-radius:12px;padding:16px;font-weight:700;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div>
+      <h1>Vendor Performance</h1>
+      <div class="sub" id="vendorNameLine">Loading…</div>
+    </div>
+    <select id="filterRange">
+      <option value="today">Today</option>
+      <option value="yesterday">Yesterday</option>
+      <option value="thisMonth" selected>This Month</option>
+      <option value="lastMonth">Last Month</option>
+    </select>
+  </div>
+  <div id="content"><div class="center-state"><div class="spin"></div></div></div>
+</div>
+<script>
+/* =====================================================================
+   Get-Rescue — Vendor Performance widget (2026-09-03)
+
+   Runs inside a logged-in vendor's own portal (same identity-resolution
+   pattern as vendorTicket: Vendors_Report matched by login email). Shows
+   only THIS vendor's own aggregate stats — per the hand-drawn wireframe's
+   own explicit rule "Vendor & mechanic will not be shown case HISTORY",
+   this widget deliberately never lists individual tickets, only counts/
+   percentages. Read-only — no writes anywhere in this file.
+
+   Layout matches the wireframe: a "CASES" column (Rejected/Timed Out,
+   Completed, Cancelled) and a "% PERCENTAGE" column (Reached Inside ETA,
+   Issues Fixed, Customer Feedback >= 9), both filterable by
+   Today/Yesterday/This Month/Last Month.
+   ===================================================================== */
+const CONFIG = {
+  appName: "get-rescue",
+  reportName: "Agent_Ticket_Report",
+  taskRejectionsReport: "Task_Rejections_Report",
+  vendorReport: "Vendors_Report",
+  vendorEmailField: "Email",
+  vendorNameField: "Vendor_Name",
+  serviceTypeField: "Service_Type"
+};
+const ZOHO_SCOPE_NAME = "getrescued";
+let INIT_PARAMS = null;
+function zohoAppLinkName(){
+  const frag = (INIT_PARAMS && INIT_PARAMS.envUrlFragment) || "";
+  return CONFIG.appName + (/development/i.test(frag) ? "-development" : "");
+}
+let LOGIN_EMAIL="", currentVendorRecord=null, MY_VENDOR_NAME="";
+
+const $=(id)=>document.getElementById(id);
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function apiGetReport(report, criteria, max){
+  const fn=resolve("getRecords"); if(!fn) return [];
+  const cfg={ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||1000 };
+  if(criteria) cfg.criteria=criteria;
+  try{
+    const r=await fn(cfg);
+    return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  }catch(e){ console.warn("[GR-VendorPerf] apiGetReport("+report+") failed", e); return []; }
+}
+function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
+
+async function resolveVendorRecord(){
+  if(!LOGIN_EMAIL) return null;
+  const vrecs = await apiGetReport(CONFIG.vendorReport, null, 1000);
+  const myVendor = vrecs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  if(myVendor){
+    currentVendorRecord = { id: myVendor.ID, data: myVendor };
+    MY_VENDOR_NAME = myVendor[CONFIG.vendorNameField] || "";
+  }
+  return currentVendorRecord;
+}
+
+/* ---------- date-range filter ---------- */
+function rangeFor(key){
+  const now=new Date();
+  const startOfDay=(d)=> new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0);
+  const endOfDay=(d)=> new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999);
+  if(key==="today") return { from:startOfDay(now), to:endOfDay(now) };
+  if(key==="yesterday"){ const y=new Date(now); y.setDate(y.getDate()-1); return { from:startOfDay(y), to:endOfDay(y) }; }
+  if(key==="thisMonth") return { from:new Date(now.getFullYear(),now.getMonth(),1,0,0,0,0), to:endOfDay(now) };
+  if(key==="lastMonth"){ const f=new Date(now.getFullYear(),now.getMonth()-1,1,0,0,0,0); const t=new Date(now.getFullYear(),now.getMonth(),0,23,59,59,999); return { from:f, to:t }; }
+  return { from:startOfDay(now), to:endOfDay(now) };
+}
+// Same defensive multi-format parse as the dashboard timer feature
+// (getRescueTicket) — Added_Time is a Zoho system field, its own wire
+// format isn't independently confirmed live, so native ISO parsing is
+// tried first, falling back to this app's own "DD-Mon-YYYY HH:mm:ss"
+// dash formats (12h and 24h) rather than assuming either.
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function parseDateTime12(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  let hour=Number(m[4])%12; if(/pm/i.test(m[7])) hour+=12;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), hour, Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseDateTime24(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseAnyDateTime(str){
+  if(!str) return null;
+  const native=new Date(str);
+  if(!isNaN(native)) return native;
+  return parseDateTime12(str) || parseDateTime24(str);
+}
+function inRange(dateVal, range){
+  const d=parseAnyDateTime(dateVal);
+  if(!d) return false;
+  return d.getTime()>=range.from.getTime() && d.getTime()<=range.to.getTime();
+}
+
+/* ---------- ETA-met check — same logic as getRescueTicket's own
+   etaMetStatus(), duplicated here rather than shared across widget files
+   (each widget in this repo is a single self-contained HTML file). ---------- */
+function expectedArrivalDeadline(r){
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  const overrideMins = isTow ? r.Agent_ETA_Override_TOW : r.Agent_ETA_Override;
+  const etaMins = (overrideMins!=null && overrideMins!=="") ? Number(overrideMins) : Number(isTow ? r.ETA_TOW : r.ETA);
+  if(!etaMins || isNaN(etaMins) || !acceptAt) return null;
+  return new Date(acceptAt.getTime()+etaMins*60000);
+}
+function etaMetStatus(r){
+  const deadline=expectedArrivalDeadline(r);
+  if(!deadline) return null;
+  const reachAt=parseDateTime12(r.Reach_Time) || parseDateTime24(r.Reach_Time);
+  if(!reachAt) return null;
+  return reachAt.getTime()<=deadline.getTime();
+}
+
+/* ---------- stat computation ---------- */
+function computeStats(tickets, rejections, range){
+  const mine = tickets.filter(function(r){ return inRange(r.Added_Time, range); });
+
+  const cancelled = mine.filter(function(r){
+    const st=String(r.Status||"").trim().toUpperCase();
+    const cs=String(r.Closure_Status||"").trim();
+    return st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable";
+  }).length;
+  // Real bug fixed 2026-09-04, live-confirmed via console dump: Closure_Status
+  // is a separate, agent-driven Final Closure field that in practice is
+  // almost never set (every "done" ticket sampled live had it blank) — the
+  // vendor's own completion signal is Status:"RSP CLOSED" (Step 8, Payment
+  // Received), which happens automatically and much earlier than any
+  // optional Final Closure step. Keeping the Closure_Status check too (a
+  // ticket that DOES reach full Final Closure with Completed set should
+  // still count) — just no longer the only signal.
+  const completed = mine.filter(function(r){
+    const st=String(r.Status||"").trim().toUpperCase();
+    const cs=String(r.Closure_Status||"").trim();
+    return st==="RSP CLOSED" || cs==="Completed";
+  }).length;
+
+  const rejectedCount = rejections.filter(function(t){ return inRange(t.Rejected_At, range); }).length;
+
+  const etaJudged = mine.map(etaMetStatus).filter(function(v){ return v!==null; });
+  const etaMetPct = etaJudged.length ? Math.round(etaJudged.filter(Boolean).length/etaJudged.length*100) : null;
+
+  // Issue Resolved is an RSR-only field (WIP page) — scoped to RSR tickets only.
+  const rsrWithResolution = mine.filter(function(r){
+    return String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && (r.Issue_Resolved==="Yes"||r.Issue_Resolved==="No");
+  });
+  const issuesFixedPct = rsrWithResolution.length ? Math.round(rsrWithResolution.filter(function(r){ return r.Issue_Resolved==="Yes"; }).length/rsrWithResolution.length*100) : null;
+
+  const withFeedback = mine.filter(function(r){ return r.Cx_Feedback_Score!=null && r.Cx_Feedback_Score!==""; });
+  const feedbackHighPct = withFeedback.length ? Math.round(withFeedback.filter(function(r){ return Number(r.Cx_Feedback_Score)>=9; }).length/withFeedback.length*100) : null;
+
+  return { rejectedCount, completed, cancelled, etaMetPct, issuesFixedPct, feedbackHighPct };
+}
+
+const ICON_OK='<svg viewBox="0 0 24 24" fill="none"><path d="m5 13 4 4L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_WARN='<svg viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="m10.3 4.5-8 14A1.5 1.5 0 0 0 3.6 21h16.8a1.5 1.5 0 0 0 1.3-2.5l-8-14a1.5 1.5 0 0 0-2.6 0Z" stroke="currentColor" stroke-width="2"/></svg>';
+const ICON_PCT='<svg viewBox="0 0 24 24" fill="none"><path d="M5 19 19 5M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
+function pctText(v){ return v==null ? "—" : v+"%"; }
+
+function render(stats){
+  $("content").innerHTML = `
+    <div class="section-title">Cases</div>
+    <div class="grid">
+      <div class="card warn"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.rejectedCount)}</div><div class="lbl">Rejected / Timed Out</div></div>
+      <div class="card"><div class="ic">${ICON_OK}</div><div class="num">${esc(stats.completed)}</div><div class="lbl">Completed</div></div>
+      <div class="card wait"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.cancelled)}</div><div class="lbl">Cancelled</div></div>
+    </div>
+    <div class="section-title">% Percentage</div>
+    <div class="grid">
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.etaMetPct))}</div><div class="lbl">Reached Inside ETA</div></div>
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.issuesFixedPct))}</div><div class="lbl">Issues Fixed (RSR)</div></div>
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.feedbackHighPct))}</div><div class="lbl">Customer Feedback ≥ 9</div></div>
+    </div>
+  `;
+}
+function renderError(msg){ $("content").innerHTML = '<div class="state-err">'+esc(msg)+'</div>'; }
+
+let ALL_TICKETS=[], ALL_REJECTIONS=[];
+async function refresh(){
+  const range = rangeFor($("filterRange").value);
+  // Diagnostic (2026-09-04) — the boot log already proves Assigned_Vendor
+  // matching works; this shows whether zero Cases is a date-range issue
+  // (mine=0 out of ALL_TICKETS) or a Closure_Status/Status value mismatch
+  // (mine>0 but the string values don't match what computeStats() checks
+  // for: "Completed", "Cancelled", "Cancelled - Billable", "RSP CANCELLED").
+  const mineNow = ALL_TICKETS.filter(function(r){ return inRange(r.Added_Time, range); });
+  console.log("[GR-VendorPerf] refresh: range="+range.from.toDateString()+" to "+range.to.toDateString()+" | "+mineNow.length+" of "+ALL_TICKETS.length+" tickets in range | Closure_Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Closure_Status||"(blank)"; }))+" | Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Status||"(blank)"; })));
+  render(computeStats(ALL_TICKETS, ALL_REJECTIONS, range));
+}
+$("filterRange").onchange = refresh;
+
+async function boot(){
+  let tries=0;
+  while(!resolve("getRecords") && tries<40){ await new Promise(function(r){ setTimeout(r,200); }); tries++; }
+  if(!resolve("getRecords")){ renderError("Couldn't connect to Zoho — please reopen this page."); return; }
+  try{
+    const getInit = resolve("getInitParams");
+    if(getInit){ INIT_PARAMS = await getInit(); LOGIN_EMAIL = (INIT_PARAMS && INIT_PARAMS.loginUser) || ""; }
+    await resolveVendorRecord();
+    $("vendorNameLine").textContent = MY_VENDOR_NAME ? MY_VENDOR_NAME : (LOGIN_EMAIL || "Unknown vendor");
+    if(!currentVendorRecord){
+      renderError("No matching Vendors_Report record found for your login ("+esc(LOGIN_EMAIL)+") — performance can't be computed without it.");
+      return;
+    }
+    const vid = currentVendorRecord.id;
+    const [allTicketRecs, rejectionRecs] = await Promise.all([
+      apiGetReport(CONFIG.reportName, null, 1000),
+      apiGetReport(CONFIG.taskRejectionsReport, null, 1000)
+    ]);
+    // Real bug fixed (2026-09-03, user-reported live: dashboard showed all
+    // zeros for a vendor with real assigned tickets) — a server-side
+    // criteria of "Assigned_Vendor == vid" against a real Lookup field
+    // silently matches nothing; Zoho's own documented convention needs a
+    // ".ID" suffix ("Assigned_Vendor.ID == vid") for Lookup-field criteria,
+    // which was never confirmed live here. Sidesteps the uncertainty
+    // entirely by fetching all tickets and filtering client-side with
+    // lookupId() — the same "fetch all, match by unwrapped ID" pattern
+    // vendorTicket's own isMine()/loadMyInvites() already rely on, proven
+    // correct there regardless of exactly how a Lookup value round-trips.
+    ALL_TICKETS = allTicketRecs.filter(function(r){ return String(lookupId(r.Assigned_Vendor))===String(vid); });
+    console.log("[GR-VendorPerf] boot: "+allTicketRecs.length+" total tickets fetched, "+ALL_TICKETS.length+" match Assigned_Vendor id "+vid);
+    // Diagnostic (2026-09-04) — "This Month" showed 0 of 37 in range, which
+    // means either none of this vendor's tickets are dated this month, or
+    // Added_Time isn't parsing the way this widget expects. Dumping every
+    // matched ticket's raw Case_ID/Added_Time/Closure_Status/Status settles
+    // it in one shot instead of another guess-and-reupload round.
+    console.log("[GR-VendorPerf] boot: all "+ALL_TICKETS.length+" matched tickets — Case_ID | Added_Time (raw) | Closure_Status | Status:");
+    ALL_TICKETS.forEach(function(r){ console.log("  "+(r.Case_ID||"(no Case_ID)")+" | "+JSON.stringify(r.Added_Time)+" | "+(r.Closure_Status||"(blank)")+" | "+(r.Status||"(blank)")); });
+    // Task_Rejections has no confirmed direct Vendor-ID lookup field (see
+    // FIELDS.md) — matched by name here, same convention vendorTicket's own
+    // rejectService() write already uses (RSP_Name: this vendor's own
+    // display name) since that's the only identity it reliably carries.
+    ALL_REJECTIONS = rejectionRecs.filter(function(t){
+      return String(t.RSP_Name||"").trim().toLowerCase()===MY_VENDOR_NAME.trim().toLowerCase();
+    });
+    await refresh();
+  }catch(e){
+    console.error("[GR-VendorPerf] boot failed", e);
+    renderError("Something went wrong loading your performance data — check the console for details.");
+  }
+}
+boot();
+</script>
+</body>
+</html>

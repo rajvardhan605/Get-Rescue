@@ -1,0 +1,251 @@
+string generateZohoPaymentLink(string recordId, string amount, string email, string phoneDigits, string referenceId, string description, string expiresAt, string paymentUrlField)
+{
+	// New, standalone Custom API (2026-09-10, explicit user request: "create
+	// new custom api for that and now dont use onDemandInvoicing function
+	// we will work on this later") — the Zoho Payments "Payment Links" call
+	// that used to live inside onDemandInvoicing.deluge (alongside Zoho
+	// Books invoice creation) is pulled out here as its own independent
+	// function, with no dependency on that file or on an invoice ever being
+	// created. onDemandInvoicing.deluge itself is left untouched — its own
+	// copy of this same logic is now unused/dormant, not deleted, so it's
+	// easy to pick back up later per the user's own "later" framing.
+	returnstring = "";
+	try
+	{
+		result = Map();
+		if(recordId == null || recordId.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "recordId is required");
+			returnstring = result.toString();
+		}
+		else if(amount == null || amount.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "amount is required");
+			returnstring = result.toString();
+		}
+		else
+		{
+			// Real bug fixed 2026-09-10, live: "Unable to cast the
+			// '448881000000543009 ' value into a 'Long' value" — note the
+			// trailing space in the quoted value itself. .trim() added
+			// before .toLong() (same defensive pattern already proven
+			// elsewhere in this project — see createServiceRequest.deluge's
+			// own "vehicleId.trim().toLong()") so a stray leading/trailing
+			// space in recordId (e.g. from a manual test-panel paste, or any
+			// future caller) doesn't crash the whole function before it
+			// even gets to check whether the ticket exists.
+			rec = Create_Case[ID == recordId.trim().toLong()];
+			if(rec == null)
+			{
+				result.put("code", "ERROR");
+				result.put("message", "Ticket not found");
+				returnstring = result.toString();
+			}
+			else
+			{
+				// Real refresh-token -> access-token OAuth exchange — same
+				// credentials/reasoning as onDemandInvoicing.deluge's own
+				// matching block (explicit user decision, 2026-09-10: "I
+				// don't create connections use the Refresh token and access
+				// token methodology"). Kept as this function's OWN
+				// independent copy (this project has no shared Deluge
+				// modules — every Custom API is self-contained) so it works
+				// standalone, with zero dependency on onDemandInvoicing.deluge.
+				zoho_payments_client_id = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+				zoho_payments_client_secret = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+				zoho_payments_refresh_token = "1000.7b9a45adfe6300ed5fb43cf9d29eef7b.65c3a6df18bedb83f887bf1f4fbc44d6";
+				zoho_payments_account_id = "60078772586";
+				zoho_payments_base_url = "https://payments.zoho.in/api/v1";
+				// return_url fixed (explicit user decision, 2026-09-10:
+				// "return url will be the provided url") — the exact static
+				// value from the user's own original confirmed example.
+				zoho_payments_return_url = "https://creatorapp.zoho.in/getrescued/get-rescue";
+
+				tokenResp = invokeurl
+				[
+					url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + zoho_payments_refresh_token + "&client_id=" + zoho_payments_client_id + "&client_secret=" + zoho_payments_client_secret + "&grant_type=refresh_token"
+					type :POST
+				];
+				info "generateZohoPaymentLink — token refresh raw response: " + tokenResp.toString();
+				access_token = tokenResp.get("access_token");
+				if(access_token == null)
+				{
+					result.put("code", "ERROR");
+					result.put("message", "Could not get an access token from the refresh token — see this Custom API's own execution log for the raw token-refresh response");
+					returnstring = result.toString();
+				}
+				else
+				{
+					paymentLinkMap = Map();
+					// .toDecimal().toString() — same "always send numeric
+					// fields as strings" convention used throughout this
+					// project's other Deluge files (e.g. onDemandInvoicing.
+					// deluge's own lineItem.put("rate",...)).
+					paymentLinkMap.put("amount", amount.toDecimal().toString());
+					paymentLinkMap.put("currency", "INR");
+					if(email != null)
+					{
+						if(email != "")
+						{
+							paymentLinkMap.put("email", email);
+						}
+					}
+					// Bare 10-digit number expected here (confirmed example:
+					// "phone": "8127112543", no "+91"/spaces) — cleaned by
+					// the widget's own JS caller before this is ever called,
+					// same as onDemandInvoicing.deluge's own matching
+					// parameter — no confirmed-safe way in this codebase to
+					// strip non-digit characters from a string in Deluge
+					// itself.
+					if(phoneDigits != null)
+					{
+						if(phoneDigits != "")
+						{
+							paymentLinkMap.put("phone", phoneDigits);
+							paymentLinkMap.put("phone_country_code", "IN");
+						}
+					}
+					referenceIdResolved = referenceId;
+					if(referenceIdResolved == null)
+					{
+						referenceIdResolved = recordId;
+					}
+					if(referenceIdResolved == "")
+					{
+						referenceIdResolved = recordId;
+					}
+					paymentLinkMap.put("reference_id", referenceIdResolved);
+					descriptionResolved = description;
+					if(descriptionResolved == null)
+					{
+						descriptionResolved = "Service Charge";
+					}
+					if(descriptionResolved == "")
+					{
+						descriptionResolved = "Service Charge";
+					}
+					paymentLinkMap.put("description", descriptionResolved);
+					if(expiresAt != null)
+					{
+						if(expiresAt != "")
+						{
+							paymentLinkMap.put("expires_at", expiresAt);
+						}
+					}
+					// Both false deliberately — the caller sends its OWN
+					// WhatsApp message with the link right after this
+					// returns; Zoho Payments' own email/SMS notification
+					// would be a second, separate, unrequested message to
+					// the same customer.
+					notifyMap = Map();
+					notifyMap.put("email", false);
+					notifyMap.put("sms", false);
+					paymentLinkMap.put("notify_customer", notifyMap);
+					paymentLinkMap.put("return_url", zoho_payments_return_url);
+					configMap = Map();
+					allowedMethods = List();
+					allowedMethods.add("upi");
+					allowedMethods.add("card");
+					configMap.put("allowed_payment_methods", allowedMethods);
+					paymentLinkMap.put("configurations", configMap);
+					metaList = List();
+					metaEntry = Map();
+					metaEntry.put("key", "Case_ID");
+					metaEntry.put("value", referenceIdResolved);
+					metaList.add(metaEntry);
+					paymentLinkMap.put("meta_data", metaList);
+
+					createPaymentLinkResp = invokeurl
+					[
+						url :zoho_payments_base_url + "/paymentlinks?account_id=" + zoho_payments_account_id
+						type :POST
+						parameters:paymentLinkMap.toString()
+						headers:{"Content-Type":"application/json", "Authorization":"Zoho-oauthtoken " + access_token}
+					];
+					info "generateZohoPaymentLink — payment link raw response: " + createPaymentLinkResp.toString();
+					paymentLinkRespCode = createPaymentLinkResp.get("code");
+					if(paymentLinkRespCode != 0)
+					{
+						errMsg = createPaymentLinkResp.get("message");
+						result.put("code", "ERROR");
+						result.put("message", "Zoho Payments error: " + errMsg);
+						returnstring = result.toString();
+					}
+					else
+					{
+						paymentLinksRec = createPaymentLinkResp.get("payment_links");
+						paymentUrl = "";
+						paymentLinkId = "";
+						if(paymentLinksRec != null)
+						{
+							if(paymentLinksRec.get("url") != null)
+							{
+								paymentUrl = paymentLinksRec.get("url").toString();
+							}
+							if(paymentLinksRec.get("payment_link_id") != null)
+							{
+								paymentLinkId = paymentLinksRec.get("payment_link_id").toString();
+							}
+						}
+						if(paymentUrl == "")
+						{
+							result.put("code", "ERROR");
+							result.put("message", "Zoho Payments returned no payment_links.url — see this Custom API's own execution log for the raw response");
+							returnstring = result.toString();
+						}
+						else
+						{
+							// Real bug fixed 2026-09-10, live: "'updateRec' has
+							// no matching records. Unable to update the value
+							// updateRec.Zoho_Payment_URL." — this used to
+							// re-fetch the SAME record a second time right
+							// here (Create_Case[ID == recordId.toLong()]) even
+							// though `rec` above (the null-check fetch) is the
+							// exact same record, already confirmed to exist.
+							// Comparing every write in this project: the ones
+							// that work (createServiceRequest.deluge/
+							// CreateServiceTicket.deluge) only ever fetch a
+							// record ONCE, immediately before the write; the
+							// ones that failed this exact way
+							// (submitCustomerLocation.deluge's own earlier,
+							// still-unresolved "no matching records" bug, and
+							// this one) all fetched the SAME record TWICE —
+							// once to check it exists, then again for the
+							// write. Fixed by writing directly onto `rec`
+							// instead of re-fetching — no second query at all.
+							// Dynamic field NAME picked via if/else on a
+							// literal value, not a runtime bracket-lookup
+							// (e.g. rec[fieldToWrite]) — Deluge field
+							// assignment needs a literal field name at each
+							// call site; no confirmed-safe dynamic-field-name
+							// pattern exists anywhere else in this codebase.
+							if(paymentUrlField == "Zoho_Payment_URL_Remaining")
+							{
+								rec.Zoho_Payment_URL_Remaining = paymentUrl;
+							}
+							else
+							{
+								rec.Zoho_Payment_URL = paymentUrl;
+							}
+							result.put("code", "SUCCESS");
+							result.put("message", "Payment link generated");
+							result.put("url", paymentUrl);
+							result.put("payment_link_id", paymentLinkId);
+							returnstring = result.toString();
+						}
+					}
+				}
+			}
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		returnstring = errResult.toString();
+	}
+	return returnstring;
+}

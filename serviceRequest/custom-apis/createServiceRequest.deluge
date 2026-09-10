@@ -1,0 +1,159 @@
+string createServiceRequest(string customerName, string phone, string whatsappNumber, string email, string vehicleId, string vehicleRegNumber, string vehicleIssueIds, string customerLocation, string computedServiceTime, string timeOfService)
+{
+	returnstring = "";
+	try
+	{
+		result = Map();
+		if(customerName == null || customerName.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Name is required");
+			returnstring = result.toString();
+		}
+		else if(phone == null || phone.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Phone is required");
+			returnstring = result.toString();
+		}
+		else if(vehicleId == null || vehicleId.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Vehicle is required");
+			returnstring = result.toString();
+		}
+		else
+		{
+			// Vehicle Issue no longer required (2026-09-10, explicit user
+			// request: "remove vehicle issue validation") — the matching
+			// widget-side check (renderStep2()'s own next2Btn handler) was
+			// removed the same way. vehicleIssueIds can now legitimately
+			// arrive null/blank; ifnull() below keeps the existing
+			// toList()/for-each loop safe either way — an empty string still
+			// yields nothing to iterate, same as before, just no longer
+			// rejected up front.
+			// Real vehicle picker restored 2026-09-09 (explicit user request:
+			// "vehicle issue and vehicle like we already did in other
+			// widgets") — vehicleId is a real Vehicle_Master record ID
+			// (matching getRescueTicket's own Vehicle field), an exact
+			// lookup by ID rather than the earlier best-effort match by
+			// Category. .toLong() before the ID comparison — this project
+			// has repeatedly confirmed a Lookup ID arriving from a widget
+			// as a STRING param reads back as TEXT, not NUMBER, and fails
+			// Zoho's own type checker against a Number field without it.
+			vehicleToUse = vehicle_master[ID == vehicleId.trim().toLong()];
+			if(vehicleToUse == null)
+			{
+				result.put("code", "ERROR");
+				result.put("message", "Selected vehicle not found - check Vehicle_Master_Report in Zoho.");
+				returnstring = result.toString();
+			}
+			else
+			{
+				// ifnull() guard added 2026-09-10 alongside the "no longer
+				// required" change above — vehicleIssueIds can now genuinely
+				// arrive null (not just ""), and .toList() on a null string
+				// is untested territory; ifnull(...,"") keeps this the exact
+				// same safe "" case already handled by the loop's own
+				// if(issueIdTrim != "") guard below.
+				issueIdList = ifnull(vehicleIssueIds,"").toList(",");
+				issueLongIds = List();
+				isTow = false;
+				for each issueIdRaw in issueIdList
+				{
+					issueIdTrim = issueIdRaw.trim();
+					if(issueIdTrim != "")
+					{
+						issueLongIds.add(issueIdTrim.toLong());
+						issueRec = Vehicle_Issue[ID == issueIdTrim.toLong()];
+						if(issueRec != null)
+						{
+							issueTypeText = "";
+							if(issueRec.Issue_Type != null)
+							{
+								issueTypeText = issueRec.Issue_Type.toString();
+							}
+							if(issueTypeText.toLowerCase().contains("tow"))
+							{
+								isTow = true;
+							}
+						}
+					}
+				}
+				serviceType = "RSR";
+				if(isTow)
+				{
+					serviceType = "TOW";
+				}
+
+				remarksLines = "Submitted via website Service Request.";
+				locationTrim = ifnull(customerLocation,"").trim();
+				if(locationTrim != "")
+				{
+					remarksLines = remarksLines + "\nLocation (as entered): " + locationTrim;
+				}
+
+				// Real value now (2026-09-09, was hardcoded "NOW") — the
+				// widget's Time of Service step (added same day) sends the
+				// customer's real NOW/LATER choice. Normalized defensively:
+				// anything other than exactly "LATER" falls back to "NOW",
+				// so a missing/old-shaped payload (e.g. SHOW_SAMPLE_DATA
+				// testing, or this param not yet registered in the Custom
+				// API's own setup screen) still writes a valid dropdown
+				// value instead of risking an invalid one.
+				timeOfServiceResolved = "NOW";
+				if(timeOfService != null)
+				{
+					if(timeOfService.trim().toUpperCase() == "LATER")
+					{
+						timeOfServiceResolved = "LATER";
+					}
+				}
+
+				newId = insert into Create_Case
+				[
+					Customer_Name = customerName.trim()
+					Phone_Number1 = phone.trim()
+					Phone_Number = phone.trim()
+					Alternate_Phone_Number = ifnull(whatsappNumber,"").trim()
+					Email = ifnull(email,"").trim()
+					Vehicle = vehicleToUse.ID
+					Vehicle_Registration_Number = ifnull(vehicleRegNumber,"").trim()
+					Vehicle_Issue = issueLongIds
+					Vehicle_Status = "ONROAD"
+					Service_Type = serviceType
+					Time_of_service = timeOfServiceResolved
+					Computed_Service_Time = ifnull(computedServiceTime,"")
+					Remarks = remarksLines
+					Lead_Source = "Website"
+					Status = "SERVICE FEE QUOTE"
+				];
+
+				caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
+				// Two-step fetch-then-write (2026-09-09, corrected same day)
+				// — a combined "Form[criteria].Field = value;" statement was
+				// tried here first (and in customerPage's own Custom APIs)
+				// but hit a genuine "Improper Statement" save-time error in
+				// submitCustomerLocation.deluge, meaning that form isn't
+				// valid syntax at all in this Zoho instance. Reverted to
+				// this exact shape, already confirmed working
+				// (CreateServiceTicket.deluge).
+				updateRec = Create_Case[ID == newId];
+				updateRec.Case_ID = caseId;
+
+				result.put("code", "SUCCESS");
+				result.put("recordId", newId);
+				result.put("caseId", caseId);
+				returnstring = result.toString();
+			}
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		returnstring = errResult.toString();
+	}
+	return returnstring;
+}

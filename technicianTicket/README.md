@@ -146,6 +146,179 @@ The identical change (same field names, same 2.5-min heartbeat, same immediate-f
 
 Syntax-checked (`node -e` script against the `<script>` block — see this repo's own established check) and packed (`technicianTicket.zip`).
 
+## 2026-08-20 — Real bug fixed: after rejecting a ticket, it silently vanished from "My Tickets" with no lasting sign it was ever rejected (user-reported live)
+
+User's exact report, confirmed after a round of clarifying questions: "if rejected... vendor acceptance status is not being displayed" — turned out to mean this widget's OWN "My Tickets" list, not the agent's `getRescueTicket` dashboard or the per-vendor Invite Status panel there (both already handle Rejected correctly, see `getRescueTicket/README.md`). Confirmed root cause: `rejectService()` writes `Status:"RSP REJECT"`, but `RSP REJECT` was never in `MY_STATUSES` — so the instant that save landed, the ticket dropped out of `fetchMyTickets()`'s own filter entirely. The reject toast fades a couple seconds later and the ticket is just gone, with nothing left anywhere on this widget showing "you rejected this."
+
+**Confirmed fix** (user's own choice between two options — keep it in the main list vs. a separate "recent activity" section): stays in the main **"My Tickets" list** with a clearly-styled **Rejected** pill, rather than a separate screen/tab.
+
+**Fix**:
+- `MY_STATUSES` now includes `"RSP REJECT"`.
+- `STATUS_PILL["RSP REJECT"]` added — `{cls:"rej", label:"Rejected"}`, styled with the same `--stop`/`--stop-soft` red already used for Reject Reason/Cancel Reason required-field markers elsewhere in this file (new `.st.rej` CSS rule).
+- `renderActionScreen()` gained a dedicated `RSP REJECT` branch — tapping back into a rejected ticket now shows a clear "You Rejected This Ticket" panel with the real reject reason (`Reject_Reason` — this widget is RSR-only), instead of falling through to the generic "Nothing to do on this ticket right now" filler (which used to be unreachable for a rejected ticket anyway, since it never stayed in the list long enough to tap back open).
+
+**Worth knowing — a real consequence of this change, not yet separately reported as a problem**: `Status` is a single ticket-level field. If a ticket was invited to **multiple** vendors and only ONE of them rejects, the ticket now shows "Rejected" in **every** invited vendor's own "My Tickets" too — including ones who haven't responded at all yet — since there's no per-vendor status at this widget's own dashboard level (only `getRescueTicket`'s separate Invites-based panel tracks that distinction). Flagging rather than silently deciding it away: if this turns out to be confusing in practice with multi-vendor invites, the fix would need to check this vendor's own Invites-report row instead of the ticket-level `Status` before showing the Rejected pill — not implemented here since the user's own confirmed scope was the single-vendor case.
+
+**Tested** against the real shipped code (Node-VM harness, all three widgets — `vendorTicket`/`technicianTicket`/`driverTicket`) — 10 checks: `MY_STATUSES`/`STATUS_PILL` updated correctly in each, and a live `renderActionScreen()` call confirms the new "You Rejected This Ticket" panel actually renders the real reject reason (checking both `Reject_Reason`/`Reject_Reason1` where technicianTicket branches by `Service_Type`). Re-ran every other same-day vendorTicket test suite (vendor-identity retry/fallback, fleet hand-off, live-location heartbeat) to confirm no regression — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-21 — Real bug fixed: agent's own "Vendor Invite Status" panel kept showing "Awaiting response" even after a genuine accept (user-reported live: "acceptance status is not being displayed")
+
+User's exact report: on the Assignment page in the agent portal, invited vendors' own acceptance status wasn't showing correctly even after they'd genuinely accepted.
+
+**Root cause, traced through the same identity-resolution gap found earlier this session**: `state.inviteByTicketId` (the cache `updateMyInvite()` uses to find which Invites row belongs to this ticket) is built exactly ONCE, at `loadDashboard()`'s own `fetchMyTickets()`/`loadMyInvites()` call, by matching against whatever currentTechRecord held AT THAT MOMENT. If currentTechRecord hadn't resolved yet then (the exact gap `resolveVendorRecord()`'s own 2026-08-19 retry was built for), this cache stayed empty for that vendor for the rest of the session — even after a LATER retry inside `acceptService()` itself successfully resolved currentTechRecord, `updateMyInvite()` kept trusting the stale, empty cache and silently no-op'd on every write, since it never re-checked. `Service_Acceptance_Next`/`Status` on the real Invites row never got written — and since the agent's own "Vendor Invite Status" panel (`assignInviteStatusHtml()` in `getRescueTicket`) reads directly off that same Invites record, it kept showing "Awaiting response" forever, even though the vendor genuinely accepted and the ticket's own `Status` field (written directly, not through Invites) updated correctly the whole time.
+
+**Fix**: `updateMyInvite()` now retries a real, direct `CONFIG.invitesReport` lookup (matched on the Technician Lookup field, same "read the report, filter client-side by id" pattern used everywhere else in this app for this exact report) whenever the cached invite isn't found — instead of silently giving up. A successful retry also backfills `state.inviteByTicketId` so later calls in the same session don't need to retry again. If currentTechRecord is STILL null even at retry time (a genuine identity gap, not just a stale cache), this still safely no-ops with a clear diagnostic — never guesses at which Invites row to write to.
+
+**Tested** against the real shipped code (Node-VM harness, stubbing `apiGetReport()`/`apiUpdateReport()`) — confirmed the retry finds and writes to the real Invites row despite a stale/empty cache, confirmed it backfills the cache for next time, confirmed no write is attempted (and nothing throws) when the identity genuinely never resolved, and confirmed the already-correct-cache case still writes directly with no regression. Re-ran the vendor-identity retry/fallback and fleet hand-off suites from earlier this session to confirm no interaction — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-21 — Real bug fixed: reopening the app after a photo was already uploaded showed the field as empty and re-blocked progress (user-reported live)
+
+User's exact report: "when photo is clicked, it is being sent immediately and is visible on the agent portal. but if vendor closes app and opens his app again and comes back to the same page, the fields display as 'empty'. so vendor has to click all photos again in order to be able to move forward."
+
+**Root cause**: every photo field's own display (`renderPhotoGrid()`) and every "N photos required" validation check across this widget only ever looked at `state.photos[field]` — a plain array of browser `File` objects picked/captured THIS session. That starts completely empty on every fresh app load, regardless of what's genuinely already saved on the ticket record itself (the upload really did succeed — that's exactly why it was already visible on the agent portal). So the grid rendered nothing, and the "at least N required" gate blocked the vendor from proceeding until they re-took photos that were never actually missing.
+
+**Fix**:
+- `fileCountFor(rawValue)`/`zohoFileDownloadUrl(recordId, fieldName, rawValue, index)` — ported directly from `getRescueTicket`'s own already-working versions (same account/app/report, so this isn't a new guess).
+- `effectivePhotoCount(fieldName)` — the real count now used by every "N photos required" check: whatever's already on the ticket record (from a PREVIOUS session — `state.current` is only ever set fresh by `openTicket()`, never mutated after an upload, so this can never double-count) plus whatever's been picked THIS session.
+- `renderPhotoGrid()` now renders a tile for each already-uploaded photo too — a real thumbnail via `zohoFileDownloadUrl()` where a usable URL can be built, hydrated asynchronously by the new `hydrateAlreadyUploadedThumbs()` (same onerror-recovery idea as `getRescueTicket`'s own file previews — reverts cleanly to a plain "✓ Saved" badge instead of leaving a broken image icon if the URL fails to load), otherwise falling straight to that plain badge. These tiles have no ✕ remove button — there's no "delete an already-uploaded photo" flow, only newly-picked-but-not-yet-final files can be removed before upload.
+- Every "N photos required" check (Arrival, Cancel, Pre/Post-service, on-truck, VCRF, drop-location, unloaded, handover, receipt — every photo field in this widget) now uses `effectivePhotoCount()` instead of the raw session-only count.
+
+**Tested** against the real shipped code (Node-VM harness with a richer fake DOM tracking appended children) — confirmed `effectivePhotoCount()` correctly counts an already-saved photo from a previous session even with zero picked this session (the exact reported scenario), correctly still blocks when genuinely nothing exists either way, and correctly avoids double-counting when both an already-saved AND a freshly-picked photo exist together; confirmed `renderPhotoGrid()` actually renders the already-saved placeholder tile and the count label reflects it instead of showing empty. Re-ran the vendor-identity retry/fallback, invite-status retry, and "Rejected stays visible" suites from earlier this session to confirm no regression — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-21 (later) — Two real bugs fixed: "Vehicle" showed a raw record id instead of a name, and "Location" showed raw decimal Latitude/Longitude digits (user-reported live, screenshot)
+
+User's exact report/screenshot: on the Service Acceptance screen, `VEHICLE` showed `448881000000058404` (a raw `Vehicle_Master_Report` id) instead of a real vehicle name, and `LOCATION` showed `28.53000000000000, 77.17000000000000` (raw coordinates) with an explicit follow-up request to hide the lat/long fields.
+
+**Vehicle name root cause**: `CONFIG.vehicleNameField` (`"Name"`) was a single, never-independently-reconfirmed guess for `Vehicle_Master_Report`'s real name column. If the real field is named something else on this account, `loadVehicleNames()` would build an entirely empty `VEHICLE_NAMES` map — every single vehicle, not just one — and `vehicleDisplayFor()`'s own fallback would show the raw id instead, exactly matching the screenshot.
+
+**Fix**: `loadVehicleNames()` now tries several plausible field-name candidates (`Vehicle_Name`, `vehicle_name`, `Name`, `name`, plus the original config value) instead of one guess — same pattern this file's own `FLEET_TECH_NAME_CANDIDATES` already uses for an identical class of gap. If every candidate still comes up empty for every record, it now falls back to the raw id (unchanged, still correct — never guesses a wrong name) but with a clear console diagnostic explaining why, instead of silently doing nothing.
+
+**Location fix**: the raw `Latitude`/`Longitude` fallback in `renderTicketInfo()` is removed — `Location` now only shows when there's a real `Break_Down_Location1` address string; otherwise the row is hidden entirely (the existing row-filter already drops any falsy value, so this required no new logic, just removing the fallback).
+
+**Tested** against the real shipped code (Node-VM harness) — 20 checks across all three widgets: vehicle name resolves correctly via a fallback candidate when the primary guess is wrong (the exact reported case); a genuine total miss still safely falls back to the raw id with a diagnostic, not silently; `renderTicketInfo` no longer shows raw coordinates; a real address string still displays correctly (no regression). Re-ran the photo-persistence, vendor-identity retry, and invite-status retry suites from earlier this session — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-21 (later still) — New: "Navigate to Breakdown" added to the Accept screen (user request: "shows based on the service type like RSR and TOW")
+
+User's exact ask: "NAVIGATE TO BREAKDOWN & NAVIGATE TO DROP LOCATION Buttons to be available in vendor app and these buttons shows based on the service type like RSR and TOW." Checking every screen turned up a real, consistent gap: the Reach screen already has "Navigate to Breakdown" (and, for TOW, "Navigate to Drop Location" already exists at the appropriate later step too), but the Accept screen — one step earlier — never had a breakdown nav button at all, in any of the three field widgets. `driverTicket`'s own Accept screen already had "Navigate to Drop Location" but no breakdown button; `technicianTicket`'s had neither.
+
+**Fix**: `renderAcceptScreen()` now shows the same breakdown-nav link this file's own Reach screen already uses — this widget is RSR-only, so there's no Drop Location concept here at all.
+
+**Tested** against the real shipped code (Node-VM harness) — 8 checks across all three widgets: Accept screen now shows "Navigate to Breakdown" for both RSR and TOW (where applicable); RSR correctly never shows "Navigate to Drop Location" (no drop leg exists for that service type); TOW/driverTicket's pre-existing "Navigate to Drop Location" is confirmed unchanged (no regression), with the new Breakdown link correctly appearing first, matching the real order of the flow (pick up, then drop). Re-ran the vehicle-name/hide-latlong, photo-persistence, and vendor-identity-retry suites from earlier this session to confirm no interaction — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-24 — Real bug fixed: Online/Offline toggle silently did nothing when `currentTechRecord` hadn't resolved (user-reported live: "online/offline toggle is not working")
+
+User's exact report: the availability toggle just doesn't work.
+
+**Root cause**: `onToggleClick()` used to just `return` immediately whenever `currentTechRecord` hadn't resolved — no error, no toast, nothing. Every other identity-resolution bug found this session (vendorTicket's `currentVendorRecord`, the Invites-status write) traced back to the exact same shape of gap: a one-time match at boot time that can fail to resolve (a slow connection, a login-email mismatch) and then never gets retried, even though the underlying data might be perfectly fine. A silently-dead button reads exactly like "not working" from the technician's side, with zero clue why.
+
+**Fix**: the boot-time match (previously inline in `loadAvailability()`) is now its own `resolveTechRecord(logContext)`, reused as a real retry inside `onToggleClick()` — if `currentTechRecord` is still null right when the technician taps the toggle, it retries the actual `CONFIG.techReport` query once before giving up. If the identity genuinely still can't be resolved after that, the technician now sees a clear error toast instead of a dead, unresponsive switch. Also bumped the fetch from 200 to 1000 records, same reasoning as vendorTicket's own `resolveVendorRecord()` fix (rules out `Technicians_Report` simply exceeding the old cap).
+
+**Tested** against the real shipped code (Node-VM harness, stubbing `apiGetReport()`/`updateRecordById`) — confirmed a retry that finds the real record lets the toggle go through normally (a success toast, not an error); confirmed a genuine failure (no matching record at all) now shows a clear error toast instead of silently doing nothing. Re-ran the invite-status-retry, Accept-screen-nav-buttons, vehicle-name, and photo-persistence suites from earlier this session to confirm no regression — all still pass.
+
+Syntax-checked and packed (`technicianTicket.zip`).
+
+
+## 2026-08-27 — Real gap fixed: Google Distance Matrix calls now use two-wheeler routing (mirrored from vendorTicket)
+
+User's exact ask (originally against `vendorTicket`, then: "fixed mirrored there" for this app and `driverTicket`): "for all distance calculations that use google api - ensure that travel type has to be four wheeler for TOW cases and distance type should be two wheeler for REPAIR/RSR cases." This app only ever handles RSR tickets — `loadDashboard()`'s own query is hardcoded `Service_Type == "RSR"`, no TOW branch exists anywhere in the file — so every one of its distance calls was silently routing a mechanic on a two-wheeler using Google's car/four-wheeler `"DRIVING"` mode the whole time, which can miss narrower streets/one-ways a bike can legally take.
+
+**Fix**: `googleDistanceMatrix`/`calcDistanceETA`/`calcRoundTripKm`/`officeRoundTripLegs` all take a new, optional trailing `travelMode` param — omitted, it still defaults to `"DRIVING"` (backward compatible). Added `travelModeFor(record)`, mirroring vendorTicket's own function name/shape — but since this app can never see a TOW ticket, it always resolves to `"TWO_WHEELER"` rather than branching on the record. All 7 real call sites (`acceptService`, `markReached`, `confirmCancel` ×3, `workCompleted`'s `officeRoundTripLegs` call) now pass it through explicitly.
+
+**Tested** against the real shipped code (Node-VM harness, functions extracted directly from `widget.html` via brace-matching) — confirmed `travelModeFor` always returns `"TWO_WHEELER"` regardless of input, and that `calcDistanceETA`/`calcRoundTripKm`/`officeRoundTripLegs` all correctly resolve to `"TWO_WHEELER"` on the real Google API call shape; confirmed the module-level default (an omitted `travelMode` arg) still falls back to `"DRIVING"`, unchanged. Syntax-checked and packed (`technicianTicket.zip`).
+
+
+### 2026-09-01 — Real gap fixed: dashboard auto-refresh only handled brand-new tickets, not status changes/removals on already-known ones
+
+Found while fixing the identical gap in `getRescueTicket`'s own dashboard poll (user-reported live: a new ticket wasn't appearing in a second open tab) — audited every widget's own auto-refresh for the same class of issue. `pollForNewCases()` here only ever re-rendered when a genuinely new ticket arrived; an already-known ticket's status silently changing elsewhere or a known ticket dropping out of "my tickets" entirely updated `state.tickets` in the background but never refreshed what's actually on screen.
+
+**Fix**: added `KNOWN_TICKET_STATUSES` (companion to the existing `KNOWN_TICKET_IDS`) to track each known ticket's own last-seen status. `pollForNewCases()` now also re-renders on a status change or a removal — but deliberately doesn't play the new-case sound/notification for either (that's reserved for a genuinely new arrival), so this only fixes staleness, not notification behavior.
+
+**Tested** — new suite (`test_field_dashboard_auto_refresh.js`, 24 checks across vendorTicket/technicianTicket/driverTicket) extracting the real shipped functions: brand-new ticket still notifies+renders; a status change on a known ticket renders but doesn't notify; a known ticket disappearing renders but doesn't notify; nothing changed renders/notifies nothing; the status snapshot itself stays current. Syntax-checked and packed (`technicianTicket.zip`).
+
+### 2026-09-06 — New: WhatsApp integration added (was zero before this) — Reach message wired, more to follow
+
+User provided three PDFs ("RESCUE - WhatsApp Message Templates," "RESCUE - Repair Service Logic Flow," "RESCUE - Towing Service Logic Flow") specifying 13 numbered WhatsApp templates and their trigger logic across the whole ticket lifecycle. A full audit found this widget (and `driverTicket`/`vendorTicket`) had **zero** WhatsApp code at all — every send in the app lived only in `getRescueTicket`, covering just 4 of the 13 templates. Proceeding incrementally, safest piece first, per explicit user instruction to not risk breaking existing functionality.
+
+**Built**: `formatIndianPhone()`/`sendWhatsAppTemplate()` copied verbatim from `getRescueTicket`'s own already-proven implementation (same `sendWhatsAppMessage` Custom API, same param shape) — this file had neither before. Wired into `markReached()`: after the existing Reach save/photo-upload/toast completes, fires the `reach_time` template (spec item 10 — "Mechanic/Driver app - Reach Breakdown Location page, on click REACH button, Send 10") to the customer's `Phone_Number`. Deliberately **not awaited** — a failed/slow send can never block or delay the real Reach action, matching this app's existing tolerance for best-effort GPS capture.
+
+**Deliberately not built yet, blocked on real answers rather than guessed**:
+- **Accept-time message (template 8, "vendor/mechanic name and number")** — user confirmed live that the phone number IS a real template parameter, but `Technicians_Report` has no confirmed phone field anywhere in this codebase (unlike `Vendors_Report`'s confirmed `Mobile_Number_01`) — user is checking the real field name before this gets built, to avoid sending a broken/blank parameter to real customers.
+- **5-minutes-later follow-up (template 9)** and the **multi-step CTA-triggered thread (templates 1→2→3)** — both need an architecture decision (a delayed/scheduled send survives an agent closing their tab; the CTA case needs a webhook receiving the customer's own button-tap) before building either.
+- **Complete-message with Remaining-Fee branching (templates 11/12)** — the field apps have no payment-link-generation capability at all today (that lives only in `getRescueTicket`); needs a design decision on whether to add it here or route through the agent side.
+
+**Template name flagged, not confirmed**: `reach_time` is a best-effort guess (no numbered/named catalog exists anywhere, matching every other template name in this app) — the spec's own row title is "Share rescuer Reach Time." Also has no visible parameter slots in the spec's own template text, so it's sent with zero params — correct this once the real approved WhatsApp Business template name/shape is confirmed.
+
+**Tested** — new suite (`test_field_apps_whatsapp.js`, 12 checks across technicianTicket/driverTicket/vendorTicket): `formatIndianPhone()` correctness, and that the Reach handler in each app actually calls `sendWhatsAppTemplate` with the `reach_time` template, unawaited (confirming it truly can't block navigation). Full existing suite re-run — no regressions. Syntax-checked and packed (`technicianTicket.zip`).
+
+### 2026-09-06 (later) — New: WhatsApp dispatch message (template 8) wired into Accept
+
+User confirmed the real phone field on `Technicians_Report` is `Phone` (previously unconfirmed anywhere in this codebase — the only prior guess was a multi-candidate fallback list in `vendorTicket`'s own fleet-technician display), and confirmed the phone number genuinely is a 3rd dynamic value in the real approved template (name + phone + ETA), not just descriptive wording in the logic-flow doc.
+
+**Real architecture gap found and fixed**: `sendWhatsAppTemplate()` only ever forwarded 2 parameters (`param1`/`param2`) — a 3rd was needed. The server-side `sendWhatsAppMessage` Custom API's Deluge source isn't checked into this repo (unlike every other Custom API), so rather than guess whether it would even forward a `param3`, asked the user to paste its actual contents — confirmed it already builds its `parameters` array conditionally including `param3` if non-blank, so extending the JS side was safe. Updated in all four widgets (`getRescueTicket` included, even though it doesn't call this with 3 params yet) for consistency — existing 2-param call sites are unaffected, `param3` simply defaults to an empty string for them.
+
+**Built**: `techPhoneField: "Phone"` added to `CONFIG`; `MY_TECH_PHONE` resolved in `resolveTechRecord()` alongside the existing `MY_TECH_NAME`. `acceptService()` now sends the `dispatch_eta` template (spec template 8 — "ACCEPT/REJECT page, on click ACCEPT button, Send 8 with vendor/mechanic name and number") with `[MY_TECH_NAME, MY_TECH_PHONE, ETA]`, fire-and-forget, right after the existing accept save/toast, same non-blocking convention as the Reach message.
+
+**Not built yet, explicitly deferred**: `getRescueTicket`'s own "agent entering on behalf of vendor" Accept trigger (the PDF lists this as a second place template 8 should fire) — that stage can assign either a vendor or a specific technician under a fleet vendor, and its save routes through a generic multi-stage config mechanism rather than one dedicated function like this app's own `acceptService()`. Needs its own careful pass rather than rushing it into this one.
+
+**Template name/param order flagged, not confirmed**: `dispatch_eta` and the `[name, phone, ETA]` ordering are a best-effort guess — the spec's own template text only shows 2 visible blanks (name, ETA), the phone slot's exact position was inferred from the user's own confirmation it exists, not from directly seeing 3 blanks in the extracted PDF text.
+
+**Tested** — extended `test_field_apps_whatsapp.js` to 25 checks: confirms `param3` support across all four widgets, and the exact `dispatch_eta` wiring/param order in each app's Accept handler. Full suite re-run — same pre-existing, already-investigated failures, nothing new. Syntax-checked and packed (`technicianTicket.zip`).
+
+### 2026-09-07 — Location/distance fixes from the user-provided LOCATIONS-DISTANCES-DATETIME spec
+
+Full gap analysis + fix writeup lives in `getRescueTicket/README.md`'s own matching entry — this app's own changes (RSR-only, no drop leg, so only 2 of the fixes apply here):
+- `OFFICE_LAT`/`OFFICE_LON` corrected to `12.967945122837245, 77.6110507612277` (previous value was off by ~13-20m).
+- **Real bug fixed**: `markReached()`'s `Roundtrip_Distance` used to always route through the static ticket breakdown location, even though a live GPS fix is captured a few lines later in the same function at this exact Reach click — the fix just never got fed into the round-trip calc. Now uses that live fix (falls back to the static location only if GPS is denied).
+
+**Tested** — new `test_locations_distances_2026_09_07.js` (32 checks, shared with `vendorTicket`/`driverTicket`/`getRescueTicket`). Full existing `test_field_apps_whatsapp.js` suite re-run — no regressions. Syntax-checked (`node --check` on the extracted script block) and packed.
+
+### 2026-09-07 (later) — New: `Remaining_Fee_Receipt_Time`/`RSP_Closure_Time` wired into `confirmPaymentReceived()`
+
+User created all 5 new timestamp fields from the same spec (see `getRescueTicket/README.md`'s own matching entry for the full field list/rationale, including the other 3 which are `getRescueTicket`-only). This app's own change: `confirmPaymentReceived()`'s payload now also includes `Remaining_Fee_Receipt_Time` and `RSP_Closure_Time` (both stamped at this same click, kept as two separate fields per the spec's own literal numbering) — no extra guard needed, since this function only ever runs on a genuine "Payment Received" click.
+
+**Tested** — new `test_new_timestamps_2026_09_07.js` (15 checks, shared with `vendorTicket`/`driverTicket`/`getRescueTicket`). Full existing suites re-run — no regressions. Syntax-checked and packed.
+
+### 2026-09-07 (later still) — Real bug fixed: photo capture appeared frozen during the GPS wait, inviting repeated taps
+
+Found during a full 24-point feature-coverage audit. `capturePhoto()`'s `getPositionSafe()` call can take up to 8 seconds for a real GPS fix, and nothing disabled the shutter or showed progress during that wait — it just looked frozen, and each repeated tap started a fully separate concurrent capture (duplicate photo + duplicate upload). Fixed with a simple `capturingPhoto` in-flight flag (extra taps become a no-op) plus a visibly disabled/dimmed shutter button for the duration — the actual capture/watermark/upload logic is completely unchanged, only wrapped. The two camera/gallery buttons themselves were confirmed intentional (2026-08-03 user request), not the cause.
+
+**Tested** — new `test_photo_capture_debounce_2026_09_07.js` (36 checks, shared with `vendorTicket`/`driverTicket`), a real execution test with a controllable-delay GPS mock proving a double-tap produces exactly one photo, not two. Full existing suite re-run — no regressions. Syntax-checked and packed.
+
+### 2026-09-08 — Google Distance Matrix API scope-restricted to only getRescueTicket's Final Closure calculation
+
+Explicit user decision: *"use Google api's only for final distance calculations.. round trip, vendor travel distances and vendor round trip"* — confirmed via AskUserQuestion to mean Google's billed Distance Matrix API should be used ONLY inside `getRescueTicket`'s Final Closure calculation (`Roundtrip_Distance`/`Vendor_Distance`/`Vendor_Round_Trip_Distance`), and reverted everywhere else. See `vendorTicket/README.md`'s matching entry for the full rationale — this app's own 7 call sites (Accept, Reach, Cancel, Work Completed) are fixed identically: `loadGoogleMaps()` short-circuits to `return Promise.resolve(false);` at the top, so the Google Maps script is never requested (zero network calls, zero billing risk) and every call site falls straight into its existing Haversine fallback. `travelModeFor()` (always `TWO_WHEELER` in this RSR-only app) is unchanged, just inert now.
+
+**Needs redeploying**: none — client-side JS only.
+
+**Tested** — `test_technician_driver_travelmode.js` rewritten (same "Google never reached, Haversine still works" pattern as vendorTicket's matching test). New `test_google_api_scope_2026_09_08.js` (29 checks, shared across all 4 widgets). Full existing suite re-run — no new regressions (pre-existing, unrelated failures only, none touching distance/API code). Syntax-checked and packed.
+
+## 2026-09-10 — quick-win fixes from the client's soft-test audit
+
+Two fixes from the full soft-test gap audit (see the published findings), picked as the lowest-effort items involving this widget:
+
+**Notification sound made distinct.** vendorTicket/technicianTicket/driverTicket previously played the byte-identical 2-beep 880Hz sine tone — impossible to tell which app a new ticket landed on by sound alone. This app now plays 3 sharper beeps at a higher pitch on a square wave (vs. vendorTicket's 2 sine beeps, driverTicket's rising triangle sweep) — genuinely different timbre and count, not just a pitch tweak — and louder (`gain` 0.28 → 0.5).
+
+**Customer phone number in the ticket-info summary is now click-to-dial.** Same fix as vendorTicket's own matching entry — `renderTicketInfo()`'s "Phone" row is now a `tel:` link via `formatIndianPhone()` (already proven elsewhere in this file for WhatsApp sending), visible text unchanged.
+
+**Needs redeploying**: none — client-side JS only.
+
+**Tested**: syntax-checked and packed — not yet independently live-tested.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

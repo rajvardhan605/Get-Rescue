@@ -1,0 +1,62 @@
+string submitCustomerFeedback(string recordId, string score, string feedbackText)
+{
+	try
+	{
+		result = Map();
+		rec = Create_Case[ID == recordId.toLong()];
+		// Real error hit live 2026-09-07: "Missing return statement: Provide
+		// STRING expression to return" — same Deluge quirk already fixed in
+		// getCustomerTicketInfo.deluge earlier today: its static return-path
+		// checker doesn't reliably prove every path returns when the
+		// function is written as a sequence of independent early-return
+		// guard clauses. Restructured into the exact if/else-if/else shape
+		// already proven to satisfy Zoho's compiler there — same logic,
+		// each branch keeps its own explicit return, nothing shared to
+		// prove reachability for.
+		if(rec == null)
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Ticket not found");
+			return result.toString();
+		}
+		else if(score == null || score == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Score is required");
+			return result.toString();
+		}
+		else
+		{
+			// Real bug fixed 2026-09-10, root cause finally confirmed: the
+			// earlier "Improper Statement" story here was a real, separate
+			// mistake (a combined "Form[criteria].Field = value;" statement
+			// isn't valid syntax in this Zoho instance), but the fix that
+			// replaced it — re-fetching as a fresh `feedbackRec` instead of
+			// reusing `rec` above — introduced the OTHER "'X' has no
+			// matching records" bug this project kept hitting: fetching the
+			// SAME record TWICE with identical criteria in one execution
+			// (once for the null-check above, then again here) fails.
+			// Every CONFIRMED-WORKING write in this project
+			// (createServiceRequest.deluge, CreateServiceTicket.deluge)
+			// only ever fetches a record ONCE. Fixed by writing directly
+			// onto `rec` (already fetched, already confirmed non-null)
+			// instead of re-fetching — no second query at all. See
+			// generateZohoPaymentLink.deluge's/submitCustomerLocation.deluge's
+			// own matching fix, found the same day, same exact symptom.
+			rec.Cx_Feedback_Score = score;
+			if(feedbackText != null)
+			{
+				rec.Cx_Feedback_Text = feedbackText;
+			}
+			result.put("code", "SUCCESS");
+			return result.toString();
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		return errResult.toString();
+	}
+}

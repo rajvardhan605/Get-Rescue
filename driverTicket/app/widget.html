@@ -57,6 +57,7 @@ img,svg{max-width:100%}
 .st.otw{background:var(--info-soft);color:#1d5fc0}
 .st.wip{background:var(--signal-soft);color:var(--signal-deep)}
 .st.pay{background:var(--wait-soft);color:#a85a06}
+.st.rej{background:var(--stop-soft);color:var(--stop)}
 .empty-state{text-align:center;padding:50px 16px;color:var(--muted)}
 .empty-state h3{font-family:var(--f-disp);font-size:17px;color:var(--text);margin:10px 0 4px}
 .spin{width:30px;height:30px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);animation:spin .7s linear infinite;margin:30px auto}
@@ -231,6 +232,7 @@ const CONFIG = {
   techStatusField: "Availability_Status",
   techEmailField: "Email",
   techNameField: "Technician_Name",
+  techPhoneField: "Phone", // user-confirmed 2026-09-06 — needed for the WhatsApp "dispatched" message (spec template 8)
   // Added 2026-08-17 (user request — see pingCurrentLocation()'s own
   // comment). Same field names getRescueTicket's own vendor-assignment picker
   // expects on Technicians_Report, written here directly through this
@@ -247,11 +249,28 @@ const CONFIG = {
 /* TOW dashboard statuses — mirrors technicianTicket's own MY_STATUSES note
    on "REMAINING FEE DUE" not matching getRescueTicket's existing guess;
    same caveat applies here. */
-const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE"];
+// "RSP REJECT" added 2026-08-20 — see vendorTicket's own matching comment
+// (same fix, same day, same root cause: a rejected ticket used to vanish
+// from "My Tickets" with no lasting sign it was ever rejected).
+const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE","RSP REJECT"];
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
-const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228;
+// Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
+// previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
+// spec's confirmed office coordinates.
+const OFFICE_LAT=12.967945122837245, OFFICE_LON=77.6110507612277;
 
-let SDK_READY=false, LOGIN_EMAIL="", MY_TECH_NAME="";
+// Direct download-URL construction (2026-08-21, ported from getRescueTicket's
+// own already-working zohoFileDownloadUrl()) — see fileCountFor()/
+// zohoFileDownloadUrl() below for why this is needed here too. Same
+// account/app/report as getRescueTicket (CONFIG.appName/reportName below
+// are identical), so reusing this exact constant/pattern is not a new guess.
+const ZOHO_SCOPE_NAME = "getrescued";
+let INIT_PARAMS = null;
+function zohoAppLinkName(){
+  const frag = (INIT_PARAMS && INIT_PARAMS.envUrlFragment) || "";
+  return CONFIG.appName + (/development/i.test(frag) ? "-development" : "");
+}
+let SDK_READY=false, LOGIN_EMAIL="", MY_TECH_NAME="", MY_TECH_PHONE="";
 function sdkReady(){ return window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL && typeof ZOHO.CREATOR.UTIL.getInitParams==="function"; }
 function resolve(method){
   const C=window.ZOHO && ZOHO.CREATOR; if(!C) return null;
@@ -272,11 +291,71 @@ async function apiUpdateReport(report, id, data){
   if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
   return true;
 }
+// WhatsApp sending (2026-09-06) — copied verbatim from getRescueTicket's own
+// already-proven sendWhatsAppTemplate()/formatIndianPhone(), per the user's
+// "RESCUE - Towing Service Logic Flow" spec. This widget had zero WhatsApp
+// integration before now. Same Custom API (sendWhatsAppMessage), same
+// param shape, same fire-and-forget convention — never blocks or throws
+// into the caller's own existing save/navigate flow.
+function formatIndianPhone(v){
+  if(!v) return "";
+  const s=String(v).trim();
+  if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
+  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  return "+91"+digits;
+}
+async function sendWhatsAppTemplate(phone, templateName, params){
+  const to=formatIndianPhone(phone);
+  if(!to){ console.warn("[Get-Rescue Driver] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
+  const fn=resolve("invokeCustomApi");
+  if(!fn){
+    console.warn("[Get-Rescue Driver] sendWhatsAppTemplate: no \"invokeCustomApi\" method found — cannot send template", templateName, ".");
+    return false;
+  }
+  const config = {
+    api_name: "sendWhatsAppMessage",
+    workspace_name: "getrescued",
+    http_method: "POST",
+    content_type: "application/json",
+    // param3 added 2026-09-06 — the sendWhatsAppMessage Custom API already
+    // accepts it (confirmed against its real Deluge source), needed for
+    // the dispatch message (spec template 8: name + phone + ETA).
+    payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"", param3: params[2]||"" }
+  };
+  try{
+    await fn(config);
+    return true;
+  }catch(e){
+    console.warn("[Get-Rescue Driver] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
+    return false;
+  }
+}
 // Writes to THIS driver's own Invites record for a given ticket — see
 // vendorTicket's own updateMyInvite() for the fuller comment (same pattern).
 async function updateMyInvite(ticketId, data){
-  const invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
-  if(!invite || invite.ID==null) return;
+  let invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
+  if(!invite || invite.ID==null){
+    // Real bug fixed (2026-08-21) — see vendorTicket's own matching
+    // 2026-08-21 comment on this exact function: state.inviteByTicketId is
+    // a one-time snapshot from loadDashboard() that can go stale if
+    // currentTechRecord hadn't resolved yet at that moment. Retries a real,
+    // direct Invites_Report lookup (matched on the Technician Lookup field,
+    // not Vendor — see loadMyInvites()'s own 2026-08-03 field-name fix)
+    // instead of trusting the possibly-stale cache.
+    if(currentTechRecord){
+      try{
+        const all=await apiGetReport(CONFIG.invitesReport, null, 200);
+        const fresh=all.find(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Technician))===String(currentTechRecord.id); });
+        if(fresh){
+          invite=fresh;
+          state.inviteByTicketId=state.inviteByTicketId||{};
+          state.inviteByTicketId[String(ticketId)]=fresh;
+          console.log("[Get-Rescue] updateMyInvite: retry found the real Invites record for ticket", ticketId, "(id "+fresh.ID+") — the earlier cache was just stale, not missing data.");
+        }
+      }catch(e){ console.warn("[Get-Rescue] updateMyInvite: retry lookup failed", e); }
+    }
+  }
+  if(!invite || invite.ID==null){ console.warn("[Get-Rescue] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentTechRecord resolved:", !!currentTechRecord); return; }
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
 }
@@ -319,6 +398,20 @@ const ASSUMED_SPEED_KMH=30; // Haversine-fallback-only speed guess, unused whene
 const GOOGLE_MAPS_API_KEY="AIzaSyAVVbr5XJ9mSNLMUBNa2JD7mkwkSF0e-UM";
 let mapsApiReady=null;
 function loadGoogleMaps(){
+  // Scope-restricted 2026-09-08 (explicit user decision): Google's Distance
+  // Matrix API is now billed ONLY for the Final Closure calculation in
+  // getRescueTicket (Roundtrip_Distance / Vendor_Distance /
+  // Vendor_Round_Trip_Distance — "final distance calculations... round
+  // trip, vendor travel distances and vendor round trip"). Every
+  // per-button-tap distance/ETA call in THIS widget (Accept/Reach/Cancel/
+  // Vehicle Picked/Reached Drop, via calcDistanceETA()/
+  // calc4PointRoundtrip() below) now falls back to the Haversine estimate
+  // that already existed as the failure-path fallback in every one of
+  // those callers — short-circuiting here means the Google Maps script is
+  // never even requested, so there's no network call and no billing risk
+  // from this widget at all. To re-enable, delete this one early return —
+  // the original script-loading logic right below is untouched.
+  return Promise.resolve(false);
   if(mapsApiReady) return mapsApiReady;
   mapsApiReady=new Promise(function(res){
     if(window.google && window.google.maps && window.google.maps.DistanceMatrixService){ res(true); return; }
@@ -333,7 +426,14 @@ function loadGoogleMaps(){
   return mapsApiReady;
 }
 let dmService=null;
-function googleDistanceMatrix(origins,destinations){
+// travelMode is now an explicit optional param (2026-08-27, mirrored from
+// vendorTicket per user request: "for all distance calculations that use
+// google api - ensure that travel type has to be four wheeler for TOW cases
+// and distance type should be two wheeler for REPAIR/RSR cases"). Defaults
+// to "DRIVING" so any call site not yet updated keeps its exact previous
+// behavior — fully backward compatible.
+function googleDistanceMatrix(origins,destinations,travelMode){
+  const mode=travelMode||"DRIVING";
   return loadGoogleMaps().then(function(ok){
     if(!ok || !window.google || !window.google.maps) return null;
     if(!dmService) dmService=new google.maps.DistanceMatrixService();
@@ -342,18 +442,29 @@ function googleDistanceMatrix(origins,destinations){
         dmService.getDistanceMatrix({
           origins: origins.map(function(o){ return new google.maps.LatLng(o.lat,o.lon); }),
           destinations: destinations.map(function(d){ return new google.maps.LatLng(d.lat,d.lon); }),
-          travelMode: "DRIVING"
+          travelMode: mode
         }, function(resp,status){
-          if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status); res(null); return; }
+          if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status,"(travelMode:",mode+")"); res(null); return; }
           res(resp.rows);
         });
       }catch(e){ console.warn("[Get-Rescue] DistanceMatrix threw",e); res(null); }
     });
   });
 }
-async function calcDistanceETA(fromLat,fromLon,toLat,toLon){
+// This app only ever handles TOW tickets (hardcoded `Service_Type == "TOW"`
+// dashboard query — there is no RSR branch anywhere in this file), so unlike
+// vendorTicket's own travelModeFor() this always resolves to "DRIVING"
+// (Google's own four-wheeler/car routing — correct for a tow vehicle).
+// Already the module's own default above, so this doesn't change any actual
+// behavior here — kept as its own named function purely so every call site
+// is explicit/self-documenting and mirrors vendorTicket's/technicianTicket's
+// own structure, rather than silently relying on an implicit default.
+function travelModeFor(record){
+  return "DRIVING";
+}
+async function calcDistanceETA(fromLat,fromLon,toLat,toLon,travelMode){
   if([fromLat,fromLon,toLat,toLon].some(function(n){ return n==null || isNaN(n); })) return null;
-  const rows=await googleDistanceMatrix([{lat:fromLat,lon:fromLon}],[{lat:toLat,lon:toLon}]);
+  const rows=await googleDistanceMatrix([{lat:fromLat,lon:fromLon}],[{lat:toLat,lon:toLon}],travelMode);
   const el=rows && rows[0] && rows[0].elements && rows[0].elements[0];
   if(el && el.status==="OK") return { distanceKm:Math.round((el.distance.value/1000)*10)/10, etaMins:Math.max(1,Math.round(el.duration.value/60)) };
   const distanceKm=Math.round(haversineKm(fromLat,fromLon,toLat,toLon)*10)/10;
@@ -366,11 +477,11 @@ async function calcDistanceETA(fromLat,fromLon,toLat,toLon){
    Drop_To_Office_Distance), all saved individually plus the Roundtrip_Distance
    total. Google Distance Matrix first (one matrix call covering all legs at
    once via the diagonal of an NxN request), Haversine fallback below. */
-async function calc4PointRoundtrip(bLat,bLon,dLat,dLon){
+async function calc4PointRoundtrip(bLat,bLon,dLat,dLon,travelMode){
   const hasDrop = dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon);
   const origins = hasDrop ? [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:dLat,lon:dLon}] : [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}];
   const dests   = hasDrop ? [{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},{lat:OFFICE_LAT,lon:OFFICE_LON}] : [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
-  const rows=await googleDistanceMatrix(origins,dests);
+  const rows=await googleDistanceMatrix(origins,dests,travelMode);
   let officeToBreakdown,breakdownToDrop,dropToOffice,ok=!!rows;
   if(ok){
     const legs=[];
@@ -415,13 +526,29 @@ function unwrapLookup(v){
 function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
 // Vehicle name lookup (2026-08-05) — see vendorTicket's own matching comment.
 let VEHICLE_NAMES={};
+// Real bug fixed 2026-08-21 — see vendorTicket's own matching comment (same
+// class of gap: a single unconfirmed field-name guess showed every vehicle's
+// raw id instead of a name).
+const VEHICLE_NAME_CANDIDATES=[CONFIG.vehicleNameField,"Vehicle_Name","vehicle_name","Name","name"].filter(function(v,i,arr){ return v && arr.indexOf(v)===i; });
 async function loadVehicleNames(){
   try{
     const recs=await apiGetReport(CONFIG.vehicleMasterReport, null, 1000);
     const map={};
-    recs.forEach(function(v){ map[String(v.ID)] = readVal(v, CONFIG.vehicleNameField) || ""; });
+    let missCount=0;
+    recs.forEach(function(v){
+      let name="";
+      for(const f of VEHICLE_NAME_CANDIDATES){ name=readVal(v,f); if(name) break; }
+      if(!name) missCount++;
+      map[String(v.ID)] = name;
+    });
     VEHICLE_NAMES=map;
-    if(!recs.length) console.warn("[Get-Rescue] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id.");
+    if(!recs.length){
+      console.warn("[Get-Rescue] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id.");
+    } else if(missCount===recs.length){
+      console.warn("[Get-Rescue] loadVehicleNames: none of", VEHICLE_NAME_CANDIDATES, "produced a name for ANY of", recs.length, "records — first record's own keys:", Object.keys(recs[0]));
+    } else if(missCount>0){
+      console.warn("[Get-Rescue] loadVehicleNames:", missCount, "of", recs.length, "records had no name under any of", VEHICLE_NAME_CANDIDATES, "— those specific vehicles will show their raw id.");
+    }
   }catch(e){ console.warn("[Get-Rescue] loadVehicleNames failed", e); }
 }
 function vehicleDisplayFor(r){
@@ -521,7 +648,20 @@ async function loadDashboard(){
 // Detects a ticket ID showing up in "my tickets" that WASN'T there on the
 // previous check, i.e. a brand-new invite/assignment just landed.
 let KNOWN_TICKET_IDS=null; // null = not yet baselined (covers the very first load); a Set thereafter
-function updateKnownTicketIds(recs){ KNOWN_TICKET_IDS=new Set(recs.map(function(r){ return String(r.ID); })); }
+// KNOWN_TICKET_STATUSES (2026-09-01) — companion to KNOWN_TICKET_IDS, added
+// so pollForNewCases() can also detect a status CHANGE on an already-known
+// ticket, not just a brand-new ticket arriving. Same gap getRescueTicket's
+// own dashboard poll had, fixed there first (see
+// pollDashboardForMechanicUpdates's own comment for the full reasoning
+// behind splitting "render" from "notify"), then mirrored into
+// vendorTicket/technicianTicket.
+let KNOWN_TICKET_STATUSES={};
+function updateKnownTicketIds(recs){
+  KNOWN_TICKET_IDS=new Set(recs.map(function(r){ return String(r.ID); }));
+  const statuses={};
+  recs.forEach(function(r){ statuses[String(r.ID)]=String(r[CONFIG.stageField]||"").trim().toUpperCase(); });
+  KNOWN_TICKET_STATUSES=statuses;
+}
 const NOTIF_SOUND_STATE={ctx:null};
 // Browsers block audio without a prior real user gesture — this creates (or
 // resumes) a single shared AudioContext on the FIRST genuine click anywhere
@@ -534,21 +674,30 @@ function unlockNotifSound(){
   }catch(e){}
 }
 document.addEventListener("click", unlockNotifSound);
-// Two short beeps, generated on the fly via a Web Audio oscillator — no
-// audio file to bundle or host.
+// Two rising "whoop" sweeps (frequency ramps up within each note, rather
+// than a flat-pitch beep), generated on the fly via a Web Audio oscillator —
+// no audio file to bundle or host. Deliberately different from
+// vendorTicket's/technicianTicket's own tone (2026-09-10, client soft-test
+// feedback: "the 'New Ticket Received' audio alert/buzzer needs to be
+// distinct, unique, and sufficiently loud" — all 3 field-facing apps
+// previously played the identical 2-beep sine tone) — a rising sweep reads
+// very differently from a repeated flat beep even at a glance/half-heard,
+// and louder (gain 0.28 -> 0.5) than before.
 function playNotifSound(){
   try{
     unlockNotifSound();
     const ctx=NOTIF_SOUND_STATE.ctx; if(!ctx) return;
-    [0,0.18].forEach(function(offset){
+    [0,0.22].forEach(function(offset){
       const osc=ctx.createOscillator(), gain=ctx.createGain();
-      osc.type="sine"; osc.frequency.value=880;
+      osc.type="triangle";
       const t=ctx.currentTime+offset;
+      osc.frequency.setValueAtTime(523,t);
+      osc.frequency.exponentialRampToValueAtTime(784,t+0.18);
       gain.gain.setValueAtTime(0.0001,t);
-      gain.gain.linearRampToValueAtTime(0.28,t+0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+      gain.gain.linearRampToValueAtTime(0.5,t+0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.2);
       osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(t); osc.stop(t+0.17);
+      osc.start(t); osc.stop(t+0.21);
     });
   }catch(e){ console.warn("[Get-Rescue] playNotifSound failed", e); }
 }
@@ -597,10 +746,29 @@ async function pollForNewCases(){
   if(!isDashboardVisible()){ stopDashboardPoll(); return; }
   try{
     const fresh=await fetchMyTickets();
+    const freshIds=new Set(fresh.map(function(r){ return String(r.ID); }));
     const newOnes = KNOWN_TICKET_IDS ? fresh.filter(function(r){ return !KNOWN_TICKET_IDS.has(String(r.ID)); }) : [];
+    // Real bug fixed 2026-09-01 (found while fixing the identical gap in
+    // getRescueTicket's own dashboard poll) — this used to only re-render
+    // when a brand-new ticket arrived. Two related gaps fixed together:
+    // (1) an already-known ticket's status silently changing elsewhere
+    // updated state.tickets in the background but never refreshed the
+    // screen; (2) a ticket dropping out of "my tickets" entirely (no longer
+    // matches this driver's own filters) had the same problem, the stale
+    // row just stayed on screen. Neither plays the new-case sound — that's
+    // reserved for a genuinely new arrival — they just make sure the screen
+    // itself never goes stale.
+    const hasStatusChange = KNOWN_TICKET_IDS ? fresh.some(function(r){
+      const id=String(r.ID);
+      if(!KNOWN_TICKET_IDS.has(id)) return false; // a new ticket, already covered by newOnes
+      const st=String(r[CONFIG.stageField]||"").trim().toUpperCase();
+      return KNOWN_TICKET_STATUSES[id]!=null && KNOWN_TICKET_STATUSES[id]!==st;
+    }) : false;
+    const hasRemoval = KNOWN_TICKET_IDS ? Array.from(KNOWN_TICKET_IDS).some(function(id){ return !freshIds.has(id); }) : false;
     updateKnownTicketIds(fresh);
     state.tickets=fresh;
-    if(newOnes.length){ notifyNewCases(newOnes); renderDashboard(); }
+    if(newOnes.length) notifyNewCases(newOnes);
+    if(newOnes.length || hasStatusChange || hasRemoval) renderDashboard();
   }catch(e){ console.warn("[Get-Rescue] pollForNewCases failed (non-blocking)", e); }
 }
 const STATUS_PILL = {
@@ -609,7 +777,8 @@ const STATUS_PILL = {
   "LOADING": {cls:"wip", label:"Loading"},
   "TO DROP LOCATION": {cls:"wip", label:"To Drop"},
   "UNLOADING": {cls:"wip", label:"Unloading"},
-  "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"}
+  "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"},
+  "RSP REJECT": {cls:"rej", label:"Rejected"}
 };
 function renderDashboard(){
   $("ticketCount").textContent=state.tickets.length;
@@ -659,16 +828,34 @@ function goToStatus(newStatus){
 }
 function renderTicketInfo(){
   const r=state.current;
-  const loc = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? (r.Latitude+", "+r.Longitude) : "");
+  // Real bug fixed 2026-08-21 — see vendorTicket's own matching comment
+  // (raw fallback removed; Location now only shows a real address string).
+  const loc = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : "";
+  // Added 2026-09-02 (user request) — Drop Location was missing from this
+  // display entirely (only shown as a map-link button on the Reached-Drop
+  // screen), unlike Location/Issue/Vehicle which always show here. Same
+  // field renderReachedDropScreen() already uses for its own nav link.
+  const drop = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : "";
   const rows=[
     ["Case ID", caseLabel(r)],
     ["Customer", readVal(r,CONFIG.nameField)],
     ["Phone", r[CONFIG.phoneField]||""],
     ["Vehicle", vehicleDisplayFor(r)],
     ["Location", loc],
+    ["Drop", drop],
     ["Issue", issueNamesFor(r)]
   ].filter(function(p){ return p[1]; });
-  $("ticketInfo").innerHTML = rows.map(function(p){ return `<div><span class="k">${esc(p[0])}</span><span class="v">${esc(p[1])}</span></div>`; }).join("");
+  // Phone row made click-to-dial (2026-09-10, client soft-test feedback:
+  // "Customer mobile numbers must be formatted as clickable links to allow
+  // quick dial-out") — same fix as vendorTicket's own matching comment;
+  // reuses formatIndianPhone() (already proven elsewhere in this file for
+  // WhatsApp sending) for the tel: URI, visible text unchanged.
+  $("ticketInfo").innerHTML = rows.map(function(p){
+    const valueHtml = (p[0]==="Phone")
+      ? `<a class="v" href="tel:${esc(formatIndianPhone(p[1]))}" style="color:inherit;text-decoration:underline">${esc(p[1])}</a>`
+      : `<span class="v">${esc(p[1])}</span>`;
+    return `<div><span class="k">${esc(p[0])}</span>${valueHtml}</div>`;
+  }).join("");
 }
 
 function renderActionScreen(){
@@ -680,18 +867,33 @@ function renderActionScreen(){
   else if(st==="TO DROP LOCATION"){ $("ascreenTitle").textContent="Reached Drop Location"; renderReachedDropScreen(); }
   else if(st==="UNLOADING"){ $("ascreenTitle").textContent="Unloading & Handover"; renderUnloadingScreen(); }
   else if(st==="REMAINING FEE DUE"){ $("ascreenTitle").textContent="Final Payment"; renderPaymentScreen(); }
+  // Added 2026-08-20 — see vendorTicket's own matching comment/fix.
+  else if(st==="RSP REJECT"){
+    $("ascreenTitle").textContent="Rejected";
+    const reason = state.current.Reject_Reason1;
+    $("ascreenBody").innerHTML = `<div class="empty-state">
+      <h3 style="color:var(--stop)">You Rejected This Ticket</h3>
+      <p>${reason?esc(reason):"No reason recorded."}</p>
+    </div>`;
+  }
   else { $("ascreenBody").innerHTML='<div class="empty-state"><p>Nothing to do on this ticket right now.</p></div>'; }
 }
 
 /* ===== Action 5a: Service Acceptance & Rejection (Tow) ===== */
 function renderAcceptScreen(){
   const r=state.current;
+  // Navigate to Breakdown (2026-08-21, user request) — see vendorTicket's
+  // own matching comment; same computation the Reach screen already uses.
+  // Shown ahead of the existing Drop Location link below — breakdown comes
+  // first in the actual flow (pick up, then drop).
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
   // Same fallback as renderLoadingScreen()/renderReachedDropScreen() — this
   // is just an informational row (no button gating here), lower priority,
   // but kept consistent with the fields those two actually depend on.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
   const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? ("https://maps.google.com/?q="+dropLat+","+dropLon) : "");
   $("ascreenBody").innerHTML = `
+    ${navHref?`<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>`:`<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
     <div class="card">
       <div class="fld"><label>Start Odometer</label><input type="number" id="startOdometer"></div>
@@ -720,7 +922,7 @@ async function acceptService(){
     const pos = await getPositionSafe();
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-    const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon) : null;
+    const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon,travelModeFor(r)) : null;
     const odo=$("startOdometer").value;
     const payload={ Service_Acceptance_For_Tow: fmtDateTime(new Date()), Status:"RSP ON THE WAY" };
     // Real bug fixed (2026-08-06, user-reported live: "Assigned Technician"/
@@ -748,6 +950,15 @@ async function acceptService(){
     // boolean `true` was confirmed rejected live, switched to "Yes".
     updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes" });
     toast("Service accepted","ok");
+    // WhatsApp dispatch message (2026-09-06, RESCUE Towing Service Logic
+    // Flow spec: "Mechanic/Driver app - ACCEPT/REJECT page | on click
+    // ACCEPT button | Send 8 with vendor/mechanic name and number").
+    // Template name and exact param ORDER (name, phone, ETA) are a
+    // best-effort guess, not confirmed against the real approved WhatsApp
+    // Business template — same "flagged, not confirmed" pattern as every
+    // other template name in this app. Fire-and-forget, same as the Reach
+    // message above — a failed send never blocks the real Accept action.
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "dispatch_eta", [MY_TECH_NAME, MY_TECH_PHONE, dist?String(dist.etaMins):""]);
     goToStatus("RSP ON THE WAY");
   }catch(e){ console.error("[Get-Rescue] acceptService error:", e); toast((e&&e.message)||"Could not accept","err"); }
   finally{ setDisabled("acceptBtn",false); }
@@ -820,7 +1031,7 @@ function renderReachScreen(){
   $("confirmCancelBtn").onclick=confirmCancel;
 }
 async function markReached(){
-  if((state.photos.Image_Upload5||[]).length<1){ toast("Arrival photo is required","err"); return; }
+  if(effectivePhotoCount("Image_Upload5")<1){ toast("Arrival photo is required","err"); return; }
   setDisabled("reachedBtn",true);
   try{
     const r=state.current;
@@ -843,12 +1054,21 @@ async function markReached(){
     if(reachPos){
       payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
       const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-      const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon);
+      const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon,travelModeFor(r));
       if(reachDist) payload.Distance_Reach_To_Breakdown_TOW=reachDist.distanceKm;
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
+    // WhatsApp "Reach Time" message (2026-09-06, RESCUE Towing Service
+    // Logic Flow spec: "Mechanic/Driver app - Reach Breakdown Location
+    // page | on click REACH button | Send 10"). Template name/no-params
+    // shape is a best-effort guess (no visible parameter slots in the
+    // spec's own template text) — same "flagged, not confirmed" pattern
+    // as every template name in getRescueTicket. Fire-and-forget, after
+    // the real save above — a failed send never blocks the Reach action
+    // itself, matching this app's existing tolerance for GPS/photo steps.
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "reach_time", []);
     goToStatus("LOADING");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
   finally{ setDisabled("reachedBtn",false); }
@@ -856,7 +1076,7 @@ async function markReached(){
 async function confirmCancel(){
   const reason=$("cancelReason").value;
   if(!reason){ toast("Please pick a cancel reason","err"); return; }
-  if((state.photos.Image_Upload5||[]).length<1){ toast("Cancel photo is required","err"); return; }
+  if(effectivePhotoCount("Image_Upload5")<1){ toast("Cancel photo is required","err"); return; }
   setDisabled("confirmCancelBtn",true);
   try{
     const r=state.current;
@@ -868,7 +1088,7 @@ async function confirmCancel(){
     if(pos){
       payload.Cancel_Location_Lat=pos.lat; payload.Cancel_Location_Lon=pos.lon;
       const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
-      const dist = !isNaN(startLat) && !isNaN(startLon) ? await calcDistanceETA(startLat,startLon,pos.lat,pos.lon) : null;
+      const dist = !isNaN(startLat) && !isNaN(startLon) ? await calcDistanceETA(startLat,startLon,pos.lat,pos.lon,travelModeFor(r)) : null;
       if(dist) payload.Cancel_Distance=dist.distanceKm;
       // Distance_Cancel_To_Breakdown (2026-08-11, user request, "Missing
       // Fields & Field Behavior" spec item 2) — BRAND NEW field, deliberately
@@ -876,13 +1096,13 @@ async function confirmCancel(){
       // location) — this is Cancel location → the ticket's own static
       // breakdown location, which no field/calc covered before this at all.
       const bLatC=Number(r.Latitude), bLonC=Number(r.Longitude);
-      const cancelToBreakdown = !isNaN(bLatC) && !isNaN(bLonC) ? await calcDistanceETA(pos.lat,pos.lon,bLatC,bLonC) : null;
+      const cancelToBreakdown = !isNaN(bLatC) && !isNaN(bLonC) ? await calcDistanceETA(pos.lat,pos.lon,bLatC,bLonC,travelModeFor(r)) : null;
       if(cancelToBreakdown) payload.Distance_Cancel_To_Breakdown=cancelToBreakdown.distanceKm;
       // Client-requested addition (2026-08-04) — see technicianTicket's own
       // matching comment: round trip office -> this driver's current
       // (cancel-click) position -> office, reusing calc4PointRoundtrip()
       // with pos as the "breakdown" point and no drop point.
-      const legs = await calc4PointRoundtrip(pos.lat,pos.lon,null,null);
+      const legs = await calc4PointRoundtrip(pos.lat,pos.lon,null,null,travelModeFor(r));
       payload.Roundtrip_Distance = legs.total;
       // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office
       // (2026-08-04, per user request — "this also work for the Driver"):
@@ -957,9 +1177,9 @@ async function vehiclePicked(){
   const dropLat0=parseCoord(r0.DropLocationLat), dropLon0=parseCoord(r0.DropLocationLong);
   const dropReady0=!!r0.Navigate_To_Drop_Link || (dropLat0!=null && dropLon0!=null);
   if(!dropReady0){ toast("Drop location is required before the vehicle can be marked picked up — ask dispatch to add it, then try again.","err"); return; }
-  if((state.photos.Pre_service_Photo||[]).length<4){ toast("4 pre-service photos required","err"); return; }
-  if((state.photos.Image_Upload_On_truck||[]).length<3){ toast("3 on-truck photos required","err"); return; }
-  if((state.photos.VCRF||[]).length<1){ toast("VCRF upload required","err"); return; }
+  if(effectivePhotoCount("Pre_service_Photo")<4){ toast("4 pre-service photos required","err"); return; }
+  if(effectivePhotoCount("Image_Upload_On_truck")<3){ toast("3 on-truck photos required","err"); return; }
+  if(effectivePhotoCount("VCRF")<1){ toast("VCRF upload required","err"); return; }
   setDisabled("vehiclePickedBtn",true);
   try{
     const r=state.current;
@@ -969,7 +1189,7 @@ async function vehiclePicked(){
     const pos = await getPositionSafe();
     const bLat=pos?pos.lat:Number(r.Latitude), bLon=pos?pos.lon:Number(r.Longitude);
     const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
-    const dist=await calcDistanceETA(bLat,bLon,dLat,dLon);
+    const dist=await calcDistanceETA(bLat,bLon,dLat,dLon,travelModeFor(r));
     const payload={ Pickup_Time: fmtDateTime(new Date()), Status:"TO DROP LOCATION" };
     if(dist){ payload.Breakdown_To_Drop_Distance=dist.distanceKm; payload.Return_Journey_ETA=dist.etaMins; }
     await apiUpdate(r.ID, payload);
@@ -985,12 +1205,20 @@ async function confirmCxRejectLoading(){
   setDisabled("confirmCxRejectBtn",true);
   try{
     const r=state.current;
-    // Client-requested addition (2026-08-04): round trip office -> (static)
-    // breakdown location -> office — unlike the Cancel panel's own version,
-    // this uses the ticket's fixed Latitude/Longitude, not a live GPS fix,
-    // since the client's own spec names "Driver location @ click of Reach
-    // breakdown location" (i.e. the breakdown point itself) as the input here.
-    const legs = await calc4PointRoundtrip(Number(r.Latitude),Number(r.Longitude),null,null);
+    // Round Trip Distance (2026-09-07, user-provided LOCATIONS-DISTANCES-
+    // DATETIME spec, "TOW-4(c)") — the original 2026-08-04 "Client-requested
+    // addition" comment already said the intended input here was "Driver
+    // location @ click of Reach breakdown location" (spec's own "E"), but
+    // approximated it with the static ticket breakdown coordinate (C) since
+    // there was no dedicated field to read the real Reach-click GPS fix from
+    // at the time. Reach_Location_Lat/Lon (E) now exists and is populated by
+    // markReached() at the earlier Reach click — using it here is a more
+    // precise match to that SAME original intent, not a change of intent.
+    // Falls back to the static breakdown C only if E isn't populated (e.g. a
+    // ticket that reached before this field existed).
+    const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
+    const rtLat = eLat!=null ? eLat : Number(r.Latitude), rtLon = eLon!=null ? eLon : Number(r.Longitude);
+    const legs = await calc4PointRoundtrip(rtLat,rtLon,null,null,travelModeFor(r));
     // Same shared "RSP_Completion_Time" as the RSR WIP screen's own Cx Reject — see technicianTicket's own comment.
     // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office — see
     // confirmCancel()'s own matching comment on this same addition.
@@ -1028,14 +1256,28 @@ function renderReachedDropScreen(){
   $("reachedDropBtn").onclick=reachedDrop;
 }
 async function reachedDrop(){
-  if((state.photos.Drop_Location_Photo||[]).length<4){ toast("4 drop-location photos required","err"); return; }
+  if(effectivePhotoCount("Drop_Location_Photo")<4){ toast("4 drop-location photos required","err"); return; }
   setDisabled("reachedDropBtn",true);
   try{
     const r=state.current;
     const toll=document.querySelector("#tollCharges1 .opt.sel");
-    const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-    const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
-    const legs=await calc4PointRoundtrip(bLat,bLon,dLat,dLon);
+    // Round Trip Distance (2026-09-07, user-provided LOCATIONS-DISTANCES-
+    // DATETIME spec, "TOW-4(a)") — real bug fix: this used to always route
+    // through the static ticket breakdown/drop coordinates (spec's C/A) even
+    // though (a) the vendor's own live GPS fix from the earlier Reach click
+    // is already stored in Reach_Location_Lat/Lon (spec's "E"), and (b) a
+    // fresh live GPS fix is taken a few lines below at THIS click (spec's
+    // "B") but only ever got written into RSP_Start_Latitude/Longitude,
+    // never fed into this round-trip calc. Spec defines this leg as
+    // Office->E->B->Office, not Office->C->A->Office. Falls back to the
+    // static C/A only when the live/stored point isn't available (e.g. a
+    // ticket that reached before Reach_Location_Lat/Lon existed, or GPS
+    // denied here), so this never simply breaks on older/incomplete data.
+    const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
+    const bLat = eLat!=null ? eLat : Number(r.Latitude), bLon = eLon!=null ? eLon : Number(r.Longitude);
+    const pos=await getPositionSafe();
+    const dLat = pos ? pos.lat : parseCoord(r.DropLocationLat), dLon = pos ? pos.lon : parseCoord(r.DropLocationLong);
+    const legs=await calc4PointRoundtrip(bLat,bLon,dLat,dLon,travelModeFor(r));
     const odo=$("odoDrop").value;
     const payload={
       Status:"UNLOADING",
@@ -1051,15 +1293,18 @@ async function reachedDrop(){
       // already used above for the roundtrip calc).
       Drop_Location_Arrival_Time: fmtDateTime(new Date())
     };
-    const pos=await getPositionSafe();
     // Reused 2026-08-04 (user request) — writes into the same confirmed Text
     // fields Accept already uses for the start-of-service GPS fix, instead of
     // the separate unconfirmed RSP_Drop_Location_Lat/Lon (guessed, Decimal —
     // same "exceeded max digits" risk RSP_Start_Latitude/Longitude was
-    // renamed to dodge). Same one-field-not-two pattern as Odometer_Reading.
+    // renamed to dodge).
     if(pos){ payload.RSP_Start_Latitude=pos.lat; payload.RSP_Start_Longitude=pos.lon; }
     if(toll) payload.Toll_Charges1=toll.dataset.value;
-    if(odo!=="") payload.Odometer_Reading=Number(odo);
+    // Fixed 2026-09-02 (user request) — this used to write to the same
+    // Odometer_Reading field Accept's start-odometer uses, silently
+    // overwriting it. Own field now, so both readings persist. NEW FIELD —
+    // needs to be created in Zoho (Number type) before this writes for real.
+    if(odo!=="") payload.Odometer_reading_at_Drop_Location=Number(odo);
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached drop location","ok");
@@ -1087,9 +1332,9 @@ function renderUnloadingScreen(){
   $("droppedBtn").onclick=confirmDropped;
 }
 async function confirmDropped(){
-  if((state.photos.Unloaded_Images||[]).length<4){ toast("4 unloaded photos required","err"); return; }
-  if((state.photos.Handover_Image||[]).length<1){ toast("Handover photo required","err"); return; }
-  if((state.photos.VCRF_Image||[]).length<1){ toast("VCRF image required","err"); return; }
+  if(effectivePhotoCount("Unloaded_Images")<4){ toast("4 unloaded photos required","err"); return; }
+  if(effectivePhotoCount("Handover_Image")<1){ toast("Handover photo required","err"); return; }
+  if(effectivePhotoCount("VCRF_Image")<1){ toast("VCRF image required","err"); return; }
   const name=$("handoverName").value.trim();
   const number=$("handoverNumber").value.trim();
   const designation=$("handoverDesignation").value;
@@ -1164,7 +1409,7 @@ function renderPaymentScreen(){
   methodEl.onchange=syncMethod; syncMethod();
   function refreshPayButton(){
     const gateway=methodEl.value==="Payment Gateway";
-    const receiptOk=(state.photos.Upload_Photo_of_receipt||[]).length>=1;
+    const receiptOk=effectivePhotoCount("Upload_Photo_of_receipt")>=1;
     const success = alreadySuccess || (!gateway && receiptOk);
     $("paymentStatusDisplay").value = success ? "PAID" : "PENDING";
     $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
@@ -1178,7 +1423,14 @@ async function confirmPaymentReceived(){
     const r=state.current;
     // See technicianTicket's own comment — Payment_Status always written
     // "PAID" here since clicking this button is itself the attestation.
-    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED" };
+    // Remaining_Fee_Receipt_Time / RSP_Closure_Time (2026-09-07, user-
+    // provided LOCATIONS-DISTANCES-DATETIME spec, "#14"/"#15") — both share
+    // the exact same trigger per spec (this exact click), mirrored as two
+    // separate fields per the spec's own literal numbering. This function
+    // only ever runs when the driver genuinely clicks "Payment Received", so
+    // no extra guard is needed — same reasoning Payment_received:"Yes" above
+    // already relies on.
+    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);
@@ -1201,6 +1453,33 @@ function wireCollapsibleField(fieldName){
   const wrap=$("pf_"+fieldName); const lab=wrap&&wrap.querySelector(".lab");
   if(lab) lab.onclick=function(){ wrap.classList.toggle("collapsed"); };
 }
+// fileCountFor()/zohoFileDownloadUrl()/effectivePhotoCount()/
+// hydrateAlreadyUploadedThumbs() (2026-08-21) — see vendorTicket's own
+// matching comment for the full real-bug writeup (user-reported live:
+// "vendor closes app and opens again... fields display as empty... has to
+// click all photos again"). Identical port — same account/app/report.
+function fileCountFor(rawValue){
+  if(Array.isArray(rawValue)) return rawValue.length;
+  return rawValue ? 1 : 0;
+}
+function zohoFileDownloadUrl(recordId, fieldName, rawValue, index){
+  if(!recordId || !rawValue || rawValue===true) return null;
+  const first = Array.isArray(rawValue) ? rawValue[index||0] : rawValue;
+  if(!first || first===true) return null;
+  const raw = (typeof first==="string") ? first
+    : (first && typeof first==="object") ? (first.filepath||first.value||first.display_value||null)
+    : null;
+  if(!raw) return null;
+  const m = raw.match(/filepath=([^&]+)/i);
+  const filepath = m ? decodeURIComponent(m[1]) : raw;
+  const clean = String(filepath).replace(/^\/+/,"");
+  return "https://creatorapp.zoho.in/"+ZOHO_SCOPE_NAME+"/"+zohoAppLinkName()+"/report/"+CONFIG.reportName+"/"+recordId+"/"+fieldName+"/download-file?filepath=/"+encodeURIComponent(clean)+"&digestValue=eyJsYW5ndWFnZSI6ImVuIn0=&isPreview=true";
+}
+function effectivePhotoCount(fieldName){
+  const already=fileCountFor(state.current && state.current[fieldName]);
+  const picked=(state.photos[fieldName]||[]).length;
+  return already+picked;
+}
 function wirePhotoField(fieldName,max){ renderPhotoGrid(fieldName,max); }
 // See vendorTicket's own matching comment.
 function uploadBadgeHtml(f){
@@ -1208,20 +1487,47 @@ function uploadBadgeHtml(f){
   if(state.failedPhotoFiles.has(f)) return '<span class="up-badge failed" title="Save failed — will retry when you submit">!</span>';
   return '<span class="up-badge pending" title="Saving…">⋯</span>';
 }
+function hydrateAlreadyUploadedThumbs(fieldName, rawValue){
+  if(!state.current || state.current.ID==null) return;
+  document.querySelectorAll('[data-already-field="'+fieldName+'"]').forEach(function(el){
+    const idx=Number(el.dataset.alreadyIdx||0);
+    const url=zohoFileDownloadUrl(state.current.ID, fieldName, rawValue, idx);
+    if(!url) return;
+    const img=document.createElement("img");
+    img.onerror=function(){
+      console.warn("[Get-Rescue] hydrateAlreadyUploadedThumbs: direct URL failed to load for", fieldName, "index", idx, "— reverting to the plain 'Saved' badge.");
+      el.innerHTML='<span class="up-badge ok" title="Already saved">✓ Saved</span>';
+    };
+    img.onload=function(){
+      const badge=document.createElement("span");
+      badge.className="up-badge ok"; badge.title="Already saved"; badge.textContent="✓";
+      el.appendChild(badge);
+    };
+    img.src=url;
+    el.innerHTML="";
+    el.appendChild(img);
+  });
+}
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
+  const alreadyRaw = state.current && state.current[fieldName];
+  const alreadyCount = fileCountFor(alreadyRaw);
   let html="";
+  for(let i=0;i<alreadyCount;i++){
+    html += `<div class="photo-slot" data-already-field="${esc(fieldName)}" data-already-idx="${i}"><span class="up-badge ok" title="Already saved">✓ Saved</span></div>`;
+  }
   files.forEach(function(f,i){
     html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
-  if(files.length<max){
+  if((alreadyCount+files.length)<max){
     // Two explicit add tiles (2026-08-03, user-requested) — live camera
     // capture (with GPS/time watermark) and a plain gallery picker.
     html+=`<div class="photo-slot add" id="pf_${fieldName}_addCam" title="Take Photo">📷</div>`;
     html+=`<div class="photo-slot add" id="pf_${fieldName}_addGal" title="Choose from Gallery">🖼️</div>`;
   }
   grid.innerHTML=html;
+  if(alreadyCount>0) hydrateAlreadyUploadedThumbs(fieldName, alreadyRaw);
   const addCamEl=$("pf_"+fieldName+"_addCam");
   if(addCamEl) addCamEl.onclick=function(){ openCamera(fieldName,max); };
   const addGalEl=$("pf_"+fieldName+"_addGal");
@@ -1231,7 +1537,7 @@ function renderPhotoGrid(fieldName,max){
   });
   const cntEl=$("pf_"+fieldName+"_cnt");
   const minLabel=cntEl?cntEl.textContent.split("/")[1]:"";
-  if(cntEl) cntEl.textContent=files.length+" /"+minLabel;
+  if(cntEl) cntEl.textContent=(alreadyCount+files.length)+" /"+minLabel;
 }
 async function uploadPendingPhotos(recordId){
   for(const fieldName in state.photos){
@@ -1304,29 +1610,55 @@ function closeCamera(){
   if(cameraStream){ cameraStream.getTracks().forEach(function(t){ t.stop(); }); cameraStream=null; }
   $("cameraModal").classList.remove("on");
 }
+// capturingPhoto guard + shutter disable/feedback (2026-09-07, real bug
+// fixed — confirmed live: "photo clicks are taking too much time"). Root
+// cause wasn't the two camera/gallery buttons (those are intentional,
+// separate features — camera vs. gallery-picker — not a duplicate, see
+// renderPhotoGrid()'s own comment) but this function itself: getPositionSafe()
+// can take up to 8 seconds to resolve, and until now nothing disabled the
+// shutter button or showed any progress during that wait — the modal just
+// sat there looking frozen, inviting repeated taps that each started a NEW
+// concurrent capture (a fresh GPS request plus a duplicate photo pushed onto
+// state.photos/duplicate upload). Now guarded with a simple in-flight flag
+// (extra taps are ignored outright, not queued) and visible feedback (shutter
+// disabled + dimmed) so the wait reads as "working," not "broken." Does not
+// change the actual capture/watermark/upload logic at all — only wraps it.
+let capturingPhoto=false;
 async function capturePhoto(){
-  const video=$("cameraVideo");
-  const canvas=document.createElement("canvas");
-  canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
-  const ctx=canvas.getContext("2d");
-  ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  const pos=await getPositionSafe();
-  const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
-  const lonText = pos ? pos.lon.toFixed(6) : "";
-  const barH=56, pad=14;
-  ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,canvas.height-barH,canvas.width,barH);
-  ctx.fillStyle="#fff"; ctx.font="16px monospace";
-  ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, canvas.height-barH+22);
-  ctx.fillText(new Date().toLocaleString(), pad, canvas.height-barH+42);
-  canvas.toBlob(function(blob){
-    if(!blob) return;
-    const file=new File([blob], currentPhotoField+"_"+Date.now()+".jpg", {type:"image/jpeg"});
-    state.photos[currentPhotoField]=state.photos[currentPhotoField]||[];
-    state.photos[currentPhotoField].push(file);
-    closeCamera();
-    renderPhotoGrid(currentPhotoField,currentPhotoMax);
-    uploadPhotoNow(currentPhotoField,file,currentPhotoMax);
-  }, "image/jpeg", 0.85);
+  if(capturingPhoto) return;
+  capturingPhoto=true;
+  const shutterBtn=$("cameraShutter");
+  shutterBtn.disabled=true; shutterBtn.style.opacity="0.4";
+  try{
+    const video=$("cameraVideo");
+    const canvas=document.createElement("canvas");
+    canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
+    const ctx=canvas.getContext("2d");
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    const pos=await getPositionSafe();
+    const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
+    const lonText = pos ? pos.lon.toFixed(6) : "";
+    const barH=56, pad=14;
+    ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,canvas.height-barH,canvas.width,barH);
+    ctx.fillStyle="#fff"; ctx.font="16px monospace";
+    ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, canvas.height-barH+22);
+    ctx.fillText(new Date().toLocaleString(), pad, canvas.height-barH+42);
+    await new Promise(function(resolveBlob){
+      canvas.toBlob(function(blob){
+        if(!blob){ resolveBlob(); return; }
+        const file=new File([blob], currentPhotoField+"_"+Date.now()+".jpg", {type:"image/jpeg"});
+        state.photos[currentPhotoField]=state.photos[currentPhotoField]||[];
+        state.photos[currentPhotoField].push(file);
+        closeCamera();
+        renderPhotoGrid(currentPhotoField,currentPhotoMax);
+        uploadPhotoNow(currentPhotoField,file,currentPhotoMax);
+        resolveBlob();
+      }, "image/jpeg", 0.85);
+    });
+  } finally {
+    capturingPhoto=false;
+    shutterBtn.disabled=false; shutterBtn.style.opacity="";
+  }
 }
 $("cameraCancel").onclick=closeCamera;
 $("cameraShutter").onclick=capturePhoto;
@@ -1337,6 +1669,34 @@ function lockAvailabilityToggle(){
   el.classList.add("locked");
   el.title="Availability unavailable — no matching "+CONFIG.techReport+" record found for your login.";
 }
+// Extracted 2026-08-24 (see onToggleClick()'s own retry call below) — same
+// "boot-time match can go stale/never land, retry the real query once
+// before giving up" fix already shipped for vendorTicket's own
+// resolveVendorRecord() (2026-08-19) and updateMyInvite() (2026-08-21).
+// User-reported live (technicianTicket, identical widget architecture —
+// same fix applied here proactively): "online/offline toggle is not
+// working" — the most likely explanation, given every other identity-
+// resolution bug found this session, is that currentTechRecord simply
+// never resolved at boot time, leaving onToggleClick()'s own
+// `if(!currentTechRecord) return;` guard silently doing nothing at all —
+// no error, no toast — which reads exactly like "not working." Bumped
+// 200->1000 records too, same reasoning as vendorTicket's own
+// resolveVendorRecord() fix (rules out Technicians_Report simply exceeding
+// the old cap).
+async function resolveTechRecord(logContext){
+  if(!LOGIN_EMAIL) return currentTechRecord;
+  const recs=await apiGetReport(CONFIG.techReport, null, 1000);
+  const mine=recs.find(function(r){ return String(r[CONFIG.techEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  if(mine){
+    currentTechRecord={ id:mine.ID, data:mine };
+    MY_TECH_NAME=mine[CONFIG.techNameField]||"";
+    MY_TECH_PHONE=mine[CONFIG.techPhoneField]||"";
+    $("techName").textContent=MY_TECH_NAME||"Driver";
+  } else {
+    console.warn("[Get-Rescue] "+logContext+": no", CONFIG.techReport, "record's", CONFIG.techEmailField, "matched", LOGIN_EMAIL, "— toggle stays locked/inert. Records loaded:", recs.length, "| first record's own keys:", recs[0]);
+  }
+  return currentTechRecord;
+}
 async function loadAvailability(){
   if(!LOGIN_EMAIL){ console.warn("[Get-Rescue] loadAvailability: LOGIN_EMAIL is empty — getInitParams may have failed or returned no loginUser. Toggle stays locked."); lockAvailabilityToggle(); return; }
   // Real bug fixed (2026-08-05, user-reported: "online offline toggle is not
@@ -1346,18 +1706,11 @@ async function loadAvailability(){
   // would silently return zero records, leaving currentTechRecord null and
   // the toggle clickable-but-inert (onToggleClick's own guard). Also breaks
   // the ID-based loadMyInvites() matching above, since it needs
-  // currentTechRecord to resolve at all. Fetches ALL technician records now
-  // (max unchanged) and matches client-side, case-insensitive + trimmed.
-  const recs=await apiGetReport(CONFIG.techReport, null, 200);
-  const mine=recs.find(function(r){ return String(r[CONFIG.techEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
-  if(!mine){
-    console.warn("[Get-Rescue] loadAvailability: no", CONFIG.techReport, "record's", CONFIG.techEmailField, "matched", LOGIN_EMAIL, "— toggle stays locked. Records loaded:", recs.length, "| first record's own keys:", recs[0]);
-    lockAvailabilityToggle();
-    return;
-  }
-  currentTechRecord={ id:mine.ID, data:mine };
-  MY_TECH_NAME=mine[CONFIG.techNameField]||"";
-  $("techName").textContent=MY_TECH_NAME||"Driver";
+  // currentTechRecord to resolve at all. Now matches client-side,
+  // case-insensitive + trimmed — see resolveTechRecord() above.
+  await resolveTechRecord("loadAvailability");
+  if(!currentTechRecord){ lockAvailabilityToggle(); return; }
+  const mine=currentTechRecord.data;
   const isOnline=String(mine[CONFIG.techStatusField])==="Online";
   $("availToggle").classList.toggle("on", isOnline);
   // Reopening the app while already Online (2026-08-17) — start the
@@ -1400,7 +1753,14 @@ function startLocationHeartbeat(){
 }
 function stopLocationHeartbeat(){ if(locationHeartbeatTimer){ clearInterval(locationHeartbeatTimer); locationHeartbeatTimer=null; } }
 async function onToggleClick(){
-  if(!currentTechRecord) return;
+  if(!currentTechRecord){
+    // Real bug fixed 2026-08-24 — see technicianTicket's own matching
+    // comment (identical widget architecture, same fix applied here
+    // proactively).
+    console.warn("[Get-Rescue] onToggleClick: currentTechRecord was null at tap time; retrying the "+CONFIG.techReport+" match once before giving up.");
+    await resolveTechRecord("onToggleClick retry");
+  }
+  if(!currentTechRecord){ toast("Availability unavailable — no matching driver record found for your login","err"); return; }
   const el=$("availToggle");
   const wantOnline=!el.classList.contains("on");
   el.classList.toggle("on", wantOnline);
@@ -1425,6 +1785,7 @@ async function boot(){
   try{
     const params=await ZOHO.CREATOR.UTIL.getInitParams();
     LOGIN_EMAIL=(params&&params.loginUser)||"";
+    INIT_PARAMS=params; // zohoAppLinkName()'s own envUrlFragment lookup
   }catch(e){ console.warn("getInitParams failed", e); }
   await loadAvailability();
   await loadVehicleNames();

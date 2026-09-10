@@ -886,7 +886,10 @@ function isTowIssue(issueLabel){
 /* ---------- round-trip distance (TOW only, "locations" step) ----------
    Static office location; round trip = office -> breakdown -> drop -> office.
    Falls back to office -> breakdown -> office if the drop pin isn't set yet. */
-const OFFICE_LAT=12.967827711025203, OFFICE_LON=77.611228;
+// Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
+// previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
+// spec's confirmed office coordinates.
+const OFFICE_LAT=12.967945122837245, OFFICE_LON=77.6110507612277;
 function haversineKm(lat1,lon1,lat2,lon2){
   const toRad=function(d){ return d*Math.PI/180; };
   const R=6371;

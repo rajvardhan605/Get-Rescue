@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Customer (DEMO — not for Zoho)</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:460px;margin:0 auto;padding:20px 16px 60px}
+img,svg{max-width:100%}
+.brand{display:flex;align-items:center;gap:11px;justify-content:center;margin-bottom:22px}
+.brand .mk{width:38px;height:38px;border-radius:10px;background:var(--signal);display:grid;place-items:center;box-shadow:0 4px 12px rgba(241,90,34,.45)}
+.brand .mk svg{width:22px;height:22px}
+.brand b{font-family:var(--f-disp);font-weight:900;font-size:19px;color:var(--ink);letter-spacing:.3px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--sh-1);padding:26px 22px}
+.card h1{font-family:var(--f-disp);font-size:21px;font-weight:800;margin-bottom:6px}
+.card .sub{font-family:var(--f-mono);font-size:12.5px;color:var(--muted);margin-bottom:20px}
+.amount{font-family:var(--f-disp);font-size:38px;font-weight:900;color:var(--signal-deep);margin:6px 0 18px}
+.btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:15px;letter-spacing:.02em;
+  padding:14px 20px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;transition:.15s}
+.btn.primary{background:var(--signal);color:#fff;box-shadow:0 4px 12px rgba(241,90,34,.34)}
+.btn.primary:hover{background:var(--signal-deep)}
+.btn:disabled{opacity:.55;cursor:default;box-shadow:none}
+.hint{font-size:12px;color:var(--muted-2);font-family:var(--f-mono);margin-top:12px;line-height:1.5}
+.state-ok{background:var(--ok-soft);color:var(--ok);border-radius:12px;padding:16px;font-weight:700;text-align:center}
+.state-err{background:var(--stop-soft);color:var(--stop);border-radius:12px;padding:16px;font-weight:700;text-align:center}
+.center-state{text-align:center;padding:50px 16px;color:var(--muted)}
+.spin{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);animation:spin .7s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.score-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0 18px}
+.score-opt{border:1.5px solid var(--line-strong);border-radius:10px;padding:12px 0;text-align:center;font-family:var(--f-disp);font-weight:800;font-size:16px;cursor:pointer;transition:.15s}
+.score-opt:hover{background:var(--worktop)}
+.score-opt.sel{background:var(--signal);color:#fff;border-color:var(--signal)}
+textarea{width:100%;border:1.5px solid var(--line-strong);border-radius:10px;padding:12px;font-family:var(--f-body);font-size:14px;
+  resize:vertical;min-height:90px;margin-bottom:18px;outline:0}
+textarea:focus{border-color:var(--signal)}
+.pin-search-item:hover{background:var(--worktop)}
+/* Demo-only chrome — none of this exists in the real app/widget.html */
+.demo-bar{max-width:460px;margin:0 auto 14px;background:var(--ink);border-radius:14px;padding:12px 14px}
+.demo-bar .demo-label{font-family:var(--f-mono);font-size:10.5px;color:var(--wait);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.demo-bar .demo-links{display:flex;flex-wrap:wrap;gap:6px}
+.demo-bar a{font-family:var(--f-mono);font-size:11.5px;color:#fff;background:rgba(255,255,255,.12);padding:6px 10px;border-radius:8px;text-decoration:none}
+.demo-bar a.active{background:var(--signal)}
+.demo-bar a:hover{background:rgba(255,255,255,.22)}
+</style>
+</head>
+<body>
+<div class="demo-bar" id="demoBar"></div>
+<div class="wrap">
+  <div class="brand">
+    <span class="mk"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z" fill="#fff"/></svg></span>
+    <b>GET-RESCUE</b>
+  </div>
+  <div id="content">
+    <div class="center-state"><div class="spin"></div></div>
+  </div>
+</div>
+<script>
+/* =====================================================================
+   DEMO ONLY — not deployed to Zoho, not part of the real widget package.
+   Mocks the 3 Custom APIs with realistic fake data so the actual
+   app/widget.html screens can be previewed in a plain browser with no
+   Zoho environment at all. The application logic below (from "const
+   $=(id)=>..." to "waitForSDK();") started as a VERBATIM copy of
+   app/widget.html's own logic, with the backend swapped for this mock —
+   it has since drifted from widget.html in spots as later features shipped
+   there without always being ported back here (each is its own
+   self-contained file, no shared JS module between them). The map-based
+   location picker (2026-09-10, PIN_MAP/pmMount() etc.) IS kept in sync —
+   ported over the same day it was added to widget.html, since the demo's
+   Location entries are actively used to preview that exact flow.
+   ===================================================================== */
+(function(){
+  const qs = new URLSearchParams(window.location.search);
+  const mode = qs.get("mode") || "booking_payment";
+  const already = qs.get("already") === "1";
+
+  function fakeGetCustomerTicketInfo(payload){
+    const base = { code:"SUCCESS", customerName:"Priya Sharma", serviceType: payload.mode==="location" ? "TOW" : "RSR" };
+    if(payload.mode==="booking_payment"){
+      if(already) return Object.assign(base, { amountDue:"300", paid:true });
+      return Object.assign(base, { amountDue:"300", paid:false, invoiceUrl:"https://books.zoho.in/invoices/DEMO123?organization_id=60078911104" });
+    }
+    if(payload.mode==="remaining_payment"){
+      // Deliberately no invoiceUrl — matches the REAL current gap (no
+      // invoicing exists yet for the remaining-fee flow), not a demo bug.
+      if(already) return Object.assign(base, { amountDue:"700", paid:true });
+      return Object.assign(base, { amountDue:"700", paid:false });
+    }
+    if(payload.mode==="location"){
+      return Object.assign(base, { hasBreakdownLocation: already, hasDropLocation: already });
+    }
+    if(payload.mode==="feedback"){
+      return Object.assign(base, { alreadySubmitted: already });
+    }
+    return { code:"ERROR", message:"Unknown mode: "+payload.mode };
+  }
+
+  window.ZOHO = { CREATOR: { DATA: {
+    invokeCustomApi: function(config){
+      return new Promise(function(resolve){
+        setTimeout(function(){
+          const payload = config.payload || {};
+          let data;
+          if(config.api_name === "getCustomerTicketInfo") data = fakeGetCustomerTicketInfo(payload);
+          else if(config.api_name === "submitCustomerLocation") data = { code:"SUCCESS" };
+          else if(config.api_name === "submitCustomerFeedback") data = { code:"SUCCESS" };
+          else data = { code:"ERROR", message:"No demo handler for "+config.api_name };
+          resolve({ code:3000, result: JSON.stringify(data) });
+        }, 500); // simulated network delay, so the loading spinner is actually visible
+      });
+    }
+  }, PUBLISH:{}, META:{}, UTIL:{}, FILE:{} } };
+
+  // Demo nav bar — lets you jump between all the real states without
+  // hand-editing the URL. Real reloads (not JS routing), so this exercises
+  // the exact same query-string-reading code path the real widget uses.
+  const links = [
+    { label:"Booking Payment (unpaid)", qs:"recordId=DEMO001&mode=booking_payment" },
+    { label:"Booking Payment (paid)", qs:"recordId=DEMO001&mode=booking_payment&already=1" },
+    { label:"Remaining Payment (unpaid)", qs:"recordId=DEMO001&mode=remaining_payment" },
+    { label:"Remaining Payment (paid)", qs:"recordId=DEMO001&mode=remaining_payment&already=1" },
+    { label:"Location — Breakdown", qs:"recordId=DEMO001&mode=location&locationType=breakdown" },
+    { label:"Location — Drop", qs:"recordId=DEMO001&mode=location&locationType=drop" },
+    { label:"Location (already shared)", qs:"recordId=DEMO001&mode=location&locationType=breakdown&already=1" },
+    { label:"Feedback", qs:"recordId=DEMO001&mode=feedback" },
+    { label:"Feedback (already given)", qs:"recordId=DEMO001&mode=feedback&already=1" },
+    { label:"Broken link (no recordId)", qs:"" },
+    { label:"Ticket not found", qs:"recordId=DOES_NOT_EXIST&mode=booking_payment" },
+    { label:"Debug — raw fields", qs:"recordId=DEMO001&mode=booking_payment&debug=1" }
+  ];
+  const currentSearch = window.location.search.replace(/^\?/,"");
+  document.getElementById("demoBar").innerHTML =
+    '<div class="demo-label">⚠ Demo preview — fake data, not connected to Zoho</div>' +
+    '<div class="demo-links">' +
+    links.map(function(l){
+      const activeClass = l.qs===currentSearch ? " active" : "";
+      return '<a class="'+activeClass.trim()+'" href="?'+l.qs+'">'+l.label+'</a>';
+    }).join("") +
+    '</div>';
+
+  // "Ticket not found" demo case — the real widget always calls the API and
+  // trusts its response; here we just make the mock itself return the error
+  // for this one specific fake ID so that path is previewable too.
+  const origFake = fakeGetCustomerTicketInfo;
+  window.__fakeGetCustomerTicketInfoOverride = function(payload, recordId){
+    if(recordId === "DOES_NOT_EXIST") return { code:"ERROR", message:"Ticket not found" };
+    return origFake(payload);
+  };
+})();
+</script>
+<script>
+const $=(id)=>document.getElementById(id);
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+let RECORD_ID = "";
+let MODE = "";
+let LOCATION_TYPE = "breakdown";
+
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function getPageParams(){
+  const fn = resolve("getQueryParams");
+  if(fn){
+    try{
+      const res = await fn();
+      if(res && typeof res==="object") return res;
+    }catch(e){ console.warn("[Get-Rescue Customer] getQueryParams failed", e); }
+  }
+  // Fallback for standalone/demo use only — real Zoho page URLs put the
+  // query string after the #hash, which this never sees. This is exactly
+  // the path the demo always takes, since window.ZOHO.CREATOR.UTIL has no
+  // getQueryParams mock above — the nav bar's real page reloads land here.
+  const qs = new URLSearchParams(window.location.search);
+  const out = {};
+  qs.forEach(function(v,k){ out[k]=v; });
+  return out;
+}
+async function callCustomApi(apiName, payload){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[Get-Rescue Customer] no invokeCustomApi method found"); return null; }
+  const config = { api_name: apiName, workspace_name: "getrescued", http_method: "POST", content_type: "application/json", payload: payload };
+  try{
+    const res=await fn(config);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[Get-Rescue Customer] response.result wasn't valid JSON", e); return null; }
+    }
+    // Demo-only hook so the "Ticket not found" nav link works — the real
+    // widget has no equivalent of this line at all.
+    if(apiName==="getCustomerTicketInfo" && window.__fakeGetCustomerTicketInfoOverride){
+      data = window.__fakeGetCustomerTicketInfoOverride(payload, payload.recordId);
+    }
+    return data;
+  }catch(e){
+    console.warn("[Get-Rescue Customer]", apiName, "failed", e);
+    return null;
+  }
+}
+
+function renderError(message){
+  $("content").innerHTML = '<div class="card"><div class="state-err">'+esc(message)+'</div></div>';
+}
+
+// Debug mode (&debug=1) — dumps whatever getCustomerTicketInfo actually
+// returned as plain field:value rows, bypassing the styled per-mode card.
+// Opt-in only, for verifying the data pipeline itself while wiring this up
+// live — doesn't change default behavior at all.
+function renderDebugFields(info){
+  const rows = Object.keys(info).map(function(k){
+    return '<div style="display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-bottom:1px solid var(--line);font-family:var(--f-mono);font-size:13px;">'+
+      '<span style="color:var(--muted);white-space:nowrap;">'+esc(k)+'</span>'+
+      '<span style="text-align:right;word-break:break-all;">'+esc(String(info[k]))+'</span></div>';
+  }).join("");
+  $("content").innerHTML =
+    '<div class="card"><h1>Debug — Field Values</h1><div class="sub">mode='+esc(MODE)+' · recordId='+esc(RECORD_ID)+'</div>'+rows+'</div>';
+}
+
+function renderBookingOrRemainingPayment(info, isRemaining){
+  const label = isRemaining ? "Remaining Payment" : "Booking Payment";
+  const amount = Number(info.amountDue)||0;
+  let bodyHtml;
+  if(info.paid){
+    bodyHtml = '<div class="state-ok">✓ This payment has already been received. Thank you!</div>';
+  } else {
+    const amountHtml = '<div class="amount">₹'+amount.toFixed(2)+'</div>';
+    let payButtonHtml = "";
+    if(info.invoiceUrl){
+      payButtonHtml = '<a class="btn primary" href="'+esc(info.invoiceUrl)+'" target="_blank" rel="noopener">Pay Now</a>';
+    } else {
+      payButtonHtml = '<div class="hint">A payment link isn\'t available for this request yet — please arrange this payment directly with your service provider.</div>';
+    }
+    bodyHtml = amountHtml + payButtonHtml;
+  }
+  $("content").innerHTML =
+    '<div class="card">'+
+      '<h1>Hi '+esc(info.customerName)+'</h1>'+
+      '<div class="sub">'+esc(label)+'</div>'+
+      bodyHtml+
+    '</div>';
+}
+
+// ===== Location picker map (2026-09-10) — ported from app/widget.html's
+// own PIN_MAP/pmMount() etc. (see that file's matching comment for the full
+// rationale: dependency-free Web Mercator tile renderer + OpenStreetMap
+// raster tiles, same pattern already proven live in getRescueTicket's own
+// Ops Fleet Map — no paid Google Maps API, no third-party map library).
+// This demo previously mocked geolocation-only "share and submit
+// immediately" behavior; kept in sync here so the demo nav's Location
+// entries preview the real current flow, not a stale one. Trimmed to a
+// single fixed center pin — same as the real widget. =========================
+const PIN_TILE_SIZE=256;
+function pmLonToX(lon,zoom){ return (lon+180)/360*PIN_TILE_SIZE*Math.pow(2,zoom); }
+function pmLatToY(lat,zoom){
+  const rad=lat*Math.PI/180;
+  return (1-Math.log(Math.tan(rad)+1/Math.cos(rad))/Math.PI)/2*PIN_TILE_SIZE*Math.pow(2,zoom);
+}
+function pmXToLon(x,zoom){ return x/(PIN_TILE_SIZE*Math.pow(2,zoom))*360-180; }
+function pmYToLat(y,zoom){
+  const n=Math.PI-2*Math.PI*y/(PIN_TILE_SIZE*Math.pow(2,zoom));
+  return 180/Math.PI*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));
+}
+// Bengaluru city center — fallback map center whenever geolocation isn't
+// available/granted (matches app/widget.html's own fallback, this project's
+// established "service area is Bengaluru only" fact).
+const PIN_MAP_FALLBACK_LAT=12.9716, PIN_MAP_FALLBACK_LON=77.5946;
+let PIN_MAP={container:null,tilesEl:null,lat:PIN_MAP_FALLBACK_LAT,lon:PIN_MAP_FALLBACK_LON,zoom:15};
+function pmRedraw(){
+  const container=PIN_MAP.container;
+  if(!container || !PIN_MAP.tilesEl) return;
+  const w=container.clientWidth||320, h=container.clientHeight||280;
+  const zoom=PIN_MAP.zoom;
+  const centerWorldX=pmLonToX(PIN_MAP.lon,zoom), centerWorldY=pmLatToY(PIN_MAP.lat,zoom);
+  const originX=centerWorldX-w/2, originY=centerWorldY-h/2;
+  const maxTile=Math.pow(2,zoom);
+  const firstTileX=Math.floor(originX/PIN_TILE_SIZE), lastTileX=Math.floor((originX+w)/PIN_TILE_SIZE);
+  const firstTileY=Math.floor(originY/PIN_TILE_SIZE), lastTileY=Math.floor((originY+h)/PIN_TILE_SIZE);
+  let tilesHtml="";
+  for(let ty=firstTileY;ty<=lastTileY;ty++){
+    if(ty<0||ty>=maxTile) continue;
+    for(let tx=firstTileX;tx<=lastTileX;tx++){
+      const wrappedX=((tx%maxTile)+maxTile)%maxTile;
+      const sub="abc"[Math.abs(tx+ty)%3];
+      const left=Math.round(tx*PIN_TILE_SIZE-originX), top=Math.round(ty*PIN_TILE_SIZE-originY);
+      tilesHtml+='<img src="https://'+sub+'.tile.openstreetmap.org/'+zoom+'/'+wrappedX+'/'+ty+'.png" '+
+        'style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+PIN_TILE_SIZE+'px;height:'+PIN_TILE_SIZE+'px;user-select:none;pointer-events:none" draggable="false">';
+    }
+  }
+  PIN_MAP.tilesEl.innerHTML=tilesHtml;
+}
+function pmSetView(lat,lon,zoom){
+  PIN_MAP.lat=Math.max(-85,Math.min(85,lat));
+  PIN_MAP.lon=((lon+180)%360+360)%360-180;
+  PIN_MAP.zoom=Math.max(3,Math.min(18,zoom));
+  pmRedraw();
+}
+function pmMount(container, lat, lon, zoom){
+  PIN_MAP.container=container;
+  container.style.position="relative"; container.style.overflow="hidden";
+  container.innerHTML=
+    '<div id="pmTiles" style="position:absolute;left:0;top:0;width:100%;height:100%"></div>'+
+    '<div style="position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-34px 0 0 -17px;pointer-events:none;z-index:5;filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))">'+
+      '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z" fill="#F15A22"/><circle cx="12" cy="10" r="3.2" fill="#fff"/></svg>'+
+    '</div>'+
+    '<div style="position:absolute;right:8px;top:8px;z-index:6;display:flex;flex-direction:column;gap:5px">'+
+      '<button type="button" id="pmZoomIn" style="width:32px;height:32px;border:1px solid var(--line-strong);border-radius:8px;background:#fff;font-family:var(--f-disp);font-weight:800;font-size:17px;cursor:pointer;box-shadow:var(--sh-1)">+</button>'+
+      '<button type="button" id="pmZoomOut" style="width:32px;height:32px;border:1px solid var(--line-strong);border-radius:8px;background:#fff;font-family:var(--f-disp);font-weight:800;font-size:17px;cursor:pointer;box-shadow:var(--sh-1)">−</button>'+
+    '</div>'+
+    '<div style="position:absolute;right:4px;bottom:2px;font-size:9.5px;background:rgba(255,255,255,.8);padding:1px 5px;border-radius:3px;z-index:5;font-family:var(--f-mono)">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:inherit">OpenStreetMap</a></div>';
+  PIN_MAP.tilesEl=container.querySelector("#pmTiles");
+  container.querySelector("#pmZoomIn").onclick=function(){ pmSetView(PIN_MAP.lat,PIN_MAP.lon,PIN_MAP.zoom+1); };
+  container.querySelector("#pmZoomOut").onclick=function(){ pmSetView(PIN_MAP.lat,PIN_MAP.lon,PIN_MAP.zoom-1); };
+  pmSetView(lat, lon, zoom);
+  if(container.dataset.pmWired) return;
+  container.dataset.pmWired="1";
+  let dragging=false, startClientX=0, startClientY=0, startLat=0, startLon=0;
+  function onDown(clientX,clientY){ dragging=true; startClientX=clientX; startClientY=clientY; startLat=PIN_MAP.lat; startLon=PIN_MAP.lon; }
+  function onMove(clientX,clientY){
+    if(!dragging || !PIN_MAP.tilesEl) return;
+    const dx=clientX-startClientX, dy=clientY-startClientY;
+    PIN_MAP.tilesEl.style.transform="translate("+dx+"px,"+dy+"px)";
+  }
+  function onUp(clientX,clientY){
+    if(!dragging) return;
+    dragging=false;
+    const dx=clientX-startClientX, dy=clientY-startClientY;
+    if(PIN_MAP.tilesEl) PIN_MAP.tilesEl.style.transform="";
+    if(dx===0 && dy===0) return;
+    const zoom=PIN_MAP.zoom;
+    const newWorldX=pmLonToX(startLon,zoom)-dx, newWorldY=pmLatToY(startLat,zoom)-dy;
+    pmSetView(pmYToLat(newWorldY,zoom), pmXToLon(newWorldX,zoom), zoom);
+  }
+  container.addEventListener("mousedown", function(e){ if(e.target.closest("button")) return; onDown(e.clientX,e.clientY); });
+  window.addEventListener("mousemove", function(e){ onMove(e.clientX,e.clientY); });
+  window.addEventListener("mouseup", function(e){ onUp(e.clientX,e.clientY); });
+  container.addEventListener("touchstart", function(e){ if(e.target.closest("button")) return; const t=e.touches[0]; if(t) onDown(t.clientX,t.clientY); }, {passive:true});
+  container.addEventListener("touchmove", function(e){ const t=e.touches[0]; if(t) onMove(t.clientX,t.clientY); }, {passive:true});
+  container.addEventListener("touchend", function(e){ const t=e.changedTouches[0]; if(t) onUp(t.clientX,t.clientY); });
+}
+
+// ===== Location search (2026-09-10) — ported from app/widget.html's own
+// pinSearchWire()/runPinSearch() (see that file's own comment for the full
+// rationale: free OpenStreetMap Nominatim text search, same service this
+// widget already pulls map tiles from). Kept in sync here for the same
+// reason the map itself was: the demo's Location entries are actively used
+// to preview this exact flow. =========================================
+let pinSearchTimer=null, pinSearchSeq=0, pinSearchLastResults=[];
+function pinSearchWire(){
+  const input=$("pinSearchInput"), results=$("pinSearchResults");
+  if(!input || !results) return;
+  input.addEventListener("input", function(){
+    clearTimeout(pinSearchTimer);
+    const q=input.value.trim();
+    if(q.length<3){ results.style.display="none"; results.innerHTML=""; return; }
+    pinSearchTimer=setTimeout(function(){ runPinSearch(q); }, 450);
+  });
+  input.addEventListener("focus", function(){ if(pinSearchLastResults.length) results.style.display="block"; });
+  document.addEventListener("click", function(e){
+    if(!e.target.closest("#pinSearchInput") && !e.target.closest("#pinSearchResults")) results.style.display="none";
+  });
+}
+async function runPinSearch(q){
+  const results=$("pinSearchResults"); if(!results) return;
+  const seq=++pinSearchSeq;
+  results.style.display="block";
+  results.innerHTML='<div style="padding:10px 12px;color:var(--muted);font-size:13px">Searching…</div>';
+  try{
+    const url="https://nominatim.openstreetmap.org/search?format=json&addressdetails=0&limit=6"+
+      "&countrycodes=in&viewbox=77.35,13.15,77.85,12.75&q="+encodeURIComponent(q);
+    const res=await fetch(url, { headers:{ "Accept":"application/json" } });
+    const data=await res.json();
+    if(seq!==pinSearchSeq) return;
+    pinSearchLastResults=Array.isArray(data)?data:[];
+    if(!pinSearchLastResults.length){
+      results.innerHTML='<div style="padding:10px 12px;color:var(--muted);font-size:13px">No matches — try a different search, or drag the map instead.</div>';
+      return;
+    }
+    results.innerHTML = pinSearchLastResults.map(function(item,i){
+      return '<div class="pin-search-item" data-index="'+i+'" style="padding:10px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line)">'+esc(item.display_name)+'</div>';
+    }).join("");
+    results.querySelectorAll(".pin-search-item").forEach(function(el){
+      el.onclick=function(){
+        const item=pinSearchLastResults[Number(el.dataset.index)];
+        if(!item) return;
+        pmSetView(Number(item.lat), Number(item.lon), 17);
+        $("pinSearchInput").value=item.display_name;
+        results.style.display="none";
+      };
+    });
+  }catch(e){
+    if(seq!==pinSearchSeq) return;
+    results.innerHTML='<div style="padding:10px 12px;color:var(--muted);font-size:13px">Search unavailable right now — please drag the map instead.</div>';
+    console.error("[Get-Rescue Customer demo] runPinSearch — Nominatim search failed", e);
+  }
+}
+
+function renderLocation(info){
+  const already = LOCATION_TYPE==="drop" ? info.hasDropLocation : info.hasBreakdownLocation;
+  const label = LOCATION_TYPE==="drop" ? "drop-off location" : "current location";
+  if(already){
+    $("content").innerHTML =
+      '<div class="card"><h1>Hi '+esc(info.customerName)+'</h1><div class="sub">Location</div>'+
+      '<div class="state-ok">✓ We already have your '+esc(label)+'. Thank you!</div>'+
+      '<div class="hint">If your location has changed, tap below to share it again.</div>'+
+      '<button class="btn primary" id="shareLocBtn" type="button" style="margin-top:14px">Share Again</button></div>';
+    $("shareLocBtn").onclick=function(){ renderLocationPicker(info); };
+  } else {
+    renderLocationPicker(info);
+  }
+}
+function renderLocationPicker(info){
+  const label = LOCATION_TYPE==="drop" ? "drop-off location" : "current location";
+  $("content").innerHTML =
+    '<div class="card"><h1>Hi '+esc(info.customerName)+'</h1><div class="sub">Location</div>'+
+    '<p style="margin-bottom:10px">Search for your '+esc(label)+', or drag the map so the pin sits exactly on it, then confirm.</p>'+
+    '<div style="position:relative;margin-bottom:12px">'+
+      '<input type="text" id="pinSearchInput" placeholder="Search for an address or place…" autocomplete="off" style="width:100%;border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-family:var(--f-body);font-size:14px;outline:0">'+
+      '<div id="pinSearchResults" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--sh-2);z-index:20;max-height:220px;overflow-y:auto"></div>'+
+    '</div>'+
+    '<div id="pinMapBox" style="height:280px;border-radius:12px;border:1.5px solid var(--line-strong);margin-bottom:12px"></div>'+
+    '<button class="btn" id="useMyLocBtn" type="button" style="background:var(--worktop);color:var(--text);margin-bottom:10px">📍 Use My Current Location</button>'+
+    '<button class="btn primary" id="confirmLocBtn" type="button">Confirm This Location</button>'+
+    '<div class="hint" id="locHint">Pan and zoom the map — the pin always marks the map\'s center.</div>'+
+    '</div>';
+  pmMount($("pinMapBox"), PIN_MAP_FALLBACK_LAT, PIN_MAP_FALLBACK_LON, 15);
+  pinSearchWire();
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(function(pos){
+      pmSetView(pos.coords.latitude, pos.coords.longitude, 16);
+    }, function(err){ /* denied/unavailable — stays on the fallback center above */ }, { enableHighAccuracy:true, timeout:10000 });
+  }
+  $("useMyLocBtn").onclick=function(){
+    const meBtn=$("useMyLocBtn");
+    if(!navigator.geolocation){ $("locHint").textContent="This browser doesn't support locating you automatically — please drag the map instead."; return; }
+    meBtn.disabled=true; meBtn.textContent="Locating…";
+    navigator.geolocation.getCurrentPosition(function(pos){
+      pmSetView(pos.coords.latitude, pos.coords.longitude, 16);
+      meBtn.disabled=false; meBtn.textContent="📍 Use My Current Location";
+    }, function(err){
+      meBtn.disabled=false; meBtn.textContent="📍 Use My Current Location";
+      $("locHint").textContent="Couldn't get your location — please drag the map to find the spot instead.";
+    }, { enableHighAccuracy:true, timeout:15000 });
+  };
+  $("confirmLocBtn").onclick=function(){ submitLocation(PIN_MAP.lat, PIN_MAP.lon); };
+}
+async function submitLocation(lat, lon){
+  const btn=$("confirmLocBtn");
+  if(btn){ btn.disabled=true; btn.textContent="Saving…"; }
+  // Rounded to 6 decimal places before sending — kept in sync with the same
+  // fix in app/widget.html (see that file's own comment on this line).
+  const latR = Number(lat.toFixed(6)), lonR = Number(lon.toFixed(6));
+  const res = await callCustomApi("submitCustomerLocation", { recordId: RECORD_ID, locationType: LOCATION_TYPE, lat: String(latR), lon: String(lonR) });
+  if(res && res.code==="SUCCESS"){
+    $("content").innerHTML = '<div class="card"><div class="state-ok">✓ Location shared — thank you!</div></div>';
+  } else {
+    renderError("Couldn't save your location — please try again, or contact your agent directly.");
+  }
+}
+
+function renderFeedback(info){
+  if(info.alreadySubmitted){
+    $("content").innerHTML =
+      '<div class="card"><h1>Hi '+esc(info.customerName)+'</h1><div class="sub">Feedback</div>'+
+      '<div class="state-ok">✓ We already have your feedback. Thank you!</div></div>';
+    return;
+  }
+  const scoreButtons = [1,2,3,4,5,6,7,8,9,10].map(function(n){
+    return '<div class="score-opt" data-score="'+n+'">'+n+'</div>';
+  }).join("");
+  $("content").innerHTML =
+    '<div class="card"><h1>Hi '+esc(info.customerName)+'</h1><div class="sub">How was your experience? (1 = poor, 10 = excellent)</div>'+
+    '<div class="score-grid" id="scoreGrid">'+scoreButtons+'</div>'+
+    '<textarea id="feedbackText" placeholder="Any comments? (optional)"></textarea>'+
+    '<button class="btn primary" id="submitFeedbackBtn" type="button" disabled>Submit Feedback</button></div>';
+  let selectedScore=null;
+  document.querySelectorAll("#scoreGrid .score-opt").forEach(function(el){
+    el.onclick=function(){
+      document.querySelectorAll("#scoreGrid .score-opt").forEach(function(x){ x.classList.remove("sel"); });
+      el.classList.add("sel");
+      selectedScore=el.dataset.score;
+      $("submitFeedbackBtn").disabled=false;
+    };
+  });
+  $("submitFeedbackBtn").onclick=async function(){
+    if(!selectedScore) return;
+    $("submitFeedbackBtn").disabled=true; $("submitFeedbackBtn").textContent="Submitting…";
+    const text=$("feedbackText").value.trim();
+    const res = await callCustomApi("submitCustomerFeedback", { recordId: RECORD_ID, score: selectedScore, feedbackText: text });
+    if(res && res.code==="SUCCESS"){
+      $("content").innerHTML = '<div class="card"><div class="state-ok">✓ Thank you for your feedback!</div></div>';
+    } else {
+      renderError("Couldn't submit your feedback — please try again.");
+    }
+  };
+}
+
+async function boot(){
+  const p = await getPageParams();
+  RECORD_ID = p.recordId || "";
+  MODE = p.mode || "";
+  LOCATION_TYPE = p.locationType || "breakdown";
+  if(!RECORD_ID || !MODE){
+    renderError("This link looks incomplete — please contact your agent for a new one.");
+    return;
+  }
+  const info = await callCustomApi("getCustomerTicketInfo", { recordId: RECORD_ID, mode: MODE });
+  if(!info || info.code!=="SUCCESS"){
+    renderError((info && info.message) || "We couldn't load your request — please contact your agent directly.");
+    return;
+  }
+  if(p.debug==="1" || p.debug==="true"){ renderDebugFields(info); return; }
+  if(MODE==="booking_payment") renderBookingOrRemainingPayment(info, false);
+  else if(MODE==="remaining_payment") renderBookingOrRemainingPayment(info, true);
+  else if(MODE==="location") renderLocation(info);
+  else if(MODE==="feedback") renderFeedback(info);
+  else renderError("Unrecognized request type — please contact your agent for a new link.");
+}
+
+function waitForSDK(a){
+  a=a||0;
+  if(resolve("invokeCustomApi")){ boot(); return; }
+  if(a>40){ renderError("Couldn't connect — please reopen this link, or contact your agent."); return; }
+  setTimeout(()=>waitForSDK(a+1),200);
+}
+waitForSDK();
+</script>
+</body>
+</html>

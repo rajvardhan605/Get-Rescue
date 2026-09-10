@@ -9,3 +9,5 @@ chrome_err.log
 .claude/
 .DS_Store
 Thumbs.db
+.scratch_test/
+.artifact_build/

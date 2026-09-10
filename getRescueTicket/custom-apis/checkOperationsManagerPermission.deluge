@@ -1,0 +1,17 @@
+string checkOperationsManagerPermission()
+{
+	try
+	{
+		isOpsManager = thisapp.permissions.isUserInProfile("Operations Manager");
+		result = "false";
+		if(isOpsManager == true)
+		{
+			result = "true";
+		}
+		return "{\"code\": \"SUCCESS\", \"isOperationsManager\": " + result + "}";
+	}
+	catch (e)
+	{
+		return "{\"code\": \"ERROR\", \"message\": \"" + e.toString() + "\", \"isOperationsManager\": false}";
+	}
+}

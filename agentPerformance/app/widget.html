@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Agent Performance</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root{
+  --signal:#F15A22; --signal-bright:#FF7A2F; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --ink-2:#20232B; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --info:#2C7BE5; --info-soft:#E4EEFB; --wait:#E8890B; --wait-soft:#FCEEDA;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06); --sh-2:0 12px 30px rgba(20,22,28,.14);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 18px 60px}
+.hdr{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:18px}
+.hdr h1{font-family:var(--f-disp);font-size:24px;font-weight:800;color:var(--ink)}
+.hdr .sub{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:2px}
+.filters{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh-1);
+  padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.filters .presets{display:flex;gap:6px;flex-wrap:wrap}
+.filters .presets button{font-family:var(--f-disp);font-weight:700;font-size:12.5px;padding:7px 12px;border-radius:8px;
+  border:1.5px solid var(--line-strong);background:#fff;color:var(--text);cursor:pointer}
+.filters .presets button.sel{background:var(--signal);color:#fff;border-color:var(--signal)}
+.filters .daterange{display:flex;align-items:center;gap:6px;font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.filters input[type=date]{font-family:var(--f-mono);font-size:12.5px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--line-strong)}
+.filters .apply{font-family:var(--f-disp);font-weight:800;font-size:12.5px;padding:8px 14px;border-radius:8px;border:0;
+  background:var(--signal);color:#fff;cursor:pointer}
+.range-warn{color:var(--stop);font-family:var(--f-mono);font-size:11.5px;margin-top:6px}
+.section-title{font-family:var(--f-disp);font-weight:800;font-size:14px;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--muted);margin:22px 0 12px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media (max-width:820px){ .grid{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:520px){ .grid{grid-template-columns:1fr} }
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);
+  padding:20px 16px;text-align:center}
+.card .ic{width:42px;height:42px;border-radius:50%;background:var(--ok-soft);color:var(--ok);display:flex;
+  align-items:center;justify-content:center;margin:0 auto 9px}
+.card .ic svg{width:20px;height:20px}
+.card .num{font-family:var(--f-disp);font-size:28px;font-weight:900;color:var(--ink)}
+.card .num.na{font-size:15px;color:var(--muted-2);font-family:var(--f-mono);font-weight:500}
+.card .lbl{font-family:var(--f-mono);font-size:11.5px;color:var(--muted);margin-top:4px}
+.card.na .ic{background:var(--worktop);color:var(--muted-2)}
+.hint-box{background:var(--worktop);border:1px dashed var(--line-strong);border-radius:10px;padding:14px 16px;
+  font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:18px;line-height:1.6}
+.center-state{text-align:center;padding:60px 16px;color:var(--muted)}
+.spin{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);
+  animation:spin .7s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.state-err{background:var(--stop-soft);color:var(--stop);border-radius:12px;padding:16px;font-weight:700;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div>
+      <h1>Agent Performance</h1>
+      <div class="sub" id="agentNameLine">Loading…</div>
+    </div>
+  </div>
+  <div class="filters">
+    <div class="presets" id="presets">
+      <button type="button" data-preset="today" class="sel">Today</button>
+      <button type="button" data-preset="yesterday">Yesterday</button>
+      <button type="button" data-preset="thisMonth">This Month</button>
+      <button type="button" data-preset="lastMonth">Last Month</button>
+    </div>
+    <div class="daterange">
+      From <input type="date" id="fromDate"> to <input type="date" id="toDate">
+      <button type="button" class="apply" id="applyRange">Apply</button>
+    </div>
+  </div>
+  <div class="range-warn" id="rangeWarn" style="display:none"></div>
+  <div id="content"><div class="center-state"><div class="spin"></div></div></div>
+</div>
+<script>
+/* =====================================================================
+   Get-Rescue — Agent Performance widget (2026-09-03)
+
+   Runs inside getRescueTicket's own logged-in agent portal context. Scopes
+   every ticket-based metric to THIS agent's own tickets via the new
+   Created_By_Agent_Email field (stamped at ticket creation, see
+   getRescueTicket's own `create` stage) — tickets created BEFORE that field
+   existed will not be attributed to any agent here; that's a known,
+   unavoidable gap for historical data, not a bug in this widget.
+
+   Call-center metrics (Number of Calls, Missed Calls, Avg Call Answer Time,
+   Avg Talk Time, % of Calls Hung Up) have NO data source anywhere in this
+   app yet — no cloud telephony integration exists (confirmed via the
+   earlier wireframe compliance audit). Shown honestly as "Not available"
+   rather than guessed or left blank with no explanation.
+
+   Filter option 2 (explicit From/To date range) is the primary control per
+   the hand-drawn wireframe's own "1st priority" note; option 1 (Today/
+   Yesterday/This Month/Last Month) is offered as quick presets that just
+   populate the same From/To fields — one underlying filter, two ways to
+   set it. Capped at a 60-day span ("Do not show performance for > 60
+   days") — a wider range is rejected with a message, not silently clamped.
+   ===================================================================== */
+const CONFIG = {
+  appName: "get-rescue",
+  reportName: "Agent_Ticket_Report",
+  serviceTypeField: "Service_Type"
+};
+const MAX_RANGE_DAYS = 60;
+let INIT_PARAMS = null, LOGIN_EMAIL = "";
+
+const $=(id)=>document.getElementById(id);
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function apiGetReport(report, criteria, max){
+  const fn=resolve("getRecords"); if(!fn) return [];
+  const cfg={ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||1000 };
+  if(criteria) cfg.criteria=criteria;
+  try{
+    const r=await fn(cfg);
+    return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  }catch(e){ console.warn("[GR-AgentPerf] apiGetReport("+report+") failed", e); return []; }
+}
+
+/* ---------- date parsing (same defensive multi-format approach as the
+   dashboard timer / vendor performance widgets) ---------- */
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function parseDateTime12(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  let hour=Number(m[4])%12; if(/pm/i.test(m[7])) hour+=12;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), hour, Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseDateTime24(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseAnyDateTime(str){
+  if(!str) return null;
+  const native=new Date(str);
+  if(!isNaN(native)) return native;
+  return parseDateTime12(str) || parseDateTime24(str);
+}
+function inRange(dateVal, range){
+  const d=parseAnyDateTime(dateVal);
+  if(!d) return false;
+  return d.getTime()>=range.from.getTime() && d.getTime()<=range.to.getTime();
+}
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function startOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0); }
+function endOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999); }
+function presetRange(key){
+  const now=new Date();
+  if(key==="today") return { from:startOfDay(now), to:endOfDay(now) };
+  if(key==="yesterday"){ const y=new Date(now); y.setDate(y.getDate()-1); return { from:startOfDay(y), to:endOfDay(y) }; }
+  if(key==="thisMonth") return { from:new Date(now.getFullYear(),now.getMonth(),1,0,0,0,0), to:endOfDay(now) };
+  if(key==="lastMonth"){ const f=new Date(now.getFullYear(),now.getMonth()-1,1,0,0,0,0); const t=new Date(now.getFullYear(),now.getMonth(),0,23,59,59,999); return { from:f, to:t }; }
+  return { from:startOfDay(now), to:endOfDay(now) };
+}
+
+function applyPreset(key){
+  const r=presetRange(key);
+  $("fromDate").value=ymd(r.from); $("toDate").value=ymd(r.to);
+  document.querySelectorAll("#presets button").forEach(function(b){ b.classList.toggle("sel", b.dataset.preset===key); });
+  runRefresh(r);
+}
+document.querySelectorAll("#presets button").forEach(function(b){ b.onclick=function(){ applyPreset(b.dataset.preset); }; });
+$("applyRange").onclick=function(){
+  document.querySelectorAll("#presets button").forEach(function(b){ b.classList.remove("sel"); });
+  const f=$("fromDate").value, t=$("toDate").value;
+  if(!f||!t){ return; }
+  runRefresh({ from:startOfDay(new Date(f)), to:endOfDay(new Date(t)) });
+};
+
+/* ---------- stat computation ---------- */
+function computeStats(tickets, range){
+  const mine = tickets.filter(function(r){ return inRange(r.Added_Time, range); });
+
+  const newCount = mine.length;
+  // Real bug fixed 2026-09-04, live-confirmed via console dump: Closure_Status
+  // is a separate, agent-driven Final Closure field that in practice is
+  // almost never set (every "done" ticket sampled live had it blank) — the
+  // vendor/RSP's own completion signal is Status:"RSP CLOSED" (Step 8,
+  // Payment Received), which happens automatically and much earlier than
+  // any optional Final Closure step. Keeping the Closure_Status check too
+  // (a ticket that DOES reach full Final Closure with Completed set should
+  // still count) — just no longer the only signal.
+  const completed = mine.filter(function(r){
+    const st=String(r.Status||"").trim().toUpperCase();
+    const cs=String(r.Closure_Status||"").trim();
+    return st==="RSP CLOSED" || cs==="Completed";
+  }).length;
+  const cancelled = mine.filter(function(r){
+    const st=String(r.Status||"").trim().toUpperCase();
+    const cs=String(r.Closure_Status||"").trim();
+    return st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable";
+  }).length;
+  const notConverted = mine.filter(function(r){ return String(r.Closure_Status||"").trim()==="Not Converted"; }).length;
+
+  // "ON DEMAND" is a plain sentinel string on Client (not a Lookup id for
+  // that special walk-in client) — same check getRescueTicket's own
+  // onDemandInvoicing()/clientDisplayName() already use.
+  const isOnDemand=function(r){ return String(r.Client||"").trim().toUpperCase()==="ON DEMAND"; };
+  const sumFee=function(list){ return list.reduce(function(acc,r){ return acc+(Number(r.Total_Service_Fee)||0); }, 0); };
+  const revRSR = sumFee(mine.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW"; }));
+  const revTOW = sumFee(mine.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; }));
+
+  const withBoth = mine.map(function(r){
+    const created=parseAnyDateTime(r.Added_Time);
+    const assigned=parseDateTime12(r.Assignment_Time) || parseDateTime24(r.Assignment_Time);
+    if(!created || !assigned) return null;
+    return assigned.getTime()-created.getTime();
+  }).filter(function(v){ return v!=null && v>=0; });
+  const avgAssignMins = withBoth.length ? Math.round(withBoth.reduce(function(a,b){ return a+b; },0)/withBoth.length/60000) : null;
+
+  return { newCount, completed, cancelled, notConverted, revRSR, revTOW, avgAssignMins };
+}
+
+const ICON_TICKET='<svg viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+const ICON_MONEY='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 7v10M9.5 9.5c0-1 1-1.8 2.5-1.8s2.5.9 2.5 2-1 1.6-2.5 2-2.5.9-2.5 2 1 2 2.5 2 2.5-.8 2.5-1.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const ICON_CLOCK='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_NA='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
+function statCard(icon, value, label, na){
+  return '<div class="card'+(na?" na":"")+'"><div class="ic">'+icon+'</div><div class="num'+(na?" na":"")+'">'+esc(value)+'</div><div class="lbl">'+esc(label)+'</div></div>';
+}
+function money(v){ return "₹"+Math.round(v).toLocaleString("en-IN"); }
+
+function render(stats){
+  const NA = "Not available";
+  $("content").innerHTML = `
+    <div class="section-title">Call Center (requires Cloud Telephony integration)</div>
+    <div class="grid">
+      ${statCard(ICON_NA, NA, "Number of Calls Landed", true)}
+      ${statCard(ICON_NA, NA, "Number of Missed Calls", true)}
+      ${statCard(ICON_NA, NA, "Avg. Call Answer Time", true)}
+      ${statCard(ICON_NA, NA, "Avg. Talk Time", true)}
+      ${statCard(ICON_NA, NA, "% of Calls Hung Up by Agent", true)}
+    </div>
+    <div class="section-title">Tickets</div>
+    <div class="grid">
+      ${statCard(ICON_TICKET, stats.newCount, "New Tickets Created")}
+      ${statCard(ICON_TICKET, stats.completed, "Completed Tickets")}
+      ${statCard(ICON_TICKET, stats.cancelled, "Cancelled Tickets")}
+      ${statCard(ICON_TICKET, stats.notConverted, "Not Converted Tickets")}
+    </div>
+    <div class="section-title">Revenue &amp; Efficiency</div>
+    <div class="grid">
+      ${statCard(ICON_MONEY, money(stats.revRSR), "On-Demand Revgen (RSR)")}
+      ${statCard(ICON_MONEY, money(stats.revTOW), "On-Demand Revgen (TOW)")}
+      ${stats.avgAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Time (Creation to Assignment)") : statCard(ICON_CLOCK, stats.avgAssignMins+" min", "Avg Time (Creation to Assignment)")}
+    </div>
+  `;
+}
+function renderError(msg){ $("content").innerHTML = '<div class="state-err">'+esc(msg)+'</div>'; }
+
+let ALL_TICKETS=[];
+function runRefresh(range){
+  const days=(range.to.getTime()-range.from.getTime())/86400000;
+  if(days>MAX_RANGE_DAYS){
+    $("rangeWarn").style.display="";
+    $("rangeWarn").textContent="Selected range is "+Math.ceil(days)+" days — performance can only be shown for up to "+MAX_RANGE_DAYS+" days at a time. Pick a shorter range.";
+    return;
+  }
+  $("rangeWarn").style.display="none";
+  render(computeStats(ALL_TICKETS, range));
+}
+
+async function boot(){
+  let tries=0;
+  while(!resolve("getRecords") && tries<40){ await new Promise(function(r){ setTimeout(r,200); }); tries++; }
+  if(!resolve("getRecords")){ renderError("Couldn't connect to Zoho — please reopen this page."); return; }
+  try{
+    const getInit = resolve("getInitParams");
+    if(getInit){ INIT_PARAMS = await getInit(); LOGIN_EMAIL = (INIT_PARAMS && INIT_PARAMS.loginUser) || ""; }
+    $("agentNameLine").textContent = LOGIN_EMAIL || "Unknown agent";
+    if(!LOGIN_EMAIL){ renderError("Couldn't identify your login — performance can't be scoped to an agent."); return; }
+    ALL_TICKETS = await apiGetReport(CONFIG.reportName, 'Created_By_Agent_Email == "'+LOGIN_EMAIL.replace(/"/g,'\\"')+'"', 1000);
+    console.log("[GR-AgentPerf] boot: "+ALL_TICKETS.length+" tickets matched Created_By_Agent_Email == \""+LOGIN_EMAIL+"\"");
+    // Default to "Today" (was "Last Month") — defaulting a live performance
+    // dashboard to last month meant a ticket created/completed the same day
+    // never showed up until the user manually switched presets, which read
+    // as "data is missing" when it wasn't.
+    applyPreset("today");
+  }catch(e){
+    console.error("[GR-AgentPerf] boot failed", e);
+    renderError("Something went wrong loading your performance data — check the console for details.");
+  }
+}
+boot();
+</script>
+</body>
+</html>

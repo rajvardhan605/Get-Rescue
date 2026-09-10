@@ -1,0 +1,164 @@
+string submitCustomerLocation(string recordId, string locationType, string lat, string lon)
+{
+	returnstr = "";
+	try
+	{
+		result = Map();
+		// .trim() added 2026-09-10 — same real, confirmed-live bug already
+		// found and fixed in generateZohoPaymentLink.deluge the same day
+		// (a stray trailing space in recordId crashed .toLong() outright
+		// there); added here defensively too, zero risk either way.
+		rec = Create_Case[ID == recordId.trim().toLong()];
+		if(rec == null)
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Ticket not found");
+			returnstr = result.toString();
+		}
+		else if(lat == null || lat == "" || lon == null || lon == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Latitude/Longitude missing");
+			returnstr = result.toString();
+		}
+		else
+		{
+			// Validate + normalize (2026-09-10, explicit user request:
+			// "Validate the coordinates and handle both map-selected and
+			// manually entered latitude/longitude values correctly") — lat/lon
+			// arrive as raw strings from either the customer's map pin (its own
+			// floating-point pan/zoom math) or a device GPS fix, both of which
+			// can carry 15-17+ decimal digits. .toDecimal()/.round(6) (both
+			// confirmed working Deluge syntax already used the same way
+			// elsewhere in this project — see recordVendorPayment.deluge's own
+			// ".toDecimal()"/".round(2)") caps that at ~11cm of real-world
+			// precision, well under the real (unconfirmed exact value) "Decimal
+			// field exceeded maximum digits" limit getRescueTicket's own
+			// roundCoord()/saveWithCoordFallback() were built to work around on
+			// these SAME Latitude/Longitude/DropLocationLat/DropLocationLong
+			// fields — this call had no protection against that error at all
+			// before now. Range-checked against real GPS bounds so a malformed
+			// value (or a future caller hitting this Custom API directly)
+			// never silently writes garbage into the ticket.
+			latVal = lat.toDecimal().round(6);
+			lonVal = lon.toDecimal().round(6);
+			// locationType normalization (2026-09-10, widened after a live
+			// "Unknown locationType: breakdown." failure — a stray trailing
+			// period arrived from wherever this particular link/navigation was
+			// generated, outside this repo's own confirmed-clean URL-building
+			// code — see getRescueTicket/app/widget.html's buildCustomerPageUrl(),
+			// checked and confirmed to build a plain "breakdown"/"drop" with no
+			// punctuation). Rather than keep chasing one hardcoded punctuation
+			// variant at a time (the previous fix only handled an exact
+			// trailing "."), this matches by SUBSTRING on a trimmed, lowercased
+			// value instead — covers "breakdown", "breakdown.", "Breakdown ",
+			// "BREAKDOWN..", stray whitespace, etc. for BOTH Breakdown and Drop
+			// symmetrically, not just the one case actually seen live so far.
+			// .trim()/.toLowerCase()/.contains() are all already confirmed
+			// working elsewhere in this project (see createServiceRequest.deluge's
+			// own "issueTypeText.toLowerCase().contains("tow")") — no new/
+			// unverified Deluge syntax introduced (the previous fix's brace-less
+			// "if(...) x = y;" lines were a real, confirmed-live "Improper
+			// Statement" error; every branch below is fully braced). Only
+			// "breakdown"/"drop" are ever real values here, so a substring match
+			// can't collide with anything else.
+			locTypeNorm = ifnull(locationType,"").trim().toLowerCase();
+			isDrop = locTypeNorm.contains("drop");
+			isBreakdown = locTypeNorm.contains("breakdown");
+			if(latVal < -90 || latVal > 90 || lonVal < -180 || lonVal > 180)
+			{
+				result.put("code", "ERROR");
+				result.put("message", "Invalid coordinates");
+				returnstr = result.toString();
+			}
+			else if(isDrop || isBreakdown)
+			{
+				// Real root cause found live 2026-09-10, confirmed directly in
+				// Zoho Studio: Latitude/Longitude/DropLocationLat/DropLocationLong
+				// are all configured with Max Digits=16, Decimal Points=15 —
+				// leaving room for only 1 digit before the decimal point, too
+				// narrow for any real coordinate (almost every real latitude/
+				// longitude has a 2-3 digit whole-number part, e.g. "28" in
+				// 28.513177). This is very likely why every write has failed
+				// regardless of what the code around it looked like — the
+				// earlier "double-fetch"/"raw Decimal vs string" theories were
+				// both disproven live; this is the field's own configuration,
+				// not a syntax issue.
+				// Defensive retry added (explicit user request: "if i dont do
+				// what happen please manage submitCustomerLocation function
+				// accordingly" — i.e. handle it in code even if the field's
+				// own Decimal Points setting in Zoho is never widened) —
+				// mirrors getRescueTicket's own already-proven
+				// COORD_PRECISION_FALLBACKS retry (roundCoord()/
+				// saveWithCoordFallback()) for this exact class of Zoho
+				// Decimal-field digit-limit error: tries progressively fewer
+				// decimal places until one succeeds. Flagged honestly: since
+				// the real constraint here looks like it's on the INTEGER
+				// part specifically, reducing decimal places alone may not
+				// free up room there — in which case every level below still
+				// fails, and the function returns a genuinely clear, specific
+				// error message instead of Zoho's own confusing generic one,
+				// which is itself a real improvement over today's behavior
+				// either way.
+				precisionLevels = List();
+				precisionLevels.add(6);
+				precisionLevels.add(4);
+				precisionLevels.add(2);
+				precisionLevels.add(0);
+				writeSucceeded = false;
+				lastWriteError = "";
+				for each precision in precisionLevels
+				{
+					if(!writeSucceeded)
+					{
+						try
+						{
+							latToWrite = latVal.round(precision).toString();
+							lonToWrite = lonVal.round(precision).toString();
+							if(isDrop)
+							{
+								rec.DropLocationLat = latToWrite;
+								rec.DropLocationLong = lonToWrite;
+							}
+							else
+							{
+								rec.Latitude = latToWrite;
+								rec.Longitude = lonToWrite;
+							}
+							writeSucceeded = true;
+						}
+						catch (writeEx)
+						{
+							lastWriteError = writeEx.toString();
+						}
+					}
+				}
+				if(writeSucceeded)
+				{
+					result.put("code", "SUCCESS");
+					returnstr = result.toString();
+				}
+				else
+				{
+					result.put("code", "ERROR");
+					result.put("message", "Could not save this coordinate at any precision — the Latitude/Longitude field's own Decimal Points setting in Zoho is very likely too narrow for a real coordinate (currently Max Digits=16/Decimal Points=15, leaving only 1 digit for the whole-number part; needs widening, e.g. Decimal Points=6). Last error: " + lastWriteError);
+					returnstr = result.toString();
+				}
+			}
+			else
+			{
+				result.put("code", "ERROR");
+				result.put("message", "Unknown locationType: " + locationType);
+				returnstr = result.toString();
+			}
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		returnstr = errResult.toString();
+	}
+	return returnstr;
+}

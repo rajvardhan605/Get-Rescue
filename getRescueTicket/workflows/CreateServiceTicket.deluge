@@ -1,0 +1,68 @@
+try
+{
+	rawIssueText = input.Vehicle_Issue;
+	issueList = List();
+	if(rawIssueText != null)
+	{
+		issueList = rawIssueText.toList(";");
+	}
+	cleanIssues = List();
+	for each issueItem in issueList
+	{
+		trimmedItem = issueItem.trim();
+		if(trimmedItem != "")
+		{
+			cleanIssues.add(trimmedItem);
+		}
+	}
+
+	allIssues = Vehicle_Issue[ID != 0];
+	matchedIssueIds = List();
+	for each wantedIssue in cleanIssues
+	{
+		for each issueRec in allIssues
+		{
+			issueName = issueRec.Issue_Name;
+			if(issueName != null)
+			{
+				if(issueName.trim().equalsIgnoreCase(wantedIssue))
+				{
+					matchedIssueIds.add(issueRec.ID);
+					break;
+				}
+			}
+		}
+	}
+	info "Vehicle Issue matched IDs: " + matchedIssueIds.toString();
+
+	newRecordId = insert into Create_Case
+	[
+		Customer_Name=input.Name
+		Phone_Number1=input.Phone_Number
+		Phone_Number=input.Phone_Number
+		Email=input.Email
+		Vehicle_Registration_Number=input.Vehicle_Registration_Number
+		Lead_Source="Website"
+		Time_of_service=input.Time_of_service
+		Schedule_Date=input.Schedule_Date
+		Service_Time=input.Service_Time
+		Status="SERVICE FEE QUOTE"
+		Added_User=zoho.loginuser
+		Vehicle=input.Vehicle
+		Vehicle_Issue=matchedIssueIds
+	];
+
+	idStr = newRecordId.toString();
+	last6 = idStr;
+	if(idStr.length() > 6)
+	{
+		last6 = idStr.subString(idStr.length() - 6);
+	}
+	caseId = "RSID" + last6;
+	newRec = Create_Case[ID == newRecordId];
+	newRec.Case_ID=caseId;
+
+}catch (e)
+{
+	info "CreateServiceTicket workflow failed: " + e.toString();
+}

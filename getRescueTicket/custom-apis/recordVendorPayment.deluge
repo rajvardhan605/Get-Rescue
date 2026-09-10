@@ -1,0 +1,400 @@
+string recordVendorPayment(string booksVendorId, string vendorName, string vendorEmail, string vendorPhone, string caseLabelsCsv, string netFeesCsv, string tdsPercent, string cashCollectedTotal, string paymentDate, string utrNo)
+{
+	organization_id = "60078911104";
+	books_base_url = "https://www.zohoapis.in/books/v3";
+	// NEEDS SETUP: EXPENSE_ACCOUNT_ID = a Zoho Books Chart of Accounts id for vendor payouts.
+	// NEEDS SETUP: PAID_THROUGH_ACCOUNT_ID = the bank or cash account payments are made from.
+	EXPENSE_ACCOUNT_ID = "3988332000000174002"; // Vendor Service Charges
+	PAID_THROUGH_ACCOUNT_ID = "3988332000000000459"; // Petty Cash
+
+	// All return values are built via a Map + toString() rather than
+	// hand-concatenated strings. Real bug fixed live: an error message
+	// coming back from Zoho Books itself (e.g. a duplicate-vendor-name
+	// message) can contain a double quote or other character that breaks
+	// a hand-built JSON string, which then fails to parse on the widget
+	// side and hides the real error. Map().toString() escapes correctly
+	// no matter what any upstream message contains.
+	errMap = Map();
+	errMap.put("code","ERROR");
+
+	resultOut = "";
+	try
+	{
+		info "recordVendorPayment called with booksVendorId=" + booksVendorId + " | vendorName=" + vendorName + " | caseLabelsCsv=" + caseLabelsCsv + " | netFeesCsv=" + netFeesCsv + " | tdsPercent=" + tdsPercent + " | cashCollectedTotal=" + cashCollectedTotal + " | paymentDate=" + paymentDate + " | utrNo=" + utrNo;
+
+		if(EXPENSE_ACCOUNT_ID == "")
+		{
+			errMap.put("message","EXPENSE_ACCOUNT_ID is not configured in recordVendorPayment.deluge.");
+			return errMap.toString();
+		}
+		if(PAID_THROUGH_ACCOUNT_ID == "")
+		{
+			errMap.put("message","PAID_THROUGH_ACCOUNT_ID is not configured in recordVendorPayment.deluge.");
+			return errMap.toString();
+		}
+		if(caseLabelsCsv == null || caseLabelsCsv == "")
+		{
+			errMap.put("message","caseLabelsCsv is missing or empty.");
+			return errMap.toString();
+		}
+
+		caseLabelsList = caseLabelsCsv.toList(",");
+		netFeesList = netFeesCsv.toList(",");
+		if(caseLabelsList.size() != netFeesList.size())
+		{
+			errMap.put("message","caseLabelsCsv and netFeesCsv have different lengths.");
+			return errMap.toString();
+		}
+
+		tdsPercentAmt = 0.0;
+		try
+		{
+			tdsPercentAmt = tdsPercent.toDecimal();
+		}
+		catch (tdsEx)
+		{
+			tdsPercentAmt = 0.0;
+		}
+		cashCollectedAmt = 0.0;
+		try
+		{
+			cashCollectedAmt = cashCollectedTotal.toDecimal();
+		}
+		catch (ccEx)
+		{
+			cashCollectedAmt = 0.0;
+		}
+
+		// Step 1: find or create the vendor contact in Zoho Books.
+		// If booksVendorId was already passed in, reuse it and skip this.
+		vendor_id = booksVendorId;
+		if(vendor_id == null)
+		{
+			vendor_id = "";
+		}
+		if(vendor_id == "")
+		{
+			if(vendorPhone != null)
+			{
+				if(vendorPhone != "")
+				{
+					searchResp = invokeurl
+					[
+						url :books_base_url + "/contacts?organization_id=" + organization_id + "&phone=" + vendorPhone + "&contact_type=vendor"
+						type :GET
+						connection:"zoho_books_connection"
+					];
+					contactsList = searchResp.get("contacts");
+					if(contactsList != null)
+					{
+						if(contactsList.size() > 0)
+						{
+							firstContact = contactsList.get(0);
+							vendor_id = firstContact.get("contact_id");
+						}
+					}
+				}
+			}
+		}
+		if(vendor_id == "")
+		{
+			contactMap = Map();
+			nameForContact = vendorName;
+			if(nameForContact == null)
+			{
+				nameForContact = "Vendor";
+			}
+			if(nameForContact == "")
+			{
+				nameForContact = "Vendor";
+			}
+			contactMap.put("contact_name",nameForContact);
+			contactMap.put("contact_type","vendor");
+			if(vendorPhone != null)
+			{
+				if(vendorPhone != "")
+				{
+					contactMap.put("phone",vendorPhone);
+				}
+			}
+			if(vendorEmail != null)
+			{
+				if(vendorEmail != "")
+				{
+					contactMap.put("email",vendorEmail);
+				}
+			}
+			createContactResp = invokeurl
+			[
+				url :books_base_url + "/contacts?organization_id=" + organization_id
+				type :POST
+				parameters:contactMap.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zoho_books_connection"
+			];
+			newContact = createContactResp.get("contact");
+			if(newContact == null)
+			{
+				createContactErr = createContactResp.get("message");
+				errMap.put("message","Could not find or create vendor in Zoho Books: " + createContactErr);
+				return errMap.toString();
+			}
+			vendor_id = newContact.get("contact_id");
+		}
+
+		// Step 2: create the Bill. One line item per case, at that case's
+		// own Net Fee. This is the gross amount, before TDS or cash
+		// collected are subtracted - those apply at payment time below.
+		lineItems = List();
+		billTotal = 0.0;
+		for each index i in caseLabelsList
+		{
+			caseLabelRaw = caseLabelsList.get(i);
+			netFeeRaw = netFeesList.get(i);
+			netFeeAmt = 0.0;
+			try
+			{
+				netFeeAmt = netFeeRaw.toString().toDecimal();
+			}
+			catch (nfEx)
+			{
+				errMap.put("message","Could not parse a Net Fee value as a decimal for case index " + i + ".");
+				return errMap.toString();
+			}
+			billTotal = billTotal + netFeeAmt;
+			lineItem = Map();
+			lineItem.put("name","Vendor payout - " + caseLabelRaw);
+			lineItem.put("account_id",EXPENSE_ACCOUNT_ID);
+			lineItem.put("rate",netFeeAmt.toString());
+			lineItem.put("quantity","1");
+			lineItems.add(lineItem);
+		}
+		if(billTotal <= 0)
+		{
+			errMap.put("message","Bill total is not greater than 0.");
+			return errMap.toString();
+		}
+
+		// Bills need an explicit bill_number - unlike Invoices, Zoho Books
+		// has no auto-generate toggle for Bills, since a Bill is meant to
+		// carry the VENDOR's own invoice number. There isn't one here (this
+		// is an internal payout, not the vendor's own paper invoice), so a
+		// value is built from the UTR (the real bank reference the user
+		// enters) plus the first case label, for a readable, traceable id.
+		billNumber = "VP-" + caseLabelsList.get(0);
+		if(utrNo != null)
+		{
+			if(utrNo != "")
+			{
+				billNumber = billNumber + "-" + utrNo;
+			}
+		}
+
+		billMap = Map();
+		billMap.put("vendor_id",vendor_id);
+		billMap.put("bill_number",billNumber);
+		billMap.put("line_items",lineItems);
+		billDate = paymentDate;
+		if(billDate == null)
+		{
+			billDate = "";
+		}
+		if(billDate != "")
+		{
+			billMap.put("date",billDate);
+		}
+		jsonPayload = billMap.toString();
+		info "Bill jsonPayload sent to Zoho Books: " + jsonPayload;
+
+		createBillResp = invokeurl
+		[
+			url :books_base_url + "/bills?organization_id=" + organization_id
+			type :POST
+			parameters:jsonPayload
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_books_connection"
+		];
+		billRespCode = createBillResp.get("code");
+		if(billRespCode != 0)
+		{
+			bookErr = createBillResp.get("message");
+			info "Bill creation FAILED: " + bookErr;
+			errMap.put("message","Bill creation failed: " + bookErr);
+			return errMap.toString();
+		}
+		billRec = createBillResp.get("bill");
+		if(billRec == null)
+		{
+			errMap.put("message","No bill in response.");
+			return errMap.toString();
+		}
+		bill_id = billRec.get("bill_id");
+		if(bill_id == null || bill_id == "")
+		{
+			errMap.put("message","Bill ID is missing from the response.");
+			return errMap.toString();
+		}
+
+		// Step 3: TDS. Computed here from the vendor TDS percent rather
+		// than trusted from the caller, so it always matches billTotal
+		// exactly. Applied at payment time via tax_amount_withheld below,
+		// not the Bill's own is_tds_applied/tds_tax_id fields - those need
+		// a pre-configured TDS tax rate id per distinct percentage in
+		// Books, which does not fit a per-vendor rate cleanly.
+		tdsAmount = (billTotal * tdsPercentAmt / 100.0).round(2);
+
+		// Step 4: Cash Collected. This is money the vendor already
+		// received directly from the customer, so the company owes them
+		// less - it is not a tax withholding, so it is handled as a
+		// Vendor Credit applied to this Bill instead.
+		if(cashCollectedAmt > 0)
+		{
+			creditLineItem = Map();
+			creditLineItem.put("name","Cash collected directly by vendor");
+			creditLineItem.put("account_id",EXPENSE_ACCOUNT_ID);
+			creditLineItem.put("rate",cashCollectedAmt.toString());
+			creditLineItem.put("quantity","1");
+			creditLineItems = List();
+			creditLineItems.add(creditLineItem);
+
+			creditMap = Map();
+			creditMap.put("vendor_id",vendor_id);
+			creditMap.put("line_items",creditLineItems);
+			if(billDate != "")
+			{
+				creditMap.put("date",billDate);
+			}
+			createCreditResp = invokeurl
+			[
+				url :books_base_url + "/vendorcredits?organization_id=" + organization_id
+				type :POST
+				parameters:creditMap.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zoho_books_connection"
+			];
+			creditRespCode = createCreditResp.get("code");
+			if(creditRespCode != 0)
+			{
+				bookErr = createCreditResp.get("message");
+				info "Vendor Credit creation FAILED: " + bookErr;
+				errMap.put("message","Bill " + bill_id + " was created, but the Cash Collected vendor credit failed: " + bookErr);
+				return errMap.toString();
+			}
+			creditRec = createCreditResp.get("vendorcredit");
+			vendor_credit_id = "";
+			if(creditRec != null)
+			{
+				vendor_credit_id = creditRec.get("vendor_credit_id");
+			}
+			if(vendor_credit_id != "")
+			{
+				applyMap = Map();
+				applyList = List();
+				applyEntry = Map();
+				applyEntry.put("bill_id",bill_id);
+				applyEntry.put("amount_applied",cashCollectedAmt.toString());
+				applyList.add(applyEntry);
+				applyMap.put("bills",applyList);
+				applyCreditResp = invokeurl
+				[
+					url :books_base_url + "/vendorcredits/" + vendor_credit_id + "/bills?organization_id=" + organization_id
+					type :POST
+					parameters:applyMap.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_books_connection"
+				];
+				applyCreditCode = applyCreditResp.get("code");
+				if(applyCreditCode != 0)
+				{
+					bookErr = applyCreditResp.get("message");
+					info "Applying vendor credit to bill FAILED: " + bookErr;
+					errMap.put("message","Bill " + bill_id + " and Vendor Credit " + vendor_credit_id + " were both created, but applying the credit to the bill failed: " + bookErr);
+					return errMap.toString();
+				}
+			}
+		}
+
+		// Step 5: record the actual bank transfer as a Vendor Payment, for
+		// the Final Payable amount (Net Fee minus TDS minus Cash
+		// Collected), declaring the TDS withheld on the same call so the
+		// Bill closes to zero: amount_applied plus tax_amount_withheld
+		// plus the vendor credit applied above should sum to billTotal.
+		finalPayable = (billTotal - tdsAmount - cashCollectedAmt).round(2);
+		if(finalPayable < 0)
+		{
+			errMap.put("message","Computed Final Payable is negative. Bill " + bill_id + " was created but not paid - check the numbers before retrying.");
+			return errMap.toString();
+		}
+
+		paymentBillEntry = Map();
+		paymentBillEntry.put("bill_id",bill_id);
+		paymentBillEntry.put("amount_applied",finalPayable.toString());
+		if(tdsAmount > 0)
+		{
+			paymentBillEntry.put("tax_amount_withheld",tdsAmount.toString());
+		}
+		paymentBillsList = List();
+		paymentBillsList.add(paymentBillEntry);
+
+		paymentMap = Map();
+		paymentMap.put("vendor_id",vendor_id);
+		paymentMap.put("amount",finalPayable.toString());
+		paymentMap.put("paid_through_account_id",PAID_THROUGH_ACCOUNT_ID);
+		if(billDate != "")
+		{
+			paymentMap.put("date",billDate);
+		}
+		if(utrNo != null)
+		{
+			if(utrNo != "")
+			{
+				paymentMap.put("reference_number",utrNo);
+			}
+		}
+		paymentMap.put("bills",paymentBillsList);
+		paymentJsonPayload = paymentMap.toString();
+		info "Vendor Payment jsonPayload sent to Zoho Books: " + paymentJsonPayload;
+
+		createPaymentResp = invokeurl
+		[
+			url :books_base_url + "/vendorpayments?organization_id=" + organization_id
+			type :POST
+			parameters:paymentJsonPayload
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_books_connection"
+		];
+		paymentRespCode = createPaymentResp.get("code");
+		if(paymentRespCode != 0)
+		{
+			bookErr = createPaymentResp.get("message");
+			info "Vendor Payment creation FAILED: " + bookErr;
+			errMap.put("message","Bill " + bill_id + " was created, but recording the payment failed: " + bookErr);
+			return errMap.toString();
+		}
+		paymentRec = createPaymentResp.get("vendorpayment");
+		vendor_payment_id = "";
+		if(paymentRec != null)
+		{
+			vendor_payment_id = paymentRec.get("vendor_payment_id");
+		}
+
+		okMap = Map();
+		okMap.put("code","SUCCESS");
+		okMap.put("message","Bill and payment recorded successfully");
+		okMap.put("bill_id",bill_id);
+		okMap.put("vendor_payment_id",vendor_payment_id);
+		okMap.put("books_vendor_id",vendor_id);
+		okMap.put("bill_total",billTotal);
+		okMap.put("tds_amount",tdsAmount);
+		okMap.put("cash_collected",cashCollectedAmt);
+		okMap.put("final_payable",finalPayable);
+		resultOut = okMap.toString();
+	}
+	catch (mainEx)
+	{
+		info "Exception in main try: " + mainEx.toString();
+		errMap.put("message","Exception: " + mainEx.toString());
+		return errMap.toString();
+	}
+	return resultOut;
+}

@@ -23,7 +23,11 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 | **Vendor** (`vendorTicket`) | `Task_Rejections`, `Invites` (fleet hand-off only) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report` (read for fleet hand-off list, but see note below), `Invites_Report` |
 | **Technician** (`technicianTicket`) | `Task_Rejections` | — | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
 | **Driver** (`driverTicket`) | `Task_Rejections` | — | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
+| **Customer** (`customerPage`) | — | — | — (no direct report/form access at all — see its own section below) |
+| **Vendor Performance** (`vendorPerformance`) | — | `Agent_Ticket_Report`, `Task_Rejections`, `Vendors_Report` | — (read-only, aggregate stats only) |
+| **Agent Performance** (`agentPerformance`) | — | `Agent_Ticket_Report` | — (read-only, aggregate stats only) |
 | **Toggle** (`toggleGetRescue` — superseded, see root `README.md`) | — | — | `Technicians_Report` (this widget was never updated for the `Vendors_Report` unification — see its own section below) |
+| **Operations Manager — Fleet Map** (`opsMap`) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report`, `Agent_Report` | — |
 
 ---
 
@@ -79,6 +83,39 @@ Not needed: `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Client_Report`, `R
 Kept for reference/rollback only; the toggle now lives inside Vendor/Technician/Driver directly (see root `README.md`). This file was **not** updated for the 2026-08-03 `Vendors_Report`/`My_Availability_Vendor` unification (it's dead code, not part of the rebuilt schema) — if it's ever run standalone again, its own `CONFIG` needs `My_Availability_Vendor` repointed to `Vendors_Report` first. As shipped, it checks `Technicians_Report` first, falls back to whatever its own `My_Availability_Vendor` config still points at — **View + Edit** on whichever actually matches the logged-in user's email.
 
 ---
+
+## Customer (`customerPage`)
+
+Public, no-login page, added 2026-09-02 — see its own `README.md` for the full architecture writeup. **Deliberately has zero direct report/form access** — it never calls `ZOHO.CREATOR.DATA`/`.PUBLISH` at all. A real security finding drove this: the standard public-page data-access mechanism (`ZOHO.CREATOR.PUBLISH.getRecordById`) requires publishing the whole report behind one shared token that isn't scoped per-record, which would let any customer enumerate any other customer's data on `Create_Case`. Everything instead routes through 3 narrow Custom APIs (server-side Deluge, its own service-level permissions, not tied to the anonymous visitor at all):
+
+- `getCustomerTicketInfo` — reads a handful of fields off `Create_Case` by record ID.
+- `submitCustomerLocation` — writes `Latitude`/`Longitude` or `DropLocationLat`/`DropLocationLong`.
+- `submitCustomerFeedback` — writes `Cx_Feedback_Score`/`Cx_Feedback_Text`.
+
+Whatever Zoho permission profile governs this public page needs to be able to invoke these 3 Custom APIs — confirm live whether that's automatic (Custom APIs commonly run at the app's own service level regardless of visitor auth) or needs an explicit grant.
+
+## Vendor Performance (`vendorPerformance`)
+
+Standalone widget, added 2026-09-03, for a logged-in vendor's own performance stats. **Read-only** and deliberately never shows individual tickets — only aggregate counts/percentages, per an explicit hand-drawn wireframe rule ("Vendor & mechanic will not be shown case HISTORY").
+
+- **`Vendors_Report` — View.** Resolves the logged-in vendor's own identity (matched by login email), same pattern `vendorTicket` already uses.
+- **`Agent_Ticket_Report` — View.** This vendor's own tickets (`Assigned_Vendor` match) for Completed/Cancelled counts and the ETA/Issue/Feedback percentages.
+- **`Task_Rejections` — View.** This vendor's own rejected/timed-out count (matched by name, same as `vendorTicket`'s own reject-log write).
+
+## Agent Performance (`agentPerformance`)
+
+Standalone widget, added 2026-09-03, for a logged-in agent's own performance stats. **Read-only.**
+
+- **`Agent_Ticket_Report` — View.** Filtered by the new `Created_By_Agent_Email` field (added 2026-09-03, stamped at ticket creation in `getRescueTicket`) to scope every metric to this agent's own tickets. Tickets created before this field existed won't be attributed to any agent — a known, accepted gap for historical data.
+
+## Operations Manager — Fleet Map (`opsMap`) — REMOVED 2026-09-04
+
+Standalone widget, added 2026-08-31, retired 2026-09-04 in favor of `getRescueTicket`'s own in-app "Ops Map" button once both ended up gated identically, then deleted entirely the same day. The access requirements below are kept only as a record of what it needed, in case it's ever rebuilt — `getRescueTicket`'s own in-app Ops Map screen needs the same `Agent_Ticket_Report`/`Vendors_Report`/`Technicians_Report`/`Agent_Report` View access already covered by its own section above, so no separate access setup is needed today.
+
+- `Agent_Ticket_Report` — View. Read only, to compute who's currently "on a case" (live, not a stored flag).
+- `Vendors_Report` — View. Marker data — location, online/offline status, Engagement Type.
+- `Technicians_Report` — View. Same, for technicians/drivers.
+- `Agent_Report` — View. Resolves the logged-in user's own `User_Type`, to gate access to Operations Managers only.
 
 ## Open questions this file doesn't resolve on its own
 

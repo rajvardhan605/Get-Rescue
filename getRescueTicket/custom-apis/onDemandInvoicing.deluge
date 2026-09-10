@@ -1,0 +1,493 @@
+string onDemandInvoicing(string recordId, string referenceNumber, string customerName, string customerPhone, string customerEmail, string gstNumber, string serviceLabel, string totalAmount, string serviceCharges, string cgst, string sgst, string roundOff, string applyTax, string customerPhoneDigits, string expiresAt)
+{
+	organization_id = "60078911104";
+	books_base_url = "https://www.zohoapis.in/books/v3";
+	// Real GST18 Tax Group id, user-confirmed 2026-08-25 directly in Zoho
+	// Books Settings -> Taxes — a group combining CGST 9% + SGST 9%. NOT
+	// the same as IGST18 (an inter-state tax, wrong for this use case) or
+	// the individual CGST-only/SGST-only ids tried earlier (rejected by
+	// Books' own API — see this file's own header comment for the full
+	// two-round debugging history).
+	gst18_tax_id = "3988332000000079033";
+	// Real Tax Exemption reason id, user-confirmed 2026-09-08 via a live
+	// test invoice created directly in Zoho Books (code "TAX") — used
+	// instead of tax_id on the line item when applyTax="false" (explicit
+	// client decision: the Booking Fee invoice should carry no tax at
+	// all). Books requires a line item to carry EITHER a real tax_id OR an
+	// explicit tax_exemption_id — simply omitting tax_id isn't enough on
+	// its own for a GST-registered org, confirmed by the live test's own
+	// response shape (tax_id blank, tax_percentage 0, this exemption id
+	// present).
+	gst_exemption_id = "3988332000000091002";
+	// The exemption reason's own code, also confirmed via that same live
+	// test's response ("tax_exemption_code":"TAX"). Zoho's public API docs
+	// are ambiguous on whether this needs to be sent explicitly alongside
+	// tax_exemption_id on line-item creation (vs. auto-derived from it) —
+	// sent explicitly here to exactly match the one example proven to work,
+	// rather than relying on an unconfirmed assumption either way.
+	gst_exemption_code = "TAX";
+invoiceURL="";
+	// Real bug fixed (user-reported live: invokeCustomApi failed with the
+	// generic {"code":9430,"message":"There is an error while executing
+	// Custom API."} — Zoho's OWN crash message, not one of this script's
+	// graceful JSON error returns). Root cause: everything from here down
+	// used to sit OUTSIDE the try/catch below, so any exception in this
+	// setup code (or in STEP 1's own untested GET-request syntax) escaped
+	// uncaught and surfaced as this opaque code instead of a readable
+	// message. The entire function body is now inside ONE try block, from
+	// here to the very end, so any future failure returns a real message
+	// we can actually act on.
+	try
+	{
+		// Diagnostic log (2026-09-08, actively debugging live: a real
+		// invokeCustomApi() call from the widget sent a confirmed-correct
+		// payload (applyTax:"false", referenceNumber ending "-BF") yet the
+		// resulting invoice still showed CGST/SGST — while a manual Execute-
+		// dialog test with the same shape correctly produced no tax. This
+		// logs exactly what THIS deployed script actually received on a
+		// real call, so a mismatch between "what the browser sent" and
+		// "what Zoho bound into these variables" (or a stale/un-published
+		// version of this script actually being the one invoked) becomes
+		// directly visible in the Custom API's own execution log. Remove
+		// once resolved — see the "remove logs" entry earlier the same day
+		// for why this file is normally log-free.
+		info "onDemandInvoicing received — recordId=" + recordId + " | referenceNumber=" + referenceNumber + " | applyTax=" + applyTax + " | serviceCharges=" + serviceCharges + " | cgst=" + cgst + " | sgst=" + sgst;
+		referenceNumberResolved = referenceNumber;
+		if(referenceNumberResolved == null)
+		{
+			referenceNumberResolved = recordId;
+		}
+		if(referenceNumberResolved == "")
+		{
+			referenceNumberResolved = recordId;
+		}
+
+		// Real bug fixed (user-reported live: "Unable to convert the input
+		// text to decimal") — guard serviceCharges is actually present and
+		// non-blank BEFORE calling toDecimal() on it, so a missing/blank
+		// value returns this script's own clear message instead of a raw
+		// Deluge parse-crash with no context about which field caused it.
+		if(serviceCharges == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"serviceCharges is missing\", \"url\": \"\"}";
+		}
+		if(serviceCharges == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"serviceCharges is EMPTY\", \"url\": \"\"}";
+		}
+		// Real bug fixed (user-reported live: "Unable to convert the input
+		// text to decimal", caught by the outer try/catch but without
+		// saying WHICH value failed) — this narrower try/catch echoes the
+		// actual raw serviceCharges string back in the error message, so
+		// if this fails again we see exactly what value caused it instead
+		// of guessing.
+		try
+		{
+			serviceChargesAmt = serviceCharges.toString().toDecimal();
+		}
+		catch (decimalEx)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"serviceCharges could not be parsed as a decimal - raw value: '" + serviceCharges + "'\", \"url\": \"\"}";
+		}
+		if(serviceChargesAmt <= 0)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"serviceCharges must be > 0\", \"url\": \"\"}";
+		}
+		roundOffAmt = "0";
+		if(roundOff != null)
+		{
+			roundOffAmt = roundOff.toString();
+		}
+
+		descriptionText = serviceLabel;
+		if(descriptionText == null)
+		{
+			descriptionText = "Service Charge";
+		}
+		if(descriptionText == "")
+		{
+			descriptionText = "Service Charge";
+		}
+
+		// STEP 1 — find or create the customer in Zoho Books, by phone.
+		customer_id = "";
+		if(customerPhone != null)
+		{
+			if(customerPhone != "")
+			{
+				searchResp = invokeurl
+				[
+					url :books_base_url + "/contacts?organization_id=" + organization_id + "&phone=" + customerPhone
+					type :GET
+					connection:"zoho_books_connection"
+				];
+				contactsList = searchResp.get("contacts");
+				if(contactsList != null)
+				{
+					if(contactsList.size() > 0)
+					{
+						firstContact = contactsList.get(0);
+						customer_id = firstContact.get("contact_id");
+					}
+				}
+			}
+		}
+		if(customer_id == "")
+		{
+			contactMap = Map();
+			nameForContact = customerName;
+			if(nameForContact == null)
+			{
+				nameForContact = "Customer";
+			}
+			if(nameForContact == "")
+			{
+				nameForContact = "Customer";
+			}
+			contactMap.put("contact_name",nameForContact);
+			if(customerPhone != null)
+			{
+				if(customerPhone != "")
+				{
+					contactMap.put("phone",customerPhone);
+				}
+			}
+			if(customerEmail != null)
+			{
+				if(customerEmail != "")
+				{
+					contactMap.put("email",customerEmail);
+				}
+			}
+			if(gstNumber != null)
+			{
+				if(gstNumber != "")
+				{
+					contactMap.put("gst_no",gstNumber);
+					contactMap.put("gst_treatment","business_gst");
+				}
+			}
+			createContactResp = invokeurl
+			[
+				url :books_base_url + "/contacts?organization_id=" + organization_id
+				type :POST
+				parameters:contactMap.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zoho_books_connection"
+			];
+			newContact = createContactResp.get("contact");
+			if(newContact == null)
+			{
+				createContactErr = createContactResp.get("message");
+				return "{\"code\": \"ERROR\", \"message\": \"Could not find or create customer in Zoho Books: " + createContactErr + "\", \"url\": \"\"}";
+			}
+			customer_id = newContact.get("contact_id");
+		}
+
+		// STEP 2 — one "Service Charge" line item. Two shapes depending on
+		// applyTax (2026-09-08, explicit client decision — see this
+		// function's own header comment for the "no tax_id at all" pitfall
+		// this avoids): tax-inclusive invoices (Remaining Fee, and every
+		// pre-existing caller) get the real GST18 Tax Group as their one
+		// tax_id — Zoho Books itself splits this into CGST 9% + SGST 9%
+		// internally for this intra-state transaction — at the
+		// reverse-calculated rate the caller already backed the tax out of.
+		// Tax-exempt invoices (Booking Fee) get the confirmed tax exemption
+		// id instead, at the FULL rate (nothing to add tax on top of, so
+		// the caller sends the whole amount as serviceCharges, not a
+		// GST-backed-out figure). Round Off applies as the invoice's own
+		// top-level adjustment either way; Place of Supply Karnataka.
+		taxExempt = false;
+		if(applyTax != null)
+		{
+			if(applyTax.toString() == "false")
+			{
+				taxExempt = true;
+			}
+		}
+		// Belt-and-braces fallback (2026-09-08, real live bug: a Booking Fee
+		// invoice still showed CGST/SGST even after this script itself was
+		// redeployed) — Zoho Creator Custom APIs typically require each
+		// parameter to be explicitly (re-)registered in the Custom API's own
+		// setup screen, separate from just being named in this function's
+		// signature. applyTax is a brand-new parameter; if it wasn't
+		// registered there, it silently arrives as null here no matter what
+		// the widget sends, defaulting back to "tax applied" — which is
+		// exactly the symptom reported. referenceNumber is a pre-existing,
+		// already-proven-working parameter (visible correctly on real
+		// invoices' own P.O.# field, e.g. "RSID508006-BF") — its own "-BF"
+		// suffix (added only by Send_Payment_Link, the Booking Fee call —
+		// see widget.html's own comment there) is a second, independent
+		// signal that doesn't depend on any new parameter registration at
+		// all. Either signal alone is now enough to trigger the exemption.
+		if(referenceNumberResolved != null)
+		{
+			if(referenceNumberResolved.toString().contains("-BF"))
+			{
+				taxExempt = true;
+			}
+		}
+		info "onDemandInvoicing — resolved taxExempt=" + taxExempt + " (referenceNumberResolved=" + referenceNumberResolved + ")";
+		lineItem = Map();
+		lineItem.put("description",descriptionText);
+		lineItem.put("quantity","1");
+		// Real per-ticket amount — deliberately NEVER hardcoded, even in the
+		// taxExempt branch below (2026-09-08, explicit user request: "use
+		// hard core line item ... exactly like Test 1"). Test 1's own rate
+		// (20) is specific to that one manual test invoice — hardcoding it
+		// here would charge every real customer a flat ₹20 for their
+		// Booking Fee regardless of the real amount, a genuine billing bug,
+		// not a tax-configuration choice. Flagged rather than silently
+		// done either way.
+		lineItem.put("rate",serviceChargesAmt.toString());
+		if(taxExempt)
+		{
+			// Hardcoded to reference the exact same catalog item ("Test 1",
+			// item_id 3988332000000091063) the user's own live test proved
+			// produces a genuinely tax-exempt invoice — explicit user
+			// request, 2026-09-08. Zoho Books inherits that item's own
+			// account/HSN/unit from the catalog when item_id is set, while
+			// still honoring the description/rate/tax_exemption fields sent
+			// alongside it here (real per-ticket service label and amount,
+			// not the item's own catalog values). tax_exemption_id/code are
+			// kept too, sent directly on the line item as belt-and-braces —
+			// harmless if the item-level config alone already covers it.
+			lineItem.put("item_id","3988332000000091063");
+			lineItem.put("tax_exemption_id",gst_exemption_id);
+			lineItem.put("tax_exemption_code",gst_exemption_code);
+		}
+		else
+		{
+			lineItem.put("tax_id",gst18_tax_id);
+		}
+
+		lineItems = List();
+		lineItems.add(lineItem);
+
+		invoiceMap = Map();
+		invoiceMap.put("customer_id",customer_id);
+		invoiceMap.put("line_items",lineItems);
+		invoiceMap.put("place_of_supply","KA");
+		invoiceMap.put("adjustment",roundOffAmt);
+		invoiceMap.put("adjustment_description","Round Off");
+		invoiceMap.put("reference_number",referenceNumberResolved);
+		jsonPayload = invoiceMap.toString();
+
+		createInvoiceResp = invokeurl
+		[
+			url :books_base_url + "/invoices?organization_id=" + organization_id
+			type :POST
+			parameters:jsonPayload
+			headers:{"Content-Type":"application/json"}
+			connection:"zoho_books_connection"
+		];
+		invoiceRespCode = createInvoiceResp.get("code");
+		if(invoiceRespCode != 0)
+		{
+			errMsg = createInvoiceResp.get("message");
+			return "{\"code\": \"ERROR\", \"message\": \"" + errMsg + "\", \"url\": \"\"}";
+		}
+		invoiceRec = createInvoiceResp.get("invoice");
+		if(invoiceRec == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"No invoice in response\", \"url\": \"\"}";
+		}
+		invoice_id = invoiceRec.get("invoice_id");
+		invoice_number = invoiceRec.get("invoice_number");
+		if(invoice_id == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Invoice ID is NULL\", \"url\": \"\"}";
+		}
+		if(invoice_id == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Invoice ID is EMPTY\", \"url\": \"\"}";
+		}
+		if(invoice_number == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Invoice Number is NULL\", \"url\": \"\"}";
+		}
+		if(invoice_number == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Invoice Number is EMPTY\", \"url\": \"\"}";
+		}
+		invoice_pdf_url = "https://books.zoho.in/invoices/" + invoice_id + "?organization_id=" + organization_id;
+
+		// Real, CONFIRMED Zoho Payments "Payment Links" API (2026-09-10, user
+		// request: "before [the booking amount is sent] we need to generate
+		// the payment link... pass the dynamic account and other details and
+		// then send this payment link on whatsapp" — user provided a real
+		// curl request + real response for this exact endpoint). Replaces
+		// the old Zoho Books "/share/paymentlink" GUESS this block used to
+		// try (never confirmed against any real documented response field
+		// name) with a real, user-confirmed endpoint and response shape. A
+		// link from THIS API is genuinely payable (UPI/Card) — not an
+		// invoice view.
+		// Auth: manual refresh-token -> access-token exchange (explicit user
+		// decision, 2026-09-10: "I don't create connections use the Refresh
+		// token and access token methodology") — deliberately NOT a Zoho
+		// Creator Connection (unlike zoho_books_connection above). REPLACE
+		// the 3 placeholder values below with the real ones from the Zoho
+		// Payments OAuth app's own console (client_id/client_secret from the
+		// app registration, refresh_token from the initial OAuth consent
+		// grant) before this works at all — it fails safely (falls back to
+		// invoice_pdf_url) until then, same as every other not-yet-configured
+		// piece in this file. Token endpoint is Zoho's own standard OAuth v2
+		// issuer (accounts.zoho.in — same regional domain as every other
+		// Zoho API call in this file), shared across all Zoho products, not
+		// specific to Payments.
+		// Real values, user-provided 2026-09-10 (self-client refresh-token
+		// flow, scope ZohoPay.payments.CREATE). scope/redirect_uri are
+		// deliberately NOT sent on this refresh_token grant call below (only
+		// grant_type=refresh_token + these 3 values) — both are only
+		// meaningful on the ORIGINAL authorization_code exchange that first
+		// issued this refresh token, not on a refresh_token grant itself
+		// (standard OAuth2 behavior, not specific to Zoho).
+		zoho_payments_client_id = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		zoho_payments_client_secret = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		zoho_payments_refresh_token = "1000.7b9a45adfe6300ed5fb43cf9d29eef7b.65c3a6df18bedb83f887bf1f4fbc44d6";
+		zoho_payments_account_id = "60078772586";
+		zoho_payments_base_url = "https://payments.zoho.in/api/v1";
+		// return_url fixed (explicit user decision, 2026-09-10: "return url
+		// will be the provided url") — the exact static value from the
+		// user's own original confirmed example, not computed per-ticket.
+		zoho_payments_return_url = "https://creatorapp.zoho.in/getrescued/get-rescue";
+		payment_url = "";
+		try
+		{
+			tokenResp = invokeurl
+			[
+				url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + zoho_payments_refresh_token + "&client_id=" + zoho_payments_client_id + "&client_secret=" + zoho_payments_client_secret + "&grant_type=refresh_token"
+				type :POST
+			];
+			info "onDemandInvoicing — Zoho Payments token refresh raw response: " + tokenResp.toString();
+			access_token = tokenResp.get("access_token");
+			if(access_token == null)
+			{
+				info "onDemandInvoicing — Zoho Payments token refresh returned no access_token (placeholder credentials still in place? see this block's own header comment) — skipping payment link generation this call.";
+			}
+			else
+			{
+				paymentLinkMap = Map();
+				// .toString() on the parsed decimal (not the raw totalAmount
+				// string) — same "always send numeric fields as strings"
+				// convention already used for every other amount in this file
+				// (see lineItem.put("rate",...) above) — Zoho Books' own API in
+				// this exact project already tolerates this, assumed to
+				// transfer to Zoho Payments (same company); flagged, not
+				// silently assumed risk-free.
+				paymentLinkMap.put("amount", totalAmount.toDecimal().toString());
+				paymentLinkMap.put("currency", "INR");
+				if(customerEmail != null)
+				{
+					if(customerEmail != "")
+					{
+						paymentLinkMap.put("email", customerEmail);
+					}
+				}
+				// Bare 10-digit number expected here (confirmed example:
+				// "phone": "8127112543", no "+91"/spaces) — cleaned in the
+				// widget's own onDemandInvoicing() JS wrapper
+				// (customerPhoneDigits), not here — no confirmed-safe way in
+				// this codebase to strip non-digit characters from a string
+				// in Deluge itself.
+				if(customerPhoneDigits != null)
+				{
+					if(customerPhoneDigits != "")
+					{
+						paymentLinkMap.put("phone", customerPhoneDigits);
+						paymentLinkMap.put("phone_country_code", "IN");
+					}
+				}
+				paymentLinkMap.put("reference_id", referenceNumberResolved);
+				paymentLinkMap.put("description", descriptionText);
+				if(expiresAt != null)
+				{
+					if(expiresAt != "")
+					{
+						paymentLinkMap.put("expires_at", expiresAt);
+					}
+				}
+				// Both false deliberately — this function's own caller sends
+				// its OWN WhatsApp message with the link immediately after
+				// this returns; Zoho Payments' own email/SMS notification
+				// would be a second, separate, unrequested message to the
+				// same customer.
+				notifyMap = Map();
+				notifyMap.put("email", false);
+				notifyMap.put("sms", false);
+				paymentLinkMap.put("notify_customer", notifyMap);
+				paymentLinkMap.put("return_url", zoho_payments_return_url);
+				configMap = Map();
+				allowedMethods = List();
+				allowedMethods.add("upi");
+				allowedMethods.add("card");
+				configMap.put("allowed_payment_methods", allowedMethods);
+				paymentLinkMap.put("configurations", configMap);
+				metaList = List();
+				metaEntry = Map();
+				metaEntry.put("key", "Case_ID");
+				metaEntry.put("value", referenceNumberResolved);
+				metaList.add(metaEntry);
+				paymentLinkMap.put("meta_data", metaList);
+
+				createPaymentLinkResp = invokeurl
+				[
+					url :zoho_payments_base_url + "/paymentlinks?account_id=" + zoho_payments_account_id
+					type :POST
+					parameters:paymentLinkMap.toString()
+					headers:{"Content-Type":"application/json", "Authorization":"Zoho-oauthtoken " + access_token}
+				];
+				info "onDemandInvoicing — Zoho Payments payment link raw response: " + createPaymentLinkResp.toString();
+				paymentLinkRespCode = createPaymentLinkResp.get("code");
+				if(paymentLinkRespCode == 0)
+				{
+					paymentLinksRec = createPaymentLinkResp.get("payment_links");
+					if(paymentLinksRec != null)
+					{
+						if(paymentLinksRec.get("url") != null)
+						{
+							payment_url = paymentLinksRec.get("url").toString();
+						}
+					}
+				}
+			}
+		}
+		catch (paymentLinkEx)
+		{
+			info "onDemandInvoicing — Zoho Payments payment link generation failed (non-fatal, falling back to invoice_pdf_url): " + paymentLinkEx.toString();
+		}
+		bestUrl = invoice_pdf_url;
+		if(payment_url != "")
+		{
+			bestUrl = payment_url;
+		}
+
+		// SEND EMAIL (NOT CRITICAL)
+		try
+		{
+			emailParams = Map();
+			emailParams.put("send_customer_statement","false");
+			emailResp = invokeurl
+			[
+				url :books_base_url + "/invoices/" + invoice_id + "/email?organization_id=" + organization_id
+				type :POST
+				parameters:emailParams.toString()
+				headers:{"Content-Type":"application/json"}
+				connection:"zoho_books_connection"
+			];
+		}
+		catch (emailEx)
+		{
+			// swallowed on purpose — email failure must not block the invoice
+			// itself, which is already created and returned successfully
+		}
+
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"url\": \"" + bestUrl + "\", \"payment_url\": \"" + payment_url + "\"}";
+		invoiceURL= successResponse;
+	}
+	catch (mainEx)
+	{
+		return "{\"code\": \"ERROR\", \"message\": \"Exception: " + mainEx.toString() + "\", \"url\": \"\"}";
+	}
+	return invoiceURL ;
+}

@@ -1,0 +1,57 @@
+string getIssueOptions()
+{
+	returnstring = "";
+	try
+	{
+		issueList = List();
+		for each iss in Vehicle_Issue[ID != 0]
+		{
+			displayStatus = "";
+			if(iss.DISPLAY_STATUS != null)
+			{
+				displayStatus = iss.DISPLAY_STATUS.toString();
+			}
+			if(displayStatus.toUpperCase() == "SHOW")
+			{
+				i = Map();
+				i.put("id", iss.ID);
+				issueName = iss.Issue_Name;
+				if(issueName == null)
+				{
+					issueName = "";
+				}
+				if(issueName.toString() == "")
+				{
+					issueName = "Issue " + iss.ID;
+				}
+				i.put("name", issueName);
+				vehicleTypes = "";
+				if(iss.VEHICLE_TYPE != null)
+				{
+					vehicleTypes = iss.VEHICLE_TYPE.toString();
+				}
+				i.put("vehicleTypes", vehicleTypes);
+				issueType = "";
+				if(iss.Issue_Type != null)
+				{
+					issueType = iss.Issue_Type.toString();
+				}
+				i.put("issueType", issueType);
+				issueList.add(i);
+			}
+		}
+		result = Map();
+		result.put("code", "SUCCESS");
+		result.put("issues", issueList);
+		returnstring = result.toString();
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		errResult.put("issues", List());
+		returnstring = errResult.toString();
+	}
+	return returnstring;
+}

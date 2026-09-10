@@ -1,0 +1,738 @@
+<!-- Get-Rescue — Service Request widget (2026-09-09, new; visual refresh +
+     sample-data mode 2026-09-09 later; rebuilt to match a client-provided
+     reference design 2026-09-09 later still)
+
+     Public, no-login widget for getrescued.in's own "Service Request" page
+     (currently a plain single-page form — see this widget's own README for
+     the exact request and the fields it replaces). Runs the SAME way
+     customerPage does: no Zoho session at all, so every Custom API call
+     needs a `public_key` (see CUSTOM_API_PUBLIC_KEYS below — same pattern,
+     same real root cause customerPage hit, see that project's own README).
+
+     3 steps — originally matched a client-provided reference design's own
+     order (Vehicle Details -> Contact Details -> Location), REVERSED
+     2026-09-09 (later, explicit user request: "first step is Contact
+     Details, second step is Vehicle Details") to Contact -> Vehicle ->
+     Location instead; field content within each step is unchanged. A
+     reCAPTCHA-styled placeholder was here too originally but removed
+     2026-09-09 (user request) since it wasn't real bot verification anyway
+     (see this file's own README):
+       1. Contact Details — Full Name, Phone Number, WhatsApp Number, Email
+       2. Vehicle Details — Vehicle (a real picker off Vehicle_Master, via
+          getVehicleOptions — RESTORED 2026-09-09, explicit user request:
+          "vehicle issue and vehicle like we already did in other widgets";
+          replaces the reference-design rebuild's Vehicle Type + free-text
+          Vehicle Make pair), Registration Number, Vehicle Issue (filtered
+          by the selected Vehicle's own Category, same chain
+          getRescueTicket's own vehicleIssuesFor() already uses)
+       3. "Our Services are currently available only in Bengaluru." — Time
+          of Service (NOW/LATER, restored 2026-09-09 for feature parity with
+          the original site form; LATER reveals separate Service Date +
+          Service Time fields), Terms & Conditions (a real link to
+          getrescued.in's own T&C page, opens in a new tab — was a dead
+          placeholder before 2026-09-09), Make a Request. The free-text
+          Location field (with live OpenStreetMap search) that used to sit
+          here was REMOVED entirely 2026-09-09 (explicit user request) —
+          see this file's own README for that entry.
+
+     Vehicle_Status is NOT asked on this form at all (not in the reference)
+     — createServiceRequest.deluge defaults it to "ONROAD" server-side,
+     same as what an urgent website request already implies. Time_of_service
+     WAS in that same "not asked" category originally but is now real (see
+     step 3 above). Vehicle (a required Lookup on Create_Case) is now set
+     directly from the customer's own picked vehicleId — an exact ID lookup,
+     not the earlier best-effort Category-match guess.
+
+     On submit, creates a real Create_Case record — Client is always the
+     "ON DEMAND" walk-in entry, Lead_Source is "Website" (already existed
+     as an option per FIELDS.md, just never used until this widget), Status
+     "SERVICE FEE QUOTE" — the exact same starting point a brand-new
+     agent-created ticket gets, so it shows up on the Agent Portal
+     dashboard and continues through the EXISTING wizard with no
+     special-casing needed anywhere else in that app.
+
+     SHOW_SAMPLE_DATA — was true while the 3 Custom APIs' PublicKey auth
+     wasn't set up yet ("simple just create UI"). Flipped to false 2026-09-09
+     (user request: "please work with dynamic data") now that
+     getIssueOptions/createServiceRequest both have real PublicKey auth +
+     keys filled in below and the mock-confirmation flow was confirmed
+     rendering correctly. Live now: real Custom API calls, real Create_Case
+     tickets. If it ever needs to go back to demo mode (backend down,
+     showing to someone without Zoho access), flip this back to true — every
+     sample-data code path is still here, untouched, just skipped while
+     false. getVehicleOptions is wired back in as of the same day (real
+     vehicle picker restored) — all 3 Custom APIs are actually called now. -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Request</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --signal:#E8541F; --signal-deep:#C43D0F;
+    --ink:#111318; --road:#6B7080; --road-soft:#9BA0AC;
+    --panel:#FFFFFF; --footer-bg:#F0F0EF; --line:#DEDDD8;
+    --go:#1B7A4B; --go-tint:#E3F3EA; --err:#C43D0F; --err-tint:#FBEAEA;
+    --f-disp:'Archivo',system-ui,sans-serif; --f-body:'Public Sans',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--panel);color:var(--ink);font-family:var(--f-body);}
+  .wrap{max-width:680px;margin:0 auto;}
+  .brand{display:flex;align-items:center;justify-content:center;gap:9px;padding:26px 20px 6px;}
+  .brand .tri{width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:20px solid var(--signal);}
+  .brand .name{font-family:var(--f-disp);font-size:20px;font-weight:800;letter-spacing:.02em;}
+
+  .content-area{padding:26px 28px 34px;}
+  h1.title{
+    font-family:var(--f-disp);font-weight:800;font-size:30px;line-height:1.18;
+    text-align:center;margin:0 auto 16px;letter-spacing:-.01em;max-width:30ch;text-wrap:balance;
+  }
+  .title-rule{width:46px;height:3px;background:var(--ink);border-radius:2px;margin:0 auto 34px;}
+
+  .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px;max-width:520px;margin:0 auto;}
+  @media (max-width:520px){ .fgrid{grid-template-columns:1fr;} }
+  .fld{position:relative;}
+  input[type=text], input[type=tel], input[type=email], select{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:8px;
+    font-family:var(--f-body);font-size:14.5px;color:var(--ink);background:var(--panel);
+    appearance:none;-webkit-appearance:none;
+  }
+  select{
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236B7080' stroke-width='1.6' fill='none' fill-rule='evenodd'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 14px center;padding-right:32px;
+  }
+  select:invalid, select.placeholder{ color:var(--road-soft); }
+  input::placeholder{color:var(--road-soft);}
+  input:focus, select:focus{outline:none;border-color:var(--ink);}
+  .issue-fld{
+    border:1.5px solid var(--line);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--road-soft);
+  }
+  .issue-fld.has-options{ padding:12px 12px 6px; }
+  .issue-chips{display:flex;flex-wrap:wrap;gap:8px;}
+  .issue-chip{
+    border:1.5px solid var(--line);border-radius:16px;padding:7px 13px;font-size:12.5px;font-weight:600;
+    cursor:pointer;background:var(--panel);color:var(--ink);transition:.12s;margin-bottom:6px;
+  }
+  .issue-chip.on{background:var(--ink);border-color:var(--ink);color:#fff;}
+
+  /* Searchable Vehicle combo (2026-09-10, explicit user request: "also add
+     search in vehicle select dropdown") — same proven pattern as
+     getRescueTicket's own Client/Vehicle combo (.combo/.combo-input/
+     .combo-dropdown/.combo-opt), ported here since this widget's Vehicle
+     list (every Vehicle_Master record) is long enough that scrolling a
+     plain <select> to find one is impractical — see the screenshot that
+     prompted this. Tokens swapped for this file's own palette (--ink/
+     --line/--road-soft instead of getRescueTicket's --signal/--worktop/
+     --sh-2, which don't exist here). */
+  .combo{position:relative;}
+  .combo-input{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:8px;
+    font-family:var(--f-body);font-size:14.5px;color:var(--ink);background:var(--panel);outline:0;
+  }
+  .combo-input:focus{border-color:var(--ink);}
+  .combo-input::placeholder{color:var(--road-soft);}
+  .combo-dropdown{
+    position:absolute;left:0;right:0;top:calc(100% + 6px);background:var(--panel);border:1.5px solid var(--line);
+    border-radius:8px;box-shadow:0 12px 30px rgba(17,19,24,.14);z-index:20;max-height:240px;overflow-y:auto;
+    -webkit-overflow-scrolling:touch;display:none;
+  }
+  .combo-dropdown.on{display:block;}
+  .combo-opt{padding:10px 14px;font-size:13.5px;cursor:pointer;border-top:1px solid var(--line);}
+  .combo-opt:first-child{border-top:0;}
+  .combo-opt:hover, .combo-opt.hi{background:var(--footer-bg);}
+  .combo-empty{padding:10px 14px;font-size:12.5px;color:var(--road-soft);}
+
+  .steps{display:flex;align-items:center;justify-content:center;gap:9px;margin:6px 0 30px;}
+  .step-dot{width:9px;height:9px;border-radius:50%;background:var(--line);}
+  .step-dot.active, .step-dot.done{background:var(--ink);}
+
+  .err-text{font-size:12.5px;color:var(--err);font-weight:600;margin:14px auto 0;max-width:520px;display:none;}
+
+  .tnc-row{display:flex;align-items:flex-start;gap:9px;font-size:13.5px;color:var(--ink);margin:20px auto 0;max-width:520px;line-height:1.4;}
+  .tnc-row input{width:auto;margin-top:3px;accent-color:var(--ink);}
+  .tnc-row a{color:var(--ink);text-decoration:underline;font-weight:600;}
+
+  /* Time of Service (2026-09-09) — NOW/LATER radio + conditional Service
+     Date/Service Time, matching the original getrescued.in site form this
+     widget is replacing (feature-parity request; the new widget had
+     dropped this entirely during the earlier reference-design rebuild). */
+  .tos-group{max-width:520px;margin:0 auto 20px;}
+  .tos-label{font-size:13px;font-weight:700;color:var(--ink);margin-bottom:11px;}
+  .tos-label .req{color:var(--signal);}
+  .tos-options{display:flex;gap:26px;}
+  .radio-opt{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink);cursor:pointer;}
+  .radio-opt input{width:auto;accent-color:var(--ink);}
+  .fld-label{display:block;font-size:12px;font-weight:600;color:var(--road);margin-bottom:7px;}
+  input[type=date], input[type=time]{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:8px;
+    font-family:var(--f-body);font-size:14.5px;color:var(--ink);background:var(--panel);
+  }
+
+
+  .footer-bar{
+    /* Background removed 2026-09-10 (explicit user request, screenshot of
+       the grey strip behind the Next/Back buttons) — was var(--footer-bg),
+       now transparent so it blends into the page instead of showing as its
+       own band. --footer-bg itself is left untouched (still used by
+       .case-id's own unrelated background further down). */
+    background:transparent;padding:20px 28px;display:flex;align-items:center;gap:16px;
+  }
+  .footer-bar .back-link{
+    font-family:var(--f-body);font-weight:600;font-size:13.5px;color:var(--road);text-decoration:none;
+    border-bottom:1px dashed var(--road-soft);cursor:pointer;white-space:nowrap;
+  }
+  .footer-bar .spacer{flex:1;}
+  .btn{
+    font-family:var(--f-disp);font-weight:700;font-size:14.5px;border:none;border-radius:8px;
+    padding:13px 30px;cursor:pointer;background:var(--signal);color:#fff;
+  }
+  .btn:hover{background:var(--signal-deep);}
+  .btn:disabled{background:#F1B99E;cursor:not-allowed;}
+
+  .success-wrap{padding:50px 28px 40px;text-align:center;}
+  .success-wrap .ring{
+    width:54px;height:54px;border-radius:50%;background:var(--go-tint);color:var(--go);
+    display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:26px;
+  }
+  .success-wrap p{font-size:14px;color:var(--road);line-height:1.55;margin:0 auto 18px;max-width:38ch;}
+  .case-id{
+    font-family:var(--f-disp);font-size:19px;font-weight:800;letter-spacing:.03em;
+    background:var(--footer-bg);border-radius:8px;padding:12px;display:inline-block;min-width:180px;
+    font-variant-numeric:tabular-nums;
+  }
+  .state-err{background:var(--err-tint);border:1px solid #F1C2C2;color:var(--err);border-radius:10px;padding:15px;font-size:13.5px;margin:20px 28px;}
+  .loading{text-align:center;color:var(--road);padding:60px 0;font-size:14px;}
+  .sample-flag{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;color:var(--road-soft);text-transform:uppercase;letter-spacing:.05em;margin-top:18px;}
+  .sample-flag::before{content:"◆";color:var(--signal);font-size:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><div class="tri"></div><div class="name">RESCUE</div></div>
+  <div id="content"><div class="loading">Loading…</div></div>
+</div>
+
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<script>
+const $=(id)=>document.getElementById(id);
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// See this file's own top-of-file comment for the full "why" — flip to
+// false once getIssueOptions/createServiceRequest have real PublicKey auth
+// configured below. getVehicleOptions is no longer used by this widget.
+const SHOW_SAMPLE_DATA = false;
+const SAMPLE_ISSUES = [
+  { id:"i1", name:"Battery Jumpstart", vehicleTypes:"2W,4W" },
+  { id:"i2", name:"Flat Tyre / Puncture", vehicleTypes:"2W,4W" },
+  { id:"i3", name:"Chain Slip", vehicleTypes:"2W" },
+  { id:"i4", name:"Kick-Start Failure", vehicleTypes:"2W" },
+  { id:"i5", name:"Towing Required", vehicleTypes:"4W" },
+  { id:"i6", name:"AC Not Cooling", vehicleTypes:"4W" },
+  { id:"i7", name:"Cable Cut", vehicleTypes:"4W" }
+];
+// Real vehicle picker restored 2026-09-09 — sample rows for demo mode,
+// same shape getVehicleOptions.deluge actually returns ({id, name, category}).
+const SAMPLE_VEHICLES = [
+  { id:"v1", name:"Honda Activa", category:"2W" },
+  { id:"v2", name:"Bajaj Pulsar", category:"2W" },
+  { id:"v3", name:"Maruti Suzuki Swift", category:"4W" },
+  { id:"v4", name:"Hyundai Creta", category:"4W" }
+];
+
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+
+// Custom API "PublicKey" auth — same real requirement/mechanism customerPage
+// hit (see that project's own README, "invalid public key" / 401 story).
+const CUSTOM_API_PUBLIC_KEYS = {
+  // 2026-09-09 — real keys, user-provided (from each Custom API's own
+  // PublicKey-auth endpoint URL in Zoho Creator).
+  getIssueOptions: "CAgmg8MSHxQdzS7pHeSggUNWH",
+  createServiceRequest: "U63tKzuTXMPyVWHAReAbMJg7S",
+  // getVehicleOptions wired back in 2026-09-09 (real vehicle picker
+  // restored) — this key was already on record from earlier, just unused
+  // while this API was dormant.
+  getVehicleOptions: "tZenZ7W1EXgKOJZshdrJsKetF"
+};
+async function callCustomApi(apiName, payload){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[Get-Rescue SR] no invokeCustomApi method found"); return null; }
+  const config = { api_name: apiName, workspace_name: "getrescued", http_method: "POST", content_type: "application/json" };
+  // Real bug fixed 2026-09-10, live: getVehicleOptions/getIssueOptions (both
+  // ZERO-argument Custom APIs, called with an empty {} payload) failed with
+  // a client-side "Improper Configuration..!!" error from Zoho's own widget
+  // SDK — this exact error, already root-caused and fixed once before in
+  // this project (see getRescueTicket/README.md, 2026-08-31,
+  // checkOperationsManagerPermission()'s own matching story): the SDK
+  // rejects a PRESENT-BUT-EMPTY payload object, even though `payload` is
+  // documented as optional. Only attach it when there's actually something
+  // in it. createServiceRequest and every other real-payload call are
+  // unaffected either way — this is additive, not a behavior change for them.
+  if(payload && Object.keys(payload).length){ config.payload = payload; }
+  const publicKey = CUSTOM_API_PUBLIC_KEYS[apiName];
+  if(publicKey) config.public_key = publicKey;
+  else console.warn("[Get-Rescue SR]", apiName, "has no public_key configured — this call will very likely fail with a 9370 'invalid public key' error. See CUSTOM_API_PUBLIC_KEYS near the top of this file.");
+  console.error("[Get-Rescue SR] callCustomApi — about to call", apiName, "| payload:", payload, "| public_key attached:", !!publicKey);
+  try{
+    const res = await fn(config);
+    let data = res;
+    if(data && typeof data.result==="string"){
+      try{ data = JSON.parse(data.result); }
+      catch(e){ console.warn("[Get-Rescue SR] response.result wasn't valid JSON", e); return null; }
+    }
+    return data;
+  }catch(e){
+    console.warn("[Get-Rescue SR]", apiName, "failed", e);
+    return null;
+  }
+}
+
+/* every phone number in this app is an Indian number — mirrors
+   getRescueTicket's own formatIndianPhone() exactly. */
+function formatIndianPhone(v){
+  if(!v) return "";
+  const s=String(v).trim();
+  if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
+  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  return "+91"+digits;
+}
+function pad(n){ return n<10 ? "0"+n : ""+n; }
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+// Same shape as getRescueTicket's own fmtDateTime12() — Computed_Service_Time
+// needs to match what that field already successfully accepts elsewhere.
+// Used for "NOW" (now + 30 min) and, since 2026-09-09, for a "LATER"
+// Service Date + Service Time selection too (combined via
+// combineServiceDateTime() below before being formatted here).
+function fmtDateTime12(d){
+  const h24=d.getHours(); const ampm=h24<12?"AM":"PM"; const h12=(h24%12)||12;
+  return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(h12)+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())+" "+ampm;
+}
+// Combines the separate Service Date (<input type=date>, "YYYY-MM-DD") and
+// Service Time (<input type=time>, "HH:MM") fields into one Date object —
+// two separate fields (2026-09-09, explicit user request, matching the
+// original getrescued.in site form) rather than getRescueTicket's own
+// single datetime-local picker convention; kept as two fields here since
+// that's what was explicitly asked for. Returns null if either piece is
+// missing or the combined value doesn't parse.
+function combineServiceDateTime(dateStr, timeStr){
+  if(!dateStr || !timeStr) return null;
+  const d = new Date(dateStr+"T"+timeStr+":00");
+  return isNaN(d.getTime()) ? null : d;
+}
+
+let OPTIONS = { issues: [], vehicles: [] };
+let STEP = 0; // 0,1,2
+const STATE = {
+  // Real vehicle picker restored 2026-09-09 (explicit user request: "vehicle
+  // issue and vehicle like we already did in other widgets") — vehicleId is
+  // a real Vehicle_Master record ID (matching getRescueTicket's own Vehicle
+  // field), replacing the earlier fixed vehicleType (2W/4W) + free-text
+  // vehicleMake pair from the reference-design rebuild.
+  vehicleId:"", vehicleRegNumber:"", issueIds:[],
+  customerName:"", phone:"", whatsappNumber:"", email:"",
+  tncAccepted:false,
+  timeOfService:"NOW", serviceDate:"", serviceTime:""
+};
+const TOTAL_STEPS = 3;
+
+function renderStepsDots(){
+  let h="";
+  for(let i=0;i<TOTAL_STEPS;i++){
+    h += '<div class="step-dot'+(i<=STEP?" active":"")+'"></div>';
+  }
+  return '<div class="steps">'+h+'</div>';
+}
+
+// Same defensive multi-value normalizer getRescueTicket's own valuesOf()
+// exists for — a multiselect field can come back as an array, a
+// comma-separated string, or a single bare value depending on context.
+function valuesOf(v){
+  if(v==null) return [];
+  if(Array.isArray(v)) return v.map(String).map(s=>s.trim()).filter(Boolean);
+  return String(v).split(",").map(s=>s.trim()).filter(Boolean);
+}
+// Filters by a Vehicle Type string (2W/4W) — unchanged logic from the
+// reference-design rebuild, just fed a different source now: the selected
+// real Vehicle's own Category (via categoryForVehicle() below) instead of a
+// directly-picked Vehicle Type dropdown.
+function issuesForType(vehicleType){
+  if(!vehicleType) return [];
+  const matches = OPTIONS.issues.filter(function(iss){
+    const types = valuesOf(iss.vehicleTypes).map(function(t){ return t.toUpperCase(); });
+    return types.indexOf(vehicleType.toUpperCase())>=0;
+  });
+  // Diagnostic added 2026-09-10 (live report: "No issues configured for
+  // this vehicle" for Maruti Suzuki S-Presso) — same shape as
+  // getRescueTicket's own confirmed-working vehicleIssuesFor()'s matching
+  // warn(), which this was modeled on. Logs the exact category being
+  // searched for and every issue's own raw vehicleTypes, so a real data gap
+  // (e.g. this vehicle's Category not matching any Vehicle_Issue's
+  // VEHICLE_TYPE) is visible in the console instead of just the generic
+  // "no issues" screen.
+  if(!matches.length){
+    console.error("[Get-Rescue SR] issuesForType — 0 of", OPTIONS.issues.length, "issues matched vehicleType", JSON.stringify(vehicleType), "— every fetched issue's own vehicleTypes:", OPTIONS.issues.map(function(i){ return {issue:i.name, vehicleTypes:i.vehicleTypes}; }));
+  }
+  return matches;
+}
+// Real vehicle picker restored 2026-09-09 — same "Vehicle -> Category ->
+// matching Issue" chain getRescueTicket's own vehicleIssuesFor() already
+// uses, just resolved here from OPTIONS.vehicles (fetched via
+// getVehicleOptions) instead of a form field's own live record.
+function categoryForVehicle(vehicleId){
+  if(!vehicleId) return "";
+  const v = OPTIONS.vehicles.find(function(x){ return String(x.id)===String(vehicleId); });
+  if(v && !v.category){
+    console.error("[Get-Rescue SR] categoryForVehicle — vehicle", JSON.stringify(v.name), "(id "+vehicleId+") has no Category value from getVehicleOptions.");
+  }
+  return v ? (v.category||"") : "";
+}
+
+// Searchable Vehicle combo (2026-09-10, explicit user request: "also add
+// search in vehicle select dropdown") — ported from getRescueTicket's own
+// confirmed-working Client/Vehicle wireCombo(), trimmed to this widget's
+// single vehicle field (OPTIONS.vehicles / STATE.vehicleId instead of a
+// generic field-definition system). Wired fresh every renderStep2() call,
+// same as every other field handler in this widget.
+function wireVehicleCombo(){
+  const input=$("f_vehicle"), dd=$("f_vehicle_dd");
+  if(!input || !dd) return;
+  let activeIdx=-1, curMatches=[];
+  function labelFor(id){
+    const v = OPTIONS.vehicles.find(function(x){ return String(x.id)===String(id); });
+    return v ? v.name : "";
+  }
+  function applyActive(){
+    dd.querySelectorAll(".combo-opt").forEach(function(el,i){ el.classList.toggle("hi", i===activeIdx); });
+    const hiEl=dd.querySelector(".combo-opt.hi");
+    if(hiEl && hiEl.scrollIntoView) hiEl.scrollIntoView({block:"nearest"});
+  }
+  function pick(v){
+    input.value=v.name;
+    STATE.vehicleId=v.id;
+    STATE.issueIds=[];
+    dd.classList.remove("on");
+    renderStep2();
+  }
+  function renderList(filter){
+    const q=(filter||"").trim().toLowerCase();
+    const matches = q ? OPTIONS.vehicles.filter(function(v){ return v.name.toLowerCase().indexOf(q)!==-1; }) : OPTIONS.vehicles;
+    curMatches=matches;
+    activeIdx = matches.length ? 0 : -1; // auto-highlight the top match so Enter alone picks it
+    dd.innerHTML = matches.length
+      ? matches.map(function(v){ return '<div class="combo-opt" data-id="'+esc(v.id)+'">'+esc(v.name)+'</div>'; }).join("")
+      : '<div class="combo-empty">No matches</div>';
+    dd.querySelectorAll(".combo-opt").forEach(function(el){
+      el.onmousedown=function(e){
+        e.preventDefault();
+        const v=matches.find(function(m){ return String(m.id)===el.dataset.id; });
+        if(v) pick(v);
+      };
+    });
+    dd.classList.add("on");
+    applyActive();
+  }
+  input.addEventListener("focus", function(){ renderList(""); });
+  input.addEventListener("input", function(){ renderList(input.value); });
+  input.addEventListener("keydown", function(e){
+    if(!dd.classList.contains("on") || !curMatches.length) return;
+    if(e.key==="ArrowDown"){ e.preventDefault(); activeIdx=Math.min(activeIdx+1, curMatches.length-1); applyActive(); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); activeIdx=Math.max(activeIdx-1, 0); applyActive(); }
+    else if(e.key==="Enter"){ if(activeIdx>=0 && curMatches[activeIdx]){ e.preventDefault(); pick(curMatches[activeIdx]); } }
+    else if(e.key==="Escape"){ dd.classList.remove("on"); }
+  });
+  input.addEventListener("blur", function(){
+    setTimeout(function(){ dd.classList.remove("on"); input.value=labelFor(STATE.vehicleId); }, 150);
+  });
+}
+
+async function boot(){
+  if(SHOW_SAMPLE_DATA){
+    console.error("[Get-Rescue SR] boot() — SHOW_SAMPLE_DATA is true, using sample vehicle/issue data instead of live Custom API calls.");
+    OPTIONS.vehicles = SAMPLE_VEHICLES;
+    OPTIONS.issues = SAMPLE_ISSUES;
+    renderStep();
+    return;
+  }
+  // Both fetched in parallel (2026-09-09, real vehicle picker restored) —
+  // same Promise.all shape this widget used before the reference-design
+  // rebuild made Vehicle Type a fixed list.
+  const [vehRes, issRes] = await Promise.all([
+    callCustomApi("getVehicleOptions", {}),
+    callCustomApi("getIssueOptions", {})
+  ]);
+  // Real gap fixed 2026-09-10 (live "Couldn't load the request form" report
+  // with nothing to diagnose it by) — callCustomApi() only ever logged the
+  // OUTGOING request ("about to call..."), never what actually came back.
+  // This is getVehicleOptions' first real live exercise (previously
+  // dormant/unused before the vehicle-picker restoration) and the most
+  // likely single point of failure — same class of issue as customerPage's
+  // own confirmed-live "invalid public key" (code 9370) story: a Custom
+  // API's PublicKey auth can be off in Zoho even though the matching key is
+  // already sitting in CUSTOM_API_PUBLIC_KEYS here in the widget. This log
+  // makes the actual code/message visible in the console either way,
+  // instead of just the same generic screen for every possible cause.
+  console.error("[Get-Rescue SR] boot() — getVehicleOptions result:", vehRes, "| getIssueOptions result:", issRes);
+  if(vehRes && vehRes.code==="SUCCESS" && issRes && issRes.code==="SUCCESS"){
+    OPTIONS.vehicles = vehRes.vehicles||[];
+    OPTIONS.issues = issRes.issues||[];
+  } else {
+    console.error("[Get-Rescue SR] boot() — falling back to the error screen because one or both calls failed. vehRes null/failed:", !vehRes || vehRes.code!=="SUCCESS", "| issRes null/failed:", !issRes || issRes.code!=="SUCCESS");
+    $("content").innerHTML = '<div class="state-err">Couldn\'t load the request form right now — please refresh the page, or call 9986 500 500 to book directly.</div>';
+    return;
+  }
+  renderStep();
+}
+
+function renderStep(){
+  if(STEP===0) renderStep1();
+  else if(STEP===1) renderStep2();
+  else renderStep3();
+}
+
+// Step order reversed 2026-09-09 (explicit user request: "first step is
+// Contact Details, second step is Vehicle Details") — reverses the earlier
+// 2026-09-09 reference-design reorder (Vehicle -> Contact -> Location). The
+// STEP-index-to-function mapping in renderStep() is unchanged (renderStep1
+// for STEP 0, renderStep2 for STEP 1, renderStep3 for STEP 2) — only which
+// content each function renders has swapped, so renderStep3's own "Back"
+// button (STEP=1) still correctly lands on Vehicle Details either way.
+function renderStep1(){
+  $("content").innerHTML =
+    '<div class="content-area">'+
+      '<h1 class="title">Contact Details</h1><div class="title-rule"></div>'+
+      renderStepsDots()+
+      '<div class="fgrid">'+
+        '<div class="fld"><input type="text" id="f_name" placeholder="Full Name*" value="'+esc(STATE.customerName)+'"></div>'+
+        '<div class="fld"><input type="tel" id="f_phone" placeholder="Phone Number*" value="'+esc(STATE.phone)+'"></div>'+
+        '<div class="fld"><input type="tel" id="f_wa" placeholder="WhatsApp Number" value="'+esc(STATE.whatsappNumber)+'"></div>'+
+        '<div class="fld"><input type="email" id="f_email" placeholder="Email" value="'+esc(STATE.email)+'"></div>'+
+      '</div>'+
+      '<div class="err-text" id="err1"></div>'+
+    '</div>'+
+    '<div class="footer-bar"><div class="spacer"></div><button class="btn" id="next1Btn">Next</button></div>';
+
+  $("next1Btn").onclick = function(){
+    const name=$("f_name").value.trim(), phone=$("f_phone").value.trim();
+    if(!name || !phone){
+      $("err1").style.display="block";
+      $("err1").textContent = "Name and Phone are required.";
+      return;
+    }
+    STATE.customerName=name; STATE.phone=phone;
+    STATE.whatsappNumber=$("f_wa").value.trim(); STATE.email=$("f_email").value.trim();
+    STEP=1; renderStep();
+  };
+}
+
+function renderStep2(){
+  // Real vehicle picker restored 2026-09-09 (explicit user request:
+  // "vehicle issue and vehicle like we already did in other widgets") —
+  // Vehicle Issue is now filtered by the SELECTED VEHICLE's own Category
+  // (categoryForVehicle()), not a directly-picked Vehicle Type dropdown.
+  const category = categoryForVehicle(STATE.vehicleId);
+  const issues = issuesForType(category);
+  const issueBoxHtml = !STATE.vehicleId
+    ? '<div class="issue-fld">Select a vehicle first</div>'
+    : (issues.length===0
+      ? '<div class="issue-fld">No issues configured for this vehicle — call 9986 500 500 and we\'ll take it from there.</div>'
+      : '<div class="issue-fld has-options"><div class="issue-chips" id="issueChips">'+issues.map(function(iss){
+          const on = STATE.issueIds.indexOf(String(iss.id))>=0;
+          return '<div class="issue-chip'+(on?" on":"")+'" data-id="'+esc(iss.id)+'">'+esc(iss.name)+'</div>';
+        }).join("")+'</div></div>');
+  // Searchable Vehicle combo (2026-09-10) — replaces the plain native
+  // <select> with a text input + filtered dropdown (see wireVehicleCombo()
+  // below), same pattern as getRescueTicket's own Client/Vehicle combo.
+  // Long list of Vehicle_Master records made scrolling a plain <select>
+  // impractical — see this file's own CSS comment for the fuller rationale.
+  const selectedVehicleName = STATE.vehicleId
+    ? ((OPTIONS.vehicles.find(function(v){ return String(v.id)===String(STATE.vehicleId); })||{}).name||"")
+    : "";
+  $("content").innerHTML =
+    '<div class="content-area">'+
+      '<h1 class="title">Vehicle Details</h1><div class="title-rule"></div>'+
+      renderStepsDots()+
+      '<div class="fgrid">'+
+        '<div class="fld"><div class="combo">'+
+          '<input type="text" id="f_vehicle" class="combo-input" autocomplete="off" placeholder="Search Vehicle…" value="'+esc(selectedVehicleName)+'">'+
+          '<div class="combo-dropdown" id="f_vehicle_dd"></div>'+
+        '</div></div>'+
+        '<div class="fld"><input type="text" id="f_reg" placeholder="Registration Number" value="'+esc(STATE.vehicleRegNumber)+'"></div>'+
+        '<div class="fld">'+issueBoxHtml+'</div>'+
+      '</div>'+
+      '<div class="err-text" id="err2"></div>'+
+    '</div>'+
+    '<div class="footer-bar"><a class="back-link" id="back2Btn">&larr; Back</a><div class="spacer"></div><button class="btn" id="next2Btn">Next</button></div>';
+
+  wireVehicleCombo();
+  const chips = $("issueChips");
+  if(chips){
+    chips.querySelectorAll(".issue-chip").forEach(function(chip){
+      chip.onclick = function(){
+        const id = chip.dataset.id;
+        const idx = STATE.issueIds.indexOf(id);
+        if(idx>=0) STATE.issueIds.splice(idx,1); else STATE.issueIds.push(id);
+        renderStep2();
+      };
+    });
+  }
+  $("back2Btn").onclick = function(){ STEP=0; renderStep(); };
+  $("next2Btn").onclick = function(){
+    STATE.vehicleRegNumber = $("f_reg").value.trim();
+    // Vehicle Issue validation removed 2026-09-10 (explicit user request:
+    // "remove vehicle issue validation") — Vehicle is still required
+    // (unchanged), picking an issue is now optional. createServiceRequest.deluge's
+    // own matching "at least one issue" guard was removed the same way, so
+    // an empty selection actually reaches the ticket instead of being
+    // rejected server-side.
+    if(!STATE.vehicleId){
+      $("err2").style.display="block";
+      $("err2").textContent = "Please select a vehicle.";
+      return;
+    }
+    STEP=2; renderStep();
+  };
+}
+
+// Location field + its live OpenStreetMap Nominatim search removed
+// entirely 2026-09-09 (explicit user request: "remove location field from
+// third step") — this whole block (locationSearchInput()/runLocationSearch(),
+// the debounced Nominatim fetch, the suggestion dropdown) is now dead code
+// with nothing left to call it, so it's deleted rather than left unused.
+// STATE.location, the "location-wrap"/"location-results"/"location-item"/
+// "location-attrib" CSS, and the nominatim.openstreetmap.org CSP entry in
+// plugin-manifest.json were removed the same way — see this file's own
+// README for the full entry.
+
+function renderStep3(){
+  const isLater = STATE.timeOfService==="LATER";
+  $("content").innerHTML =
+    '<div class="content-area">'+
+      '<h1 class="title">Our Services are currently available only in Bengaluru.</h1><div class="title-rule"></div>'+
+      renderStepsDots()+
+      '<div class="tos-group">'+
+        '<div class="tos-label">Time of service <span class="req">*</span></div>'+
+        '<div class="tos-options">'+
+          '<label class="radio-opt"><input type="radio" name="f_tos" value="NOW" '+(!isLater?"checked":"")+'><span>NOW</span></label>'+
+          '<label class="radio-opt"><input type="radio" name="f_tos" value="LATER" '+(isLater?"checked":"")+'><span>LATER</span></label>'+
+        '</div>'+
+      '</div>'+
+      (isLater ?
+        '<div class="fgrid">'+
+          '<div class="fld"><label class="fld-label">Service Date</label><input type="date" id="f_sdate" value="'+esc(STATE.serviceDate)+'"></div>'+
+          '<div class="fld"><label class="fld-label">Service Time</label><input type="time" id="f_stime" value="'+esc(STATE.serviceTime)+'"></div>'+
+        '</div>'
+      : '')+
+      '<div class="tnc-row"><input type="checkbox" id="f_tnc" '+(STATE.tncAccepted?"checked":"")+'><span>I accept the <a href="https://www.getrescued.in/terms-and-conditions" target="_blank" rel="noopener">Terms and Conditions</a></span></div>'+
+      '<div class="err-text" id="err3"></div>'+
+    '</div>'+
+    '<div class="footer-bar"><a class="back-link" id="back3Btn">&larr; Back</a><div class="spacer"></div><button class="btn" id="submitBtn">Make a Request</button></div>';
+
+  document.querySelectorAll('input[name="f_tos"]').forEach(function(r){
+    r.onchange = function(){
+      // Capture whatever's already been typed (date/time) before this
+      // re-render wipes and rebuilds the DOM — same pattern f_vehicle.onchange
+      // already uses on Step 2 for issueIds/vehicleId.
+      if(isLater){ STATE.serviceDate=$("f_sdate").value; STATE.serviceTime=$("f_stime").value; }
+      STATE.timeOfService = this.value;
+      renderStep3();
+    };
+  });
+  $("back3Btn").onclick = function(){ STEP=1; renderStep(); };
+  $("submitBtn").onclick = onSubmit;
+}
+
+async function onSubmit(){
+  STATE.tncAccepted = $("f_tnc").checked;
+  // Service Date/Time required only when LATER is chosen (2026-09-09) — the
+  // fields don't even exist in the DOM when timeOfService is NOW.
+  let computedServiceTimeDate = null;
+  if(STATE.timeOfService==="LATER"){
+    STATE.serviceDate = $("f_sdate").value;
+    STATE.serviceTime = $("f_stime").value;
+    computedServiceTimeDate = combineServiceDateTime(STATE.serviceDate, STATE.serviceTime);
+    if(!computedServiceTimeDate){
+      $("err3").style.display="block"; $("err3").textContent="Please select a Service Date and Service Time.";
+      return;
+    }
+  }
+  if(!STATE.tncAccepted){
+    $("err3").style.display="block"; $("err3").textContent="Please accept the Terms and Conditions to continue.";
+    return;
+  }
+  $("submitBtn").disabled=true; $("submitBtn").textContent="Submitting…";
+  if(SHOW_SAMPLE_DATA){
+    // Mock confirmation (2026-09-09) — no real ticket is created while
+    // SHOW_SAMPLE_DATA is true. Same visual shape the real success screen
+    // uses below, plus a small "sample" flag so this is never mistaken for
+    // a real confirmation.
+    await new Promise(function(r){ setTimeout(r, 500); });
+    const sampleRef = "RSID"+Math.floor(100000+Math.random()*899999);
+    $("content").innerHTML =
+      '<div class="success-wrap"><div class="ring">✓</div>'+
+      '<p>Thanks — our team will call '+esc(STATE.phone)+' shortly to confirm.</p>'+
+      '<div class="case-id">'+esc(sampleRef)+'</div>'+
+      '<div><span class="sample-flag">Sample confirmation — no real ticket created</span></div></div>';
+    return;
+  }
+  // NOW -> "now + 30 min" (unchanged default); LATER -> the customer's own
+  // chosen Service Date + Service Time, combined and formatted the same
+  // way so createServiceRequest.deluge's Computed_Service_Time write needs
+  // no change either way.
+  const computedServiceTime = STATE.timeOfService==="LATER"
+    ? fmtDateTime12(computedServiceTimeDate)
+    : fmtDateTime12(new Date(Date.now()+30*60*1000));
+  const payload = {
+    customerName: STATE.customerName,
+    phone: formatIndianPhone(STATE.phone),
+    whatsappNumber: STATE.whatsappNumber ? formatIndianPhone(STATE.whatsappNumber) : "",
+    email: STATE.email,
+    // Real vehicle picker restored 2026-09-09 — vehicleId (a real
+    // Vehicle_Master record ID) replaces the earlier vehicleType/vehicleMake
+    // pair; createServiceRequest.deluge's own signature changed to match.
+    vehicleId: STATE.vehicleId,
+    vehicleRegNumber: STATE.vehicleRegNumber,
+    vehicleIssueIds: STATE.issueIds.join(","),
+    // Location field removed from the widget 2026-09-09 (explicit user
+    // request) — sent as "" rather than dropping the key entirely, so
+    // createServiceRequest.deluge's own customerLocation parameter (still
+    // registered in the Custom API's setup screen in Zoho) keeps receiving
+    // a value of the expected type instead of undefined. Harmless no-op on
+    // the Deluge side (ifnull(customerLocation,"") already handles blank).
+    customerLocation: "",
+    // Real value now (2026-09-09) — was previously always "NOW" server-side
+    // since this form didn't ask at all; createServiceRequest.deluge's own
+    // Time_of_service write now uses this instead of a hardcoded default.
+    timeOfService: STATE.timeOfService,
+    computedServiceTime: computedServiceTime
+  };
+  const res = await callCustomApi("createServiceRequest", payload);
+  if(res && res.code==="SUCCESS"){
+    $("content").innerHTML =
+      '<div class="success-wrap"><div class="ring">✓</div>'+
+      '<p>Thanks — our team will call '+esc(STATE.phone)+' shortly to confirm.</p>'+
+      '<div class="case-id">'+esc(res.caseId||"")+'</div></div>';
+  } else {
+    $("submitBtn").disabled=false; $("submitBtn").textContent="Make a Request";
+    $("err3").style.display="block";
+    $("err3").textContent = (res && res.message) ? res.message : "Something went wrong submitting your request — please try again, or call 9986 500 500.";
+  }
+}
+
+function waitForSDK(a){
+  a=a||0;
+  if(SHOW_SAMPLE_DATA){ boot(); return; }
+  if(resolve("invokeCustomApi")){ boot(); return; }
+  if(a>40){ $("content").innerHTML = '<div class="state-err">Couldn\'t connect — please refresh the page, or call 9986 500 500 to book directly.</div>'; return; }
+  setTimeout(()=>waitForSDK(a+1),200);
+}
+waitForSDK();
+</script>
+</body>
+</html>
