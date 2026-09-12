@@ -319,6 +319,32 @@ Two fixes from the full soft-test gap audit (see the published findings), picked
 
 **Tested**: syntax-checked and packed — not yet independently live-tested.
 
+## 2026-09-10 (later) — least-effort-first pass: Android nav-link fix + image capture downscale
+
+Same two fixes as vendorTicket's own matching entry (see `getRescueTicket/README.md` for the full shared writeup) — this widget's smaller scope (RSR-only, no drop-location flow):
+
+**Item #12** — new `buildNavUrl(lat, lon)` helper (near `esc()`); this widget's 2 nav-link call sites (`renderAcceptScreen()`, `renderReachScreen()`) now route through it. Android gets a `geo:` URI; iOS/desktop unchanged.
+
+**Item #14** — new `CAPTURE_MAX_DIM = 1600` constant; `capturePhoto()`'s canvas now caps at that dimension before encoding, same as vendorTicket's own copy of this identical function.
+
+**Tested**: syntax-checked and packed. **Not yet live-tested** — needs a real Android device for the nav-link fix specifically.
+
+## 2026-09-11 — Location+timestamp capture: Work Completed now captures GPS too
+
+Part of an app-wide "capture location+time at every relevant step" request — full lifecycle audit and field list in `getRescueTicket/README.md`'s own matching entry. This app is RSR-only, so it only needed one of the fixes: `workCompleted()`/`confirmCxReject()` both had a timestamp (`RSP_Completion_Time`) but no location capture at all. Added a `getPositionSafe()` call (this app's own already-proven helper, same one Accept/Reach/Cancel already use) + new `Work_Completion_Lat`/`Work_Completion_Lon` fields (Single Line Text) to both — they're the two possible outcomes of the same "work completion" moment.
+
+**Tested**: syntax check passed, `zet pack` re-run, both new field writes confirmed present via fresh grep. **Not yet live-tested** — needs a real RSR ticket walked through to Work Completed (and separately, Customer Reject) to confirm the location saves correctly.
+
+## 2026-09-11 — 2 real bugs fixed, from a client "Task Tracker" audit (same fixes as vendorTicket, applied here identically)
+
+**Bug 1**: `confirmPaymentReceived()` called `apiUpdate()` (marking the ticket closed/paid) **before** `uploadPendingPhotos()` — a genuine photo-upload failure could leave the ticket closed and marked PAID without its mandatory receipt photo actually saved. Fixed by reordering: the photo upload now runs first, and a real failure blocks the close.
+
+**Bug 2**: `openGallery()` (choose-from-gallery) pushed the picked file straight into `state.photos` with zero compression, unlike `capturePhoto()` (the in-app camera), which already resizes to 1600px/quality 0.85. New `compressImageFile()` helper now applies that same treatment to gallery picks too, falling back to the original file if compression ever fails.
+
+See `vendorTicket/README.md`'s own matching entry for the full root-cause writeup — identical code, identical reasoning, ported here.
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed). **Not yet live-tested**.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

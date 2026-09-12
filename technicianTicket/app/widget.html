@@ -569,6 +569,13 @@ const $=(id)=>document.getElementById(id);
 // that button's DOM element.
 function setDisabled(id,val){ const el=$(id); if(el) el.disabled=val; }
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+// Soft-test item #12 (2026-09-10) — see vendorTicket's own matching comment
+// (same geo: URI fix for Android, only branches for Android, iOS/desktop
+// keep the existing maps.google.com link untouched).
+function buildNavUrl(lat, lon){
+  const isAndroid = /Android/i.test(navigator.userAgent||"");
+  return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
+}
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
 function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
 // Lookup fields (RSID/Vendor on Invites) come back from Creator as objects.
@@ -940,7 +947,7 @@ function renderAcceptScreen(){
   const r=state.current;
   // Navigate to Breakdown (2026-08-21, user request) — see vendorTicket's
   // own matching comment; same computation the Reach screen already uses.
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
   $("ascreenBody").innerHTML = `
     ${navHref?`<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>`:`<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     <div class="btn-row">
@@ -1066,7 +1073,7 @@ async function rejectService(){
 /* ===== Action 6: Reach Breakdown Location & Cancel ===== */
 function renderReachScreen(){
   const r=state.current;
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
   // Diagnostic (2026-08-04, user-reported live: nav link missing on this
   // screen) — see vendorTicket's own matching comment, not repeated here.
   if(!navHref) console.warn("[Get-Rescue] renderReachScreen: no nav link for ticket", r.ID, "— Break_Down_Location1:", JSON.stringify(r.Break_Down_Location1), "| Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude));
@@ -1265,6 +1272,12 @@ async function workCompleted(){
     // Work_Completed_Time, only ever set from this one button before this
     // round — renamed/shared 2026-07-31, guessed name, see FIELDS.md).
     const payload={ RSP_Completion_Time: fmtDateTime(new Date()), Issue_Resolved:resolved.dataset.value, Status:"REMAINING FEE DUE" };
+    // Work_Completion_Lat/Lon (2026-09-11, part of the wider "capture
+    // location+time at every relevant step" request) — see vendorTicket's
+    // own matching comment; this step had a timestamp but no location field
+    // at all until now. New fields, user-created.
+    const workDonePos = await getPositionSafe();
+    if(workDonePos){ payload.Work_Completion_Lat=workDonePos.lat; payload.Work_Completion_Lon=workDonePos.lon; }
     if(resolved.dataset.value==="No"){ const note=$("unresolvedNote").value.trim(); if(note) payload.Unresolved_Note=note; }
     const expenseVal=$("expenseAmount").value;
     if(expenseVal!=="") payload.Expense_Amount=Number(expenseVal);
@@ -1296,7 +1309,13 @@ async function confirmCxReject(){
     // Same shared "RSP_Completion_Time" as Work Completed above — per the
     // flow spec, this button's own click also counts as the completion
     // moment (nothing else here is mandatory per the mock, just the reason).
-    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Status:"REMAINING FEE DUE" });
+    // Work_Completion_Lat/Lon (2026-09-11) — same field pair as Work
+    // Completed's own matching comment; this is the "customer rejected"
+    // outcome of the same Step 6 moment.
+    const pos = await getPositionSafe();
+    const payload = { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Status:"REMAINING FEE DUE" };
+    if(pos){ payload.Work_Completion_Lat=pos.lat; payload.Work_Completion_Lon=pos.lon; }
+    await apiUpdate(r.ID, payload);
     toast("Saved","ok");
     goToStatus("REMAINING FEE DUE");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
@@ -1382,8 +1401,13 @@ async function confirmPaymentReceived(){
     const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
-    await apiUpdate(r.ID, payload);
+    // Real bug fixed 2026-09-11 — see vendorTicket's own matching comment
+    // (identical fix): uploadPendingPhotos() now runs BEFORE the apiUpdate()
+    // that marks the ticket Status="RSP CLOSED"/Payment_Status="PAID" — a
+    // genuine photo-upload failure now blocks the close instead of the
+    // ticket silently closing without its required proof-of-payment photo.
     await uploadPendingPhotos(r.ID);
+    await apiUpdate(r.ID, payload);
     toast("Payment recorded — job closed","ok");
     backToDashboard();
   }catch(e){ console.error("[Get-Rescue] confirmPaymentReceived error:", e); toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
@@ -1556,11 +1580,16 @@ function openGallery(fieldName,max){
   currentPhotoField=fieldName; currentPhotoMax=max;
   $("galleryInput").onchange=function(){
     const f=$("galleryInput").files[0]; if(!f) return;
-    state.photos[fieldName]=state.photos[fieldName]||[];
-    state.photos[fieldName].push(f);
-    renderPhotoGrid(fieldName,max);
-    uploadPhotoNow(fieldName,f,max);
     $("galleryInput").value="";
+    // Compressed before it ever enters state.photos (2026-09-11) — see
+    // vendorTicket's own matching compressImageFile() header comment
+    // (identical function, copy-pasted here).
+    compressImageFile(f, CAPTURE_MAX_DIM, 0.85).then(function(compressed){
+      state.photos[fieldName]=state.photos[fieldName]||[];
+      state.photos[fieldName].push(compressed);
+      renderPhotoGrid(fieldName,max);
+      uploadPhotoNow(fieldName,compressed,max);
+    });
   };
   $("galleryInput").click();
 }
@@ -1582,6 +1611,38 @@ function closeCamera(){
 // disabled + dimmed) so the wait reads as "working," not "broken." Does not
 // change the actual capture/watermark/upload logic at all — only wraps it.
 let capturingPhoto=false;
+// Soft-test item #14 (2026-09-10) — see vendorTicket's own matching comment
+// (this exact function is copy-pasted across vendorTicket/technicianTicket/
+// driverTicket — same fix applied identically to all three).
+const CAPTURE_MAX_DIM = 1600;
+// compressImageFile() (2026-09-11, Task Tracker: "All gallery uploads must
+// be automatically compressed before transmission") — see vendorTicket's
+// own matching header comment for the full reasoning (identical function,
+// copy-pasted here); openGallery() above now uses this before pushing a
+// gallery-picked file into state.photos.
+function compressImageFile(file, maxDim, quality){
+  return new Promise(function(resolve){
+    try{
+      const img=new Image();
+      const url=URL.createObjectURL(file);
+      img.onload=function(){
+        try{
+          const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
+          const canvas=document.createElement("canvas");
+          canvas.width=Math.round(img.naturalWidth*scale);
+          canvas.height=Math.round(img.naturalHeight*scale);
+          canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+          canvas.toBlob(function(blob){
+            URL.revokeObjectURL(url);
+            resolve(blob ? new File([blob], file.name, {type:"image/jpeg"}) : file);
+          }, "image/jpeg", quality);
+        }catch(e){ URL.revokeObjectURL(url); resolve(file); }
+      };
+      img.onerror=function(){ URL.revokeObjectURL(url); resolve(file); };
+      img.src=url;
+    }catch(e){ resolve(file); }
+  });
+}
 async function capturePhoto(){
   if(capturingPhoto) return;
   capturingPhoto=true;
@@ -1589,8 +1650,10 @@ async function capturePhoto(){
   shutterBtn.disabled=true; shutterBtn.style.opacity="0.4";
   try{
     const video=$("cameraVideo");
+    const nativeW=video.videoWidth||720, nativeH=video.videoHeight||960;
+    const scale=Math.min(1, CAPTURE_MAX_DIM/Math.max(nativeW,nativeH));
     const canvas=document.createElement("canvas");
-    canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
+    canvas.width=Math.round(nativeW*scale); canvas.height=Math.round(nativeH*scale);
     const ctx=canvas.getContext("2d");
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
     const pos=await getPositionSafe();

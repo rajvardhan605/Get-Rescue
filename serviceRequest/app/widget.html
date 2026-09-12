@@ -117,6 +117,10 @@
     cursor:pointer;background:var(--panel);color:var(--ink);transition:.12s;margin-bottom:6px;
   }
   .issue-chip.on{background:var(--ink);border-color:var(--ink);color:#fff;}
+  /* Placeholder-issue notice (2026-09-11) — see PLACEHOLDER_ISSUES' own
+     header comment. Same muted, small-caps treatment as .sample-flag below,
+     so it reads as "this part is a preview," not a real error/warning. */
+  .issue-placeholder-note{font-size:11.5px;color:var(--road-soft);line-height:1.4;margin:0 0 10px;}
 
   /* Searchable Vehicle combo (2026-09-10, explicit user request: "also add
      search in vehicle select dropdown") — same proven pattern as
@@ -220,10 +224,39 @@
 const $=(id)=>document.getElementById(id);
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
-// See this file's own top-of-file comment for the full "why" — flip to
-// false once getIssueOptions/createServiceRequest have real PublicKey auth
-// configured below. getVehicleOptions is no longer used by this widget.
-const SHOW_SAMPLE_DATA = false;
+// See this file's own top-of-file comment for the full "why".
+// TEMPORARILY FLIPPED BACK TO true (2026-09-11, explicit user request: live
+// page was showing "Couldn't load the request form" — getVehicleOptions/
+// getIssueOptions aren't currently succeeding in Zoho, most likely the same
+// PublicKey-auth-off or not-yet-re-pasted causes already diagnosed in this
+// file's own 2026-09-10 entries — "please recheck so that i can see all the
+// steps without any dependency"). true here means boot()/waitForSDK() skip
+// the real Custom API calls entirely and use SAMPLE_VEHICLES/SAMPLE_ISSUES
+// instead, so all 3 steps render regardless of the backend's current state.
+// Flip back to false once the real Custom API failure is actually fixed in
+// Zoho (see the Custom API checklist in this file's own 2026-09-10 README
+// entries) — this flag does not fix that underlying issue, it only bypasses
+// it for UI preview purposes.
+const SHOW_SAMPLE_DATA = true;
+// PLACEHOLDER_ISSUES (2026-09-11, explicit user request: "show dummy issue
+// in the list so that i can verify that UI is perfect") — separate from
+// SAMPLE_ISSUES/SHOW_SAMPLE_DATA above (that flag replaces BOTH vehicles and
+// issues with fake data for a fully offline demo). This is narrower: a real
+// vehicle is already selected live (e.g. "ROYAL ENFIELD THUNDERBIRD"), but
+// its own Category has zero matching Vehicle_Issue records in Zoho — a real
+// data gap (see issuesForType()'s own diagnostic a few lines down), not a
+// widget bug. renderStep2() falls back to showing THESE chips, clearly
+// labeled, whenever the real filtered list comes back empty for a selected
+// vehicle — purely so the chip UI itself (spacing, selected state, layout)
+// can be visually checked without needing the Zoho data fixed first.
+// id prefix "__placeholder_" is load-bearing: filtered out of the real
+// submission payload below (see onSubmit()'s own matching comment) so a
+// placeholder can never reach Zoho as if it were a real Vehicle_Issue ID.
+const PLACEHOLDER_ISSUES = [
+  { id:"__placeholder_1", name:"General Service" },
+  { id:"__placeholder_2", name:"Battery Check" },
+  { id:"__placeholder_3", name:"Flat Tyre" }
+];
 const SAMPLE_ISSUES = [
   { id:"i1", name:"Battery Jumpstart", vehicleTypes:"2W,4W" },
   { id:"i2", name:"Flat Tyre / Puncture", vehicleTypes:"2W,4W" },
@@ -537,15 +570,21 @@ function renderStep2(){
   // Vehicle Issue is now filtered by the SELECTED VEHICLE's own Category
   // (categoryForVehicle()), not a directly-picked Vehicle Type dropdown.
   const category = categoryForVehicle(STATE.vehicleId);
-  const issues = issuesForType(category);
+  const realIssues = issuesForType(category);
+  // Placeholder fallback (2026-09-11) — see PLACEHOLDER_ISSUES' own header
+  // comment. Only kicks in once a vehicle IS selected and its real issue
+  // list comes back genuinely empty (a Zoho data gap, not "nothing chosen
+  // yet") — "Select a vehicle first" above still takes priority as before.
+  const usingPlaceholders = !!STATE.vehicleId && realIssues.length===0;
+  const issues = usingPlaceholders ? PLACEHOLDER_ISSUES : realIssues;
   const issueBoxHtml = !STATE.vehicleId
     ? '<div class="issue-fld">Select a vehicle first</div>'
-    : (issues.length===0
-      ? '<div class="issue-fld">No issues configured for this vehicle — call 9986 500 500 and we\'ll take it from there.</div>'
-      : '<div class="issue-fld has-options"><div class="issue-chips" id="issueChips">'+issues.map(function(iss){
+    : '<div class="issue-fld has-options">'+
+        (usingPlaceholders ? '<div class="issue-placeholder-note">No issues configured for this vehicle yet in our system — showing sample options below so you can preview this screen. Selections here are for preview only and won\'t be submitted.</div>' : '')+
+        '<div class="issue-chips" id="issueChips">'+issues.map(function(iss){
           const on = STATE.issueIds.indexOf(String(iss.id))>=0;
           return '<div class="issue-chip'+(on?" on":"")+'" data-id="'+esc(iss.id)+'">'+esc(iss.name)+'</div>';
-        }).join("")+'</div></div>');
+        }).join("")+'</div></div>';
   // Searchable Vehicle combo (2026-09-10) — replaces the plain native
   // <select> with a text input + filtered dropdown (see wireVehicleCombo()
   // below), same pattern as getRescueTicket's own Client/Vehicle combo.
@@ -698,7 +737,11 @@ async function onSubmit(){
     // pair; createServiceRequest.deluge's own signature changed to match.
     vehicleId: STATE.vehicleId,
     vehicleRegNumber: STATE.vehicleRegNumber,
-    vehicleIssueIds: STATE.issueIds.join(","),
+    // Placeholder IDs (2026-09-11, "__placeholder_" prefix — see
+    // PLACEHOLDER_ISSUES' own header comment) filtered out here — a
+    // preview-only chip selected for UI verification must never reach
+    // createServiceRequest.deluge as if it were a real Vehicle_Issue ID.
+    vehicleIssueIds: STATE.issueIds.filter(function(id){ return String(id).indexOf("__placeholder_")!==0; }).join(","),
     // Location field removed from the widget 2026-09-09 (explicit user
     // request) — sent as "" rather than dropping the key entirely, so
     // createServiceRequest.deluge's own customerLocation parameter (still

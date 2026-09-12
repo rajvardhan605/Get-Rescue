@@ -73,75 +73,110 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 			}
 			else if(isDrop || isBreakdown)
 			{
-				// Real root cause found live 2026-09-10, confirmed directly in
-				// Zoho Studio: Latitude/Longitude/DropLocationLat/DropLocationLong
-				// are all configured with Max Digits=16, Decimal Points=15 —
-				// leaving room for only 1 digit before the decimal point, too
-				// narrow for any real coordinate (almost every real latitude/
-				// longitude has a 2-3 digit whole-number part, e.g. "28" in
-				// 28.513177). This is very likely why every write has failed
-				// regardless of what the code around it looked like — the
-				// earlier "double-fetch"/"raw Decimal vs string" theories were
-				// both disproven live; this is the field's own configuration,
-				// not a syntax issue.
-				// Defensive retry added (explicit user request: "if i dont do
-				// what happen please manage submitCustomerLocation function
-				// accordingly" — i.e. handle it in code even if the field's
-				// own Decimal Points setting in Zoho is never widened) —
-				// mirrors getRescueTicket's own already-proven
-				// COORD_PRECISION_FALLBACKS retry (roundCoord()/
-				// saveWithCoordFallback()) for this exact class of Zoho
-				// Decimal-field digit-limit error: tries progressively fewer
-				// decimal places until one succeeds. Flagged honestly: since
-				// the real constraint here looks like it's on the INTEGER
-				// part specifically, reducing decimal places alone may not
-				// free up room there — in which case every level below still
-				// fails, and the function returns a genuinely clear, specific
-				// error message instead of Zoho's own confusing generic one,
-				// which is itself a real improvement over today's behavior
-				// either way.
-				precisionLevels = List();
-				precisionLevels.add(6);
-				precisionLevels.add(4);
-				precisionLevels.add(2);
-				precisionLevels.add(0);
-				writeSucceeded = false;
-				lastWriteError = "";
-				for each precision in precisionLevels
+				// Real root cause CONFIRMED 2026-09-10 via a Zoho Studio
+				// screenshot: Latitude/Longitude/DropLocationLat/DropLocationLong
+				// were Decimal fields with Max Digits=16, Decimal Points=15.
+				// Zoho's Decimal type works like SQL DECIMAL(precision,scale) —
+				// the WHOLE-NUMBER part can only ever hold (Max Digits - Decimal
+				// Points) digits. Every real-world latitude/longitude has a
+				// 2-3 digit whole-number part (e.g. "28" in 28.613977, "77" in
+				// 77.209023), so at Max Digits=16/Decimal Points=15 every
+				// possible coordinate was mathematically too large for the
+				// field's configuration at the time — no rounding or retry
+				// could ever have worked around it.
+				//
+				// RESOLVED 2026-09-11 (user-confirmed): rather than keep
+				// widening the Decimal config, all 4 of these fields (plus
+				// RSP_Start_Latitude/Longitude, RSP_Drop_Latitude/Longitude,
+				// and Cancel_Location_Lat/Lon elsewhere in this app) were
+				// converted to Single Line Text instead — no digit limit at
+				// all, so this entire error class can no longer fire on any
+				// coordinate field in this app. The write below (a Deluge
+				// string assigned to rec.Latitude/etc.) needed no code change
+				// for this — it already wrote a string either way, which
+				// Deluge auto-converts on assignment to a Decimal field, and
+				// which a Text field accepts even more directly.
+				//
+				// An earlier version of this function retried the write at
+				// 6/4/2/0 decimal places, hoping fewer decimals would fit —
+				// that hypothesis was DISPROVEN by the Decimal-precision math
+				// above: reducing decimal places never changes the whole-
+				// number part, so all 4 of those attempts were guaranteed to
+				// fail identically, every time. Removed as dead code even
+				// before the Text conversion made it doubly unnecessary. The
+				// returned error message (visible only in this Custom API's
+				// own execution log and the browser console —
+				// customerPage/app/widget.html's submitLocation() never shows
+				// this raw message to the customer, only a generic "please try
+				// again" — see its own renderError() call) now just surfaces
+				// whatever Zoho actually says, since the old digit-limit cause
+				// no longer applies.
+				try
 				{
-					if(!writeSucceeded)
+					latToWrite = latVal.toString();
+					lonToWrite = lonVal.toString();
+					if(isDrop)
 					{
-						try
-						{
-							latToWrite = latVal.round(precision).toString();
-							lonToWrite = lonVal.round(precision).toString();
-							if(isDrop)
-							{
-								rec.DropLocationLat = latToWrite;
-								rec.DropLocationLong = lonToWrite;
-							}
-							else
-							{
-								rec.Latitude = latToWrite;
-								rec.Longitude = lonToWrite;
-							}
-							writeSucceeded = true;
-						}
-						catch (writeEx)
-						{
-							lastWriteError = writeEx.toString();
-						}
+						rec.DropLocationLat = latToWrite;
+						rec.DropLocationLong = lonToWrite;
 					}
-				}
-				if(writeSucceeded)
-				{
+					else
+					{
+						rec.Latitude = latToWrite;
+						rec.Longitude = lonToWrite;
+					}
+					// Drop_Location_Received_Time / Location_Received_Time
+					// (2026-09-11, part of the wider "capture location+time at
+					// every relevant step" request) — user has now created
+					// Drop_Location_Received_Time in Zoho (Location_Received_Time
+					// already existed, but was previously only ever stamped
+					// later, whenever the agent next happened to revisit the
+					// Locations wizard step — see getRescueTicket/app/widget.html's
+					// own "locations" stage extra(), which still runs too and is
+					// left completely unchanged as a harmless no-op once this
+					// field is already set — see that file's own matching
+					// comment). Stamping it HERE instead means it now reflects
+					// the ACTUAL moment the customer's coordinate was saved, not
+					// whenever an agent's screen happened to catch up.
+					// zoho.currenttime is Deluge's own documented "current date
+					// + time" system variable (confirmed via Zoho's own Deluge
+					// System Variables reference) — assigned directly to a
+					// native Date-Time field, no string formatting. Wrapped in
+					// its OWN try/catch, separate from the lat/lon write just
+					// above: this is a genuinely new write in a genuinely new
+					// context (a Custom API record UPDATE, not the simpler
+					// form-submit-insert context most public examples show) and
+					// hasn't been independently confirmed live yet — if the
+					// exact value/format Deluge produces here turns out not to
+					// be accepted by a Date-Time field in an update context,
+					// this must NEVER be allowed to take down the actual
+					// coordinate save above it, which is this function's one
+					// truly critical job and was already working correctly
+					// before this change.
+					try
+					{
+						if(isDrop) { rec.Drop_Location_Received_Time = zoho.currenttime; }
+						else { rec.Location_Received_Time = zoho.currenttime; }
+					}
+					catch (tsEx)
+					{
+						info "submitCustomerLocation — timestamp write failed (non-blocking, the coordinate itself was still saved successfully): " + tsEx.toString();
+					}
 					result.put("code", "SUCCESS");
 					returnstr = result.toString();
 				}
-				else
+				catch (writeEx)
 				{
 					result.put("code", "ERROR");
-					result.put("message", "Could not save this coordinate at any precision — the Latitude/Longitude field's own Decimal Points setting in Zoho is very likely too narrow for a real coordinate (currently Max Digits=16/Decimal Points=15, leaving only 1 digit for the whole-number part; needs widening, e.g. Decimal Points=6). Last error: " + lastWriteError);
+					// Message updated 2026-09-11 (later) — Latitude/Longitude/
+					// DropLocationLat/DropLocationLong were converted from Decimal
+					// to Single Line Text this same day (user-confirmed), so the
+					// digit-limit cause this message used to describe no longer
+					// applies at all — a stale explanation here would now be
+					// actively misleading. If this branch fires, it's genuinely a
+					// different cause; just surface Zoho's own error text and let
+					// whoever's debugging look at the execution log directly.
+					result.put("message", "Could not save this coordinate — Zoho error: " + writeEx.toString());
 					returnstr = result.toString();
 				}
 			}

@@ -155,6 +155,28 @@ string generateZohoPaymentLink(string recordId, string amount, string email, str
 					metaEntry.put("key", "Case_ID");
 					metaEntry.put("value", referenceIdResolved);
 					metaList.add(metaEntry);
+					// recordId metadata (2026-09-11, explicit user request) — the
+					// real Create_Case record ID this payment link was generated
+					// for, distinct from Case_ID/referenceIdResolved above (which
+					// is the human-facing "RSID..." label, plus a "-BF"/"-RF"
+					// suffix for Booking/Remaining Fee — never the raw Zoho record
+					// ID). Passed straight through from this function's own
+					// `recordId` parameter — the exact same value already used a
+					// few lines up to fetch `rec` via
+					// Create_Case[ID == recordId.trim().toLong()], so this is
+					// guaranteed to identify the correct ticket. Purely additive:
+					// a second entry in the same meta_data list, Case_ID's own
+					// entry above is untouched, and nothing else in this payload
+					// changes. .trim() applied here too (same defensive
+					// convention as that lookup line above) — keeps a stray
+					// leading/trailing space out of the value actually sent to
+					// Zoho Payments; cosmetic only here, since this value is
+					// never parsed back into a number the way the .toLong()
+					// lookup above needs to be.
+					recordIdMetaEntry = Map();
+					recordIdMetaEntry.put("key", "recordId");
+					recordIdMetaEntry.put("value", recordId.trim());
+					metaList.add(recordIdMetaEntry);
 					paymentLinkMap.put("meta_data", metaList);
 
 					createPaymentLinkResp = invokeurl

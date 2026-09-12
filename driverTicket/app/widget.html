@@ -514,6 +514,13 @@ const $=(id)=>document.getElementById(id);
 // that button's DOM element.
 function setDisabled(id,val){ const el=$(id); if(el) el.disabled=val; }
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+// Soft-test item #12 (2026-09-10) — see vendorTicket's own matching comment
+// (same geo: URI fix for Android, only branches for Android, iOS/desktop
+// keep the existing maps.google.com link untouched).
+function buildNavUrl(lat, lon){
+  const isAndroid = /Android/i.test(navigator.userAgent||"");
+  return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
+}
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
 function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
 // Lookup fields (RSID/Vendor on Invites) come back from Creator as objects.
@@ -886,12 +893,12 @@ function renderAcceptScreen(){
   // own matching comment; same computation the Reach screen already uses.
   // Shown ahead of the existing Drop Location link below — breakdown comes
   // first in the actual flow (pick up, then drop).
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
   // Same fallback as renderLoadingScreen()/renderReachedDropScreen() — this
   // is just an informational row (no button gating here), lower priority,
   // but kept consistent with the fields those two actually depend on.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? ("https://maps.google.com/?q="+dropLat+","+dropLon) : "");
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? buildNavUrl(dropLat,dropLon) : "");
   $("ascreenBody").innerHTML = `
     ${navHref?`<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>`:`<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
@@ -994,7 +1001,7 @@ async function rejectService(){
 /* ===== Action 6a: Reach Breakdown & Cancel (Tow) ===== */
 function renderReachScreen(){
   const r=state.current;
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
   // Diagnostic (2026-08-04, user-reported live: nav link missing on this
   // screen) — see vendorTicket's own matching comment, not repeated here.
   if(!navHref) console.warn("[Get-Rescue] renderReachScreen: no nav link for ticket", r.ID, "— Break_Down_Location1:", JSON.stringify(r.Break_Down_Location1), "| Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude));
@@ -1192,6 +1199,14 @@ async function vehiclePicked(){
     const dist=await calcDistanceETA(bLat,bLon,dLat,dLon,travelModeFor(r));
     const payload={ Pickup_Time: fmtDateTime(new Date()), Status:"TO DROP LOCATION" };
     if(dist){ payload.Breakdown_To_Drop_Distance=dist.distanceKm; payload.Return_Journey_ETA=dist.etaMins; }
+    // Pickup_Location_Lat/Lon (2026-09-11, part of the wider "capture
+    // location+time at every relevant step" request) — the live GPS fix
+    // above was already being fetched (for the distance/ETA calc just
+    // above), but only ever used transiently and then discarded — this step
+    // had a timestamp (Pickup_Time) but no persisted location at all until
+    // now. New fields, user-created; simply persists the SAME `pos` already
+    // in hand, no second GPS fetch.
+    if(pos){ payload.Pickup_Location_Lat=pos.lat; payload.Pickup_Location_Lon=pos.lon; }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Vehicle picked up","ok");
@@ -1237,7 +1252,7 @@ function renderReachedDropScreen(){
   // a maps.google.com link built from real coordinates) — Navigate_To_Drop_Link
   // has no confirmed writer, so this link would otherwise never show at all.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? ("https://maps.google.com/?q="+dropLat+","+dropLon) : "");
+  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? buildNavUrl(dropLat,dropLon) : "");
   if(!dropHref) console.warn("[Get-Rescue] renderReachedDropScreen: no drop nav link for ticket", r.ID, "— Navigate_To_Drop_Link:", JSON.stringify(r.Navigate_To_Drop_Link), "| DropLocationLat:", JSON.stringify(r.DropLocationLat), "| DropLocationLong:", JSON.stringify(r.DropLocationLong));
   $("ascreenBody").innerHTML = `
     ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
@@ -1293,12 +1308,20 @@ async function reachedDrop(){
       // already used above for the roundtrip calc).
       Drop_Location_Arrival_Time: fmtDateTime(new Date())
     };
-    // Reused 2026-08-04 (user request) — writes into the same confirmed Text
-    // fields Accept already uses for the start-of-service GPS fix, instead of
-    // the separate unconfirmed RSP_Drop_Location_Lat/Lon (guessed, Decimal —
-    // same "exceeded max digits" risk RSP_Start_Latitude/Longitude was
-    // renamed to dodge).
-    if(pos){ payload.RSP_Start_Latitude=pos.lat; payload.RSP_Start_Longitude=pos.lon; }
+    // CHANGED 2026-09-11 (part of the wider "capture location+time at every
+    // relevant step" request, real bug fix) — this used to reuse the SAME
+    // RSP_Start_Latitude/Longitude fields Accept already writes (a 2026-08-04
+    // workaround to dodge a "Decimal field exceeded maximum digits" error by
+    // not creating a new field at all). That meant reaching the drop location
+    // silently OVERWROTE and permanently lost the Accept-time GPS fix — the
+    // exact "incorrectly sharing fields" problem this request called out.
+    // User has since created a real, dedicated RSP_Drop_Latitude/Longitude
+    // pair (Single Line Text, matching RSP_Start_Latitude/Longitude's own
+    // type — same "avoid any Decimal digit-limit risk" reasoning that field
+    // pair already proved out). Accept's own RSP_Start_Latitude/Longitude
+    // write (acceptService(), untouched by this change) is now permanently
+    // preserved instead of being clobbered here.
+    if(pos){ payload.RSP_Drop_Latitude=pos.lat; payload.RSP_Drop_Longitude=pos.lon; }
     if(toll) payload.Toll_Charges1=toll.dataset.value;
     // Fixed 2026-09-02 (user request) — this used to write to the same
     // Odometer_Reading field Accept's start-odometer uses, silently
@@ -1342,7 +1365,16 @@ async function confirmDropped(){
   setDisabled("droppedBtn",true);
   try{
     const r=state.current;
-    await apiUpdate(r.ID, {
+    // Handover_Location_Lat/Lon (2026-09-11, part of the wider "capture
+    // location+time at every relevant step" request) — this action had a
+    // timestamp (RSP_Completion_Time, below, unchanged) but never fetched or
+    // saved any location at all. New fields, user-created. getPositionSafe()
+    // is the same proven GPS-fetch helper every other on-road action in this
+    // file already uses (Accept/Reach/Loading/Cancel) — best-effort, `pos` is
+    // simply null if GPS is denied/unavailable, same graceful-degrade
+    // convention as everywhere else.
+    const pos = await getPositionSafe();
+    const payload = {
       Handover_to_Name:name, Handover_to_Number:number, Handover_to_Designation:designation,
       // "Route to Action 8 (Final Payment Collection)" per the spec — same
       // REMAINING FEE DUE status the RSR path's Work Completed also sets,
@@ -1352,7 +1384,9 @@ async function confirmDropped(){
       // 'work complete time'" — reusing the same shared RSP_Completion_Time
       // as RSR's Work Completed/Cx Reject and TOW Loading's own Cx Reject.
       RSP_Completion_Time: fmtDateTime(new Date())
-    });
+    };
+    if(pos){ payload.Handover_Location_Lat=pos.lat; payload.Handover_Location_Lon=pos.lon; }
+    await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
     toast("Dropped — routed to payment","ok");
     goToStatus("REMAINING FEE DUE");
@@ -1433,8 +1467,13 @@ async function confirmPaymentReceived(){
     const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
-    await apiUpdate(r.ID, payload);
+    // Real bug fixed 2026-09-11 — see vendorTicket's own matching comment
+    // (identical fix): uploadPendingPhotos() now runs BEFORE the apiUpdate()
+    // that marks the ticket Status="RSP CLOSED"/Payment_Status="PAID" — a
+    // genuine photo-upload failure now blocks the close instead of the
+    // ticket silently closing without its required proof-of-payment photo.
     await uploadPendingPhotos(r.ID);
+    await apiUpdate(r.ID, payload);
     toast("Payment recorded — job closed","ok");
     backToDashboard();
   }catch(e){ console.error("[Get-Rescue] confirmPaymentReceived error:", e); toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
@@ -1598,11 +1637,16 @@ function openGallery(fieldName,max){
   currentPhotoField=fieldName; currentPhotoMax=max;
   $("galleryInput").onchange=function(){
     const f=$("galleryInput").files[0]; if(!f) return;
-    state.photos[fieldName]=state.photos[fieldName]||[];
-    state.photos[fieldName].push(f);
-    renderPhotoGrid(fieldName,max);
-    uploadPhotoNow(fieldName,f,max);
     $("galleryInput").value="";
+    // Compressed before it ever enters state.photos (2026-09-11) — see
+    // vendorTicket's own matching compressImageFile() header comment
+    // (identical function, copy-pasted here).
+    compressImageFile(f, CAPTURE_MAX_DIM, 0.85).then(function(compressed){
+      state.photos[fieldName]=state.photos[fieldName]||[];
+      state.photos[fieldName].push(compressed);
+      renderPhotoGrid(fieldName,max);
+      uploadPhotoNow(fieldName,compressed,max);
+    });
   };
   $("galleryInput").click();
 }
@@ -1624,6 +1668,38 @@ function closeCamera(){
 // disabled + dimmed) so the wait reads as "working," not "broken." Does not
 // change the actual capture/watermark/upload logic at all — only wraps it.
 let capturingPhoto=false;
+// Soft-test item #14 (2026-09-10) — see vendorTicket's own matching comment
+// (this exact function is copy-pasted across vendorTicket/technicianTicket/
+// driverTicket — same fix applied identically to all three).
+const CAPTURE_MAX_DIM = 1600;
+// compressImageFile() (2026-09-11, Task Tracker: "All gallery uploads must
+// be automatically compressed before transmission") — see vendorTicket's
+// own matching header comment for the full reasoning (identical function,
+// copy-pasted here); openGallery() above now uses this before pushing a
+// gallery-picked file into state.photos.
+function compressImageFile(file, maxDim, quality){
+  return new Promise(function(resolve){
+    try{
+      const img=new Image();
+      const url=URL.createObjectURL(file);
+      img.onload=function(){
+        try{
+          const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
+          const canvas=document.createElement("canvas");
+          canvas.width=Math.round(img.naturalWidth*scale);
+          canvas.height=Math.round(img.naturalHeight*scale);
+          canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+          canvas.toBlob(function(blob){
+            URL.revokeObjectURL(url);
+            resolve(blob ? new File([blob], file.name, {type:"image/jpeg"}) : file);
+          }, "image/jpeg", quality);
+        }catch(e){ URL.revokeObjectURL(url); resolve(file); }
+      };
+      img.onerror=function(){ URL.revokeObjectURL(url); resolve(file); };
+      img.src=url;
+    }catch(e){ resolve(file); }
+  });
+}
 async function capturePhoto(){
   if(capturingPhoto) return;
   capturingPhoto=true;
@@ -1631,8 +1707,10 @@ async function capturePhoto(){
   shutterBtn.disabled=true; shutterBtn.style.opacity="0.4";
   try{
     const video=$("cameraVideo");
+    const nativeW=video.videoWidth||720, nativeH=video.videoHeight||960;
+    const scale=Math.min(1, CAPTURE_MAX_DIM/Math.max(nativeW,nativeH));
     const canvas=document.createElement("canvas");
-    canvas.width=video.videoWidth||720; canvas.height=video.videoHeight||960;
+    canvas.width=Math.round(nativeW*scale); canvas.height=Math.round(nativeH*scale);
     const ctx=canvas.getContext("2d");
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
     const pos=await getPositionSafe();

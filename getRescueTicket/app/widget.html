@@ -1442,7 +1442,31 @@ const STAGES = [
     // native datetime-local picker here now writes straight into it — see
     // computeServiceTime()'s own updated comment.
     { n:"Schedule_Date_Time", l:"Schedule Date & Time", t:"datetime", req:true, when:(s)=>s.Time_of_service==="LATER", row:"schedule" },
+    // Computed_Service_Time (2026-09-11, Task Tracker PDF item 7 — "Schedule
+    // Date & Time [is] Missing in Closure page FOR NOW cases") — Schedule_Date_Time
+    // just above only ever shows/applies when Time_of_service is "LATER"; a
+    // "NOW" ticket has no schedule input at all, so its own actual service
+    // time (computed as +30min from save, see computeServiceTime()) never
+    // showed anywhere on this step or the Closure summary. This is a NEW,
+    // always-visible, read-only mirror of the value already computed and
+    // saved via this stage's own extra() hook above — no new field, no new
+    // write, just a display of what's already being written silently.
+    { n:"Computed_Service_Time", l:"Schedule Date & Time", t:"text", readonly:true, full:true },
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
+    // Lead_Source / Added_Time (2026-09-11, Task Tracker PDF items 2/5) — both
+    // already exist and are already correctly populated (Lead_Source silently
+    // via this stage's own extra() hook above, always "Call"; Added_Time is a
+    // built-in Zoho system field, stamped by Zoho itself on every record) —
+    // neither was ever actually shown anywhere in this widget before. Plain
+    // read-only mirrors, nothing new stored. Added_Time is `ephemeral:true`
+    // (skipped from every save payload, see buildPayload()'s own matching
+    // check) — it's a Zoho SYSTEM field, never something this app should ever
+    // attempt to write back; Lead_Source is a genuine app field already
+    // force-written "Call" by this stage's own extra() hook regardless of
+    // what this readonly display field's own value resolves to on save, so
+    // it needs no such protection.
+    { n:"Lead_Source", l:"Lead Source", t:"text", readonly:true, row:"meta" },
+    { n:"Added_Time", l:"Task Creation Time", t:"text", readonly:true, ephemeral:true, row:"meta" },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -1734,7 +1758,12 @@ const STAGES = [
         // only, no Books invoice, writing straight to Zoho_Payment_URL.
         // onDemandInvoicing() itself is untouched, just not called from here
         // for now.
-        const invoicingPromise=generateZohoPaymentLink(r, Number(r.Booking_Fee)||0, caseLabel(r)+"-BF", serviceLabelFor(r), "Zoho_Payment_URL");
+        // description now GST-aware (2026-09-11) — see
+        // paymentLinkDescriptionWithGst()'s own header comment; Booking_Fee
+        // itself is unchanged (still the exact GST-inclusive amount charged),
+        // only the description text shown on the payment page now breaks it
+        // down into Service Charges + CGST + SGST.
+        const invoicingPromise=generateZohoPaymentLink(r, Number(r.Booking_Fee)||0, caseLabel(r)+"-BF", paymentLinkDescriptionWithGst(r.Booking_Fee, serviceLabelFor(r)), "Zoho_Payment_URL");
         invoicingPromise.then(function(invoiceUrl){
           // Explicit logging added 2026-08-25 (user request: "also log the
           // invoice url and message") — puts the two things that actually
@@ -1806,15 +1835,33 @@ const STAGES = [
           // rather than asking for a second Zoho-side variable — the
           // widget's own MODE tells it which fee this value represents.
           const customerPageUrl = buildCustomerPageUrl(r, "booking_payment", { bookingamount: String(r.Booking_Fee||0) });
-          const customerLink = customerPageUrl || invoiceUrl;
-          // Diagnostic log — kept (harmless, still useful going forward) to
-          // confirm which of the two links actually got used on any given
-          // send.
-          console.log("[Get-Rescue] Send_Payment_Link: CUSTOMER_PAGE_BASE_URL =", CUSTOMER_PAGE_BASE_URL || "(blank — not configured in this deployed widget)", "| buildCustomerPageUrl result =", customerPageUrl || "(empty)", "| invoiceUrl =", invoiceUrl || "(empty)", "| customerLink actually used =", customerLink || "(empty)");
-          // Label text changed 2026-09-08 (later) from "Pay now:" to
-          // "CustomerPage :" — explicit user-specified exact wording, part
-          // of the same test payload shape as customerLink above.
-          const param2 = String(r.Total_Service_Fee||0) + (customerLink ? (" - CustomerPage : "+customerLink) : "");
+          // Real bug fixed 2026-09-11 (user-reported live: the WhatsApp
+          // message read "...pay the booking fee of Rs. 200/-: 2000." — the
+          // link was silently missing entirely, leaving param2 as a bare,
+          // confusing second number). Root cause: `customerLink` used to
+          // fall back to the raw `invoiceUrl` (`customerPageUrl ||
+          // invoiceUrl`) — the ONE case that actually produced this exact
+          // symptom is when BOTH are empty (Zoho_Payment_URL generation also
+          // failed that same call, or CUSTOMER_PAGE_BASE_URL/record.ID was
+          // unavailable), silently sending param2 as just
+          // String(Total_Service_Fee) with nothing appended. Two real fixes,
+          // per explicit user spec: (1) `customerLink` is now ALWAYS the
+          // Customer Page link specifically, never the raw Zoho Payments
+          // URL — the customer should never see that link directly; (2) if
+          // it genuinely can't be built, this now ABORTS the send entirely
+          // instead of silently mailing out a broken/confusing message —
+          // better no message than a wrong one.
+          const customerLink = customerPageUrl;
+          console.log("[Get-Rescue] Send_Payment_Link: CUSTOMER_PAGE_BASE_URL =", CUSTOMER_PAGE_BASE_URL || "(blank — not configured in this deployed widget)", "| buildCustomerPageUrl result =", customerPageUrl || "(empty)", "| invoiceUrl (Zoho payment link, NOT sent to the customer directly) =", invoiceUrl || "(empty)");
+          if(!customerLink){
+            console.warn("[Get-Rescue] Send_Payment_Link: no Customer Page link could be built (CUSTOMER_PAGE_BASE_URL blank, or ticket has no ID yet) — ABORTING the WhatsApp send rather than sending a message with a missing/garbled amount.");
+            toast("Couldn't build the Customer Page link — payment link was saved, but the WhatsApp message was NOT sent. Check CUSTOMER_PAGE_BASE_URL and the console.","err");
+            return Promise.resolve(null); // sentinel — already handled/toasted above, see the .then() just below
+          }
+          // Label text "CustomerPage :" — explicit user-specified exact
+          // wording (2026-09-08), unchanged; only `customerLink`'s own
+          // source changed above.
+          const param2 = String(r.Total_Service_Fee||0) + " - CustomerPage : " + customerLink;
           // param3 REMOVED 2026-09-08 (later) — explicit user request: "send
           // hard coded customerpage link in whatsapp ... this type i need to
           // send it", with an exact payload example that has no `param3` key
@@ -1826,11 +1873,19 @@ const STAGES = [
           // the `param3` key entirely from the payload when it isn't passed
           // in, instead of always sending `param3:""`.
           const waParams=[String(r.Booking_Fee||0), param2];
-          console.log("[Get-Rescue] Send_Payment_Link: sending WhatsApp 'booking_fees_link' to", r.Phone_Number1, "with params (Booking_Fee, Total_Service_Fee+link):", waParams);
+          console.log("[Get-Rescue] Send_Payment_Link: sending WhatsApp 'booking_fees_link' to", r.Phone_Number1, "with params (Booking_Fee, Total_Service_Fee+CustomerPageLink):", waParams);
           return sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", waParams);
-        }).then(function(ok){ if(!ok) toast("Saved, but the WhatsApp payment link message failed to send — check console","err"); });
+        }).then(function(ok){ if(ok===null) return; if(!ok) toast("Saved, but the WhatsApp payment link message failed to send — check console","err"); });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
+    // Soft-test item #4/#7 (2026-09-10): "the generated payment link must be
+    // clearly displayed on the interface" — Send_Payment_Link above only
+    // ever sent the link over WhatsApp; the agent's own screen had no way
+    // to see/open it again afterwards. Read-only, computed navlink — never
+    // stored, always reflects whatever's currently in Zoho_Payment_URL.
+    { n:"__PaymentLinkDisplay_BF", l:"Booking Fee Payment Link", t:"navlink", full:true,
+      hrefField:"Zoho_Payment_URL", linkLabel:"💳 Open Payment Link",
+      emptyMsg:"No payment link yet — click \"Send Payment Link & Request Location\" above to generate one." },
     { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", when:(s)=>!(Number(s.Booking_Fee)>0), row:"rate4",
       buttonLabel:"Request Location", doneLabel:"Location Requested",
       // Real WhatsApp send wired 2026-08-07 (user request, "location"
@@ -1988,6 +2043,20 @@ const STAGES = [
         sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"breakdown"})])
           .then(function(ok){ toast(ok?"Location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
+    // Soft-test item #7 (2026-09-10): "the direct location-sharing page link
+    // needs to be displayed to the agent" — the link above only ever went
+    // out over WhatsApp; nothing on the agent's own screen let them re-open
+    // it. hrefCompute rebuilds the exact same URL customerNameWithPageLink()
+    // above just sent — never stored anywhere, so it's recomputed fresh each
+    // render (works even before the button above has ever been clicked).
+    // Hidden 2026-09-10 (explicit user request, live screenshot) — kept as a
+    // when:false gate rather than deleted, so it's a one-line, obviously
+    // reversible toggle if this is ever wanted back (just remove the
+    // when: line). The underlying navlink hrefCompute generalization itself
+    // is untouched — still used by the payment-link displays elsewhere.
+    { n:"__LocationLinkDisplay_Breakdown", l:"Breakdown Location Share Link", t:"navlink", full:true, when:(s)=>false,
+      hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"breakdown"}),
+      linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
     // 2026-07-31: user explicitly confirmed location is captured ONLY this
     // way for now (paste "lat, long" text, split into the two real decimal
     // fields) — the flow spec's "[Location field type]" wording does NOT mean
@@ -2000,6 +2069,15 @@ const STAGES = [
     // that path; it only blocks typing straight into the raw fields.
     { n:"Latitude", l:"Breakdown Latitude", t:"decimal", readonly:true },
     { n:"Longitude", l:"Breakdown Longitude", t:"decimal", readonly:true },
+    // Location_Received_Time (2026-09-11, Task Tracker PDF item 9 — "time of
+    // receiving BREAKDOWN location [is] Missing in Closure page... CAN
+    // DISPLAY in the 'Locations . Agent' section"). Field already exists and
+    // is already stamped — either by `submitCustomerLocation.deluge` the
+    // moment the customer shares it (see customerPage/README.md's own
+    // matching entry), or by this stage's own extra() hook as a fallback —
+    // just never shown anywhere in this widget before. Plain read-only
+    // mirror, nothing new stored/written.
+    { n:"Location_Received_Time", l:"Breakdown Location Received Time", t:"text", readonly:true },
     // 2026-07-31: user explicitly confirmed Drop Location is TOW-only —
     // matches the existing `when` guards below already (re-confirms, not a
     // change). Converted from `t:"check"` to `t:"button"` (same shape as the
@@ -2019,6 +2097,12 @@ const STAGES = [
         sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"drop"})])
           .then(function(ok){ toast(ok?"Drop location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
+    // Soft-test item #7 — same reasoning as the Breakdown link display above.
+    // Hidden 2026-09-10 (explicit user request, live screenshot) — see that
+    // field's own matching comment; same reversible when:false approach.
+    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true, when:(s)=>false,
+      hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"drop"}),
+      linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
     { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
     // readonly:true added 2026-08-06 (user request) — see Latitude/Longitude's
     // own matching comment above, same reasoning applies to the drop pair.
@@ -2122,6 +2206,13 @@ const STAGES = [
     // vendor is picked.
     { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendorsFiltered", full:true, searchable:true, useId:true, req:true,
       hint:(s)=>vendorPickerHint(s) },
+    // Confirmation_Time (2026-09-11, Task Tracker PDF item 6 — "Task
+    // Confirmation Time [is] Missing in Closure page... CAN DISPLAY in the
+    // 'Vendor Assignment . Agent' section"). Field already exists and is
+    // already stamped (see this app's own `create`/`locations` stages'
+    // extra() hooks, "#5 Task Confirmation Time") — just never shown
+    // anywhere before. Plain read-only mirror, nothing new stored/written.
+    { n:"Confirmation_Time", l:"Task Confirmation Time", t:"text", readonly:true },
     // "Remarks [Text Area – optional]" — same shared field as the earlier
     // steps (2026-07-31 flow spec shows it here too).
     { n:"Remarks", l:"Remarks", t:"remarks", full:true }
@@ -2268,22 +2359,36 @@ const STAGES = [
     // (always shown) — if the technician side is hidden, that row just
     // renders as a single full-width field instead, per renderFields()'s own
     // "column count matches however many fields actually land" behavior.
-    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails" },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 3 — "email can be
+    // removed" from the closure page's own Vendor Response section, now that
+    // Name/Mobile are shown there instead) — still fully live/editable on
+    // this Accept step itself, only hidden from the Final Closure summary.
+    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true },
     // Moved here from `assignment` 2026-07-31 (UI simplification, matches
     // the Action 4 mock) — these are outcome fields, shown once someone's
     // actually accepted, not something the agent fills in upfront.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails" },
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
     // Technician fields below all gated on vendorHasTechnicians() (2026-08-07,
     // user request) — pointless clutter for an Individual vendor who will
     // never hand a job to a technician; see that function's own comment.
-    { n:"Technician_Email", l:"Technician Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails" },
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails" },
+    { n:"Technician_Email", l:"Technician Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment above
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
     // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
     // OWN Accept action once they accept — not written by this widget at
     // all (viewOnly stage). Assumed to lookup Vendors_Report (same target as
     // Vendors1) — not independently confirmed; see QUESTIONS_TO_ASK.md.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
+    // Soft-test item #17 (2026-09-10): "the accepted vendor's mobile number
+    // should also be displayed" — read-only computed display (nothing new
+    // stored; vendorRawForTicket() already resolves Assigned_Vendor to the
+    // vendor's own raw Vendors_Report record elsewhere in this file, e.g.
+    // renderVendorAcctFeeBox()'s own matching use, and CONFIG.vendorPhoneField
+    // ("Mobile_Number_01") is the same confirmed-real phone field
+    // recordVendorPayment() already sends to Zoho Books).
+    { n:"__VendorMobileDisplay", l:"Vendor Mobile Number", t:"computed", full:true,
+      compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
+      emptyHint:"No accepted vendor yet." },
     // Added 2026-08-11 (user request) — Distance_To_Breakdown/Service_Acceptance
     // are normally written automatically by the vendor's own acceptService()
     // action (confirmed live in vendorTicket/technicianTicket's own write
@@ -2341,7 +2446,11 @@ const STAGES = [
     // otherwise leave this genuinely EDITABLE outside Agent-manual mode
     // while blank, letting an agent overwrite whatever the vendor's own app
     // is about to fill in. Now also locked whenever not in Agent-manual mode.
-    { n:"ETA", l:"ETA to Breakdown (mins)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) || hasRealEta(s.ETA) },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 21 — "not needed in
+    // closure page, need only actual time in date-time format") — see the new
+    // "BDL ETA" computed field in FIELD_ACTIVITY_LOG_FIELDS for that date-time
+    // replacement. Still fully live on this Accept step itself.
+    { n:"ETA", l:"ETA to Breakdown (mins)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) || hasRealEta(s.ETA), closureHide:true },
     // Expected Arrival display (2026-08-11) — same computed clock-time field
     // reach/reachTow already show ("ETA Example: 3:45 PM" in the spec above),
     // added here too so it's visible the moment Accept data exists, not just
@@ -2495,6 +2604,23 @@ const STAGES = [
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    // Soft-test item #19 (2026-09-10): "REACH page (Repair cases) needs to
+    // display ... Round Trip Distance" — currently only exists at WIP/Final
+    // Closure (Roundtrip_Distance), two steps later. Deliberately a t:"computed"
+    // DISPLAY-ONLY estimate, NOT a write into Roundtrip_Distance itself —
+    // that field's own Final Closure backfill (runClosureDistanceCalculations(),
+    // see its own comment) only computes a value "if empty", preferring
+    // Google Distance Matrix over Haversine; writing an early Haversine-only
+    // estimate here would permanently lock out that more-accurate later
+    // calculation for every ticket where this button/field is seen. Reuses
+    // calcRoundTripKm() as-is (already proven on the `locations` stage's own
+    // Calculate_Distance button) — that function already falls back to a
+    // 2-leg Office→Breakdown→Office estimate when no drop coordinates exist
+    // (true for every RSR ticket, and for a TOW ticket whose drop pin isn't
+    // captured yet), so it works correctly here with zero changes needed.
+    { n:"__RoundTripEstimate", l:"Round Trip Distance (Estimate)", t:"computed", full:true,
+      compute:(r)=>{ const km=calcRoundTripKm(r); return km>0 ? (km+" km (straight-line estimate via office)") : ""; },
+      emptyHint:"Not available yet — breakdown location not captured." },
     // Cancel_Distance already exists and is already written by the vendor's
     // own Cancel action (getPositionSafe() fix + Accept→Cancel distance) —
     // same gap as Reach Location above, just never given a per-stage
@@ -2507,7 +2633,11 @@ const STAGES = [
     // Activity Log group, gated the OPPOSITE way — shown only when NOT
     // agent-manual) is untouched; this only removes the agent-manual
     // EDITABLE copy right here.
-    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 22 — "field not
+    // needed [on closure page], cancel distance will be populated in
+    // 'Distance to Breakdown (km, RSR)' field instead"). Still fully live on
+    // this Reach step itself.
+    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     // Distance_Cancel_To_Breakdown is a BRAND NEW field — ⚠️ does not exist
     // in Create_Case yet, see FIELDS.md's own note. No field or calculation
     // for "Cancel location → breakdown location" existed anywhere before
@@ -2584,9 +2714,20 @@ const STAGES = [
     // Work Completed/Cx Reject actions); nothing computes them when the agent
     // is filling this in manually instead, so real editable inputs here.
     { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:acceptanceIsAgentManual },
-    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual },
+    // closureHide:true on Office_To_Mechanic/Breakdown_To_Office (2026-09-11,
+    // Task Tracker PDF items 23/24 — "field not needed to be displayed" on
+    // the closure page). Mechanic_To_Breakdown is NOT in that removal list —
+    // left visible on the closure page unchanged. All 3 stay fully live here
+    // on this Reach step itself either way — only the closure summary's own
+    // rows are affected. Note: the PDF's "and need not be calculated" for
+    // Office_To_Mechanic/Breakdown_To_Office is a display-only change here —
+    // the underlying calculation (part of the same round-trip leg chain
+    // Roundtrip_Distance/Mechanic_To_Breakdown also depend on) is left
+    // untouched, since stopping the calculation itself is a bigger,
+    // structurally different change not requested by this PDF pass.
+    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
-    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual }
+    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true }
   ]},
 
   /* ---- TOW branch (reordered: accept -> reach -> load -> reached drop -> unload,
@@ -2640,16 +2781,21 @@ const STAGES = [
     // scattered" request) — see `acceptance`'s own matching comment on why
     // same-row fields have to sit adjacent in this array.
     { n:"Image_Upload1", l:"Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails" },
+    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment (Vendor_Email1)
     // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails" },
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
     // Technician/driver hand-off fields below all gated on
     // vendorHasTechnicians() — see `acceptance`'s own matching comment above.
-    { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails" },
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails" },
+    { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
     // See `acceptance`'s own comment on this same new field.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
+    // Soft-test item #17 — see `acceptance`'s own matching comment (same
+    // computed display, TOW's own copy of the stage).
+    { n:"__VendorMobileDisplay_TOW", l:"Vendor Mobile Number", t:"computed", full:true,
+      compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
+      emptyHint:"No accepted vendor yet." },
     // Added 2026-08-11 (user request) — see `acceptance`'s own matching
     // comment (TOW's own copy: Distance_To_Breakdown_TOW, Service_Acceptance_For_Tow).
     // "Reject Time"/"Accept Location (Lat)"/"Accept Location (Lon)" removed
@@ -2659,7 +2805,8 @@ const STAGES = [
     // see that stage's own comment for the full reasoning.
     { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number" },
     { n:"Service_Acceptance_For_Tow", l:"Accept Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
-    { n:"ETA_TOW", l:"ETA to Breakdown (mins)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) || hasRealEta(s.ETA_TOW) },
+    // closureHide:true — see `acceptance`'s own matching comment on its ETA field.
+    { n:"ETA_TOW", l:"ETA to Breakdown (mins)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) || hasRealEta(s.ETA_TOW), closureHide:true },
     { n:"_ExpectedArrival", l:"Expected Arrival Time", t:"computed", compute:expectedArrivalTime, emptyHint:"Not available yet — needs an Accept time and ETA.", full:true }
   ]},
   { key:"reachTow", branch:"tow", bucket:2, short:"Reach", title:"Reach Breakdown (Tow)",
@@ -2744,7 +2891,19 @@ const STAGES = [
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
-    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual },
+    // Soft-test item #19 — see `reach`'s own matching comment (same
+    // display-only estimate, TOW's own copy of the stage). calcRoundTripKm()
+    // automatically includes the drop leg here once DropLocationLat/Long are
+    // captured (Office→Breakdown→Drop→Office), or falls back to the same
+    // 2-leg estimate as RSR if the drop pin isn't set yet.
+    { n:"__RoundTripEstimate_TOW", l:"Round Trip Distance (Estimate)", t:"computed", full:true,
+      compute:(r)=>{ const km=calcRoundTripKm(r); return km>0 ? (km+" km (straight-line estimate via office)") : ""; },
+      emptyHint:"Not available yet — breakdown location not captured." },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 22 — "field not
+    // needed [on closure page], cancel distance will be populated in
+    // 'Distance to Breakdown (km, RSR)' field instead"). Still fully live on
+    // this Reach step itself.
+    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     // Distance_Cancel_To_Breakdown is the SAME shared brand-new field as
     // RSR's own copy (not split) — see `reach`'s own matching comment.
     { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual }
@@ -2859,9 +3018,20 @@ const STAGES = [
     // in vendorTicket). Agent-entering-mode only, same reasoning as `wip`'s
     // own RSR copy of these four fields.
     { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:acceptanceIsAgentManual },
-    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual },
+    // closureHide:true on Office_To_Mechanic/Breakdown_To_Office (2026-09-11,
+    // Task Tracker PDF items 23/24 — "field not needed to be displayed" on
+    // the closure page). Mechanic_To_Breakdown is NOT in that removal list —
+    // left visible on the closure page unchanged. All 3 stay fully live here
+    // on this Reach step itself either way — only the closure summary's own
+    // rows are affected. Note: the PDF's "and need not be calculated" for
+    // Office_To_Mechanic/Breakdown_To_Office is a display-only change here —
+    // the underlying calculation (part of the same round-trip leg chain
+    // Roundtrip_Distance/Mechanic_To_Breakdown also depend on) is left
+    // untouched, since stopping the calculation itself is a bigger,
+    // structurally different change not requested by this PDF pass.
+    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
-    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual },
+    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     // Added 2026-08-11 — RSP_Start_Latitude/Longitude's own "Reached Drop
     // Location" reuse (see this stage's own comment a few lines up) never
     // had an agent-manual editable copy anywhere, unlike every other field
@@ -2956,6 +3126,14 @@ const STAGES = [
     // guess with no real writer. This stage just displays the same
     // `quote`-stage Total_Service_Fee read-only instead of a second field.
     { n:"Total_Service_Fee", l:"Total Service Fee", t:"number", readonly:true },
+    // Remaining_Fee_Receipt_Time (2026-09-11, Task Tracker PDF item 13 —
+    // "REMAINING FEE RECEIPT TIME [is] Missing in Closure page... CAN
+    // DISPLAY in the 'FINAL PAYMENT . TECHNICIAN/DRIVER' section"). Field
+    // already exists and is already stamped (confirmPaymentReceived() in
+    // all 3 vendor-facing apps' cash branch, plus this stage's own agent-run
+    // payment flow — see FIELDS.md's own entry) — just never shown anywhere
+    // in this widget before. Plain read-only mirror, nothing new stored.
+    { n:"Remaining_Fee_Receipt_Time", l:"Remaining Fee Receipt Time", t:"text", readonly:true },
     // readonly:true added 2026-08-19 (real gap found while re-confirming the
     // 2026-08-18 Payment-page fix per user request) — this is the SAME kind
     // of pure re-display Total_Service_Fee right above it already is (both
@@ -2974,7 +3152,15 @@ const STAGES = [
     // vendorTicket's own payment screen already restored 2026-08-04 (see that
     // widget's own comment); this agent-side screen never had it back.
     { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:"Cash", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 17 — "REMOVE FROM
+    // CLOSURE PAGE (DUPLICATE FIELD OF PAYMENT STATUS)"). Still fully live/
+    // editable on this Final Payment step itself — including still reachable
+    // via CLOSURE_ALWAYS_EDITABLE_FIELDS' OWN click-to-edit mechanism if that
+    // ever needs it again, since that list only controls edit-lock behavior
+    // for a row that IS shown, not whether the row renders at all; with this
+    // row now hidden from the summary entirely, that list entry is simply
+    // inert for this field, not broken.
+    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },
     // Decorative QR block (2026-08-11, user request) — same placeholder
     // pattern vendorTicket's own renderPaymentScreen() already uses (no real
     // gateway/webhook wired up on that side either, see its own comment) —
@@ -2994,7 +3180,16 @@ const STAGES = [
     // repeatable:true so the agent can resend (wrong number, missed
     // notification, etc.) — same tradeoff as every other repeatable send
     // button in this file: a one-off toast instead of a permanent "done" lock.
+    // when: added 2026-09-11 (explicit user request, live screenshot) — this
+    // button used to show unconditionally regardless of Payment_Method_Final,
+    // including when "Payment Gateway" was selected (where the QR block
+    // above already covers that collection path) — now hidden specifically
+    // for "Payment Gateway", shown for every other method (Cash/UPI/Card/
+    // Net Banking), matching the exact behavior requested. Only this
+    // button's visibility changes — Payment_Method_Final/Payment_received/
+    // the QR block/QR_Code field are all untouched.
     { n:"Send_Payment_Link1", l:"Send payment link", t:"button", full:true, repeatable:true, readonly:(s)=>!acceptanceIsAgentManual(s),
+      when:(s)=>s.Payment_Method_Final!=="Payment Gateway",
       buttonLabel:"Send Payment Link", doneLabel:"Payment Link Sent",
       // Real gap fixed 2026-09-07 (user decision: "split into two invoices"
       // — see onDemandInvoicing()'s own header comment and Send_Payment_Link's
@@ -3049,7 +3244,10 @@ const STAGES = [
         // Number(r.Remaining_Fee)||0, "Zoho_Books_Invoice_ID_Remaining",
         // "-RF", true, "Zoho_Payment_URL_Remaining"). Now calls the new
         // standalone generateZohoPaymentLink() instead.
-        const invoicingPromise=generateZohoPaymentLink(r, Number(r.Remaining_Fee)||0, caseLabel(r)+"-RF", serviceLabelFor(r), "Zoho_Payment_URL_Remaining");
+        // description now GST-aware (2026-09-11) — see Send_Payment_Link's
+        // own matching comment (Booking Fee, above); same treatment here for
+        // Remaining_Fee.
+        const invoicingPromise=generateZohoPaymentLink(r, Number(r.Remaining_Fee)||0, caseLabel(r)+"-RF", paymentLinkDescriptionWithGst(r.Remaining_Fee, serviceLabelFor(r)), "Zoho_Payment_URL_Remaining");
         invoicingPromise.then(function(invoiceUrl){
           console.log("[Get-Rescue] Send_Payment_Link1: invoice URL for ticket", r.ID, "->", invoiceUrl||"(none)");
           if(!invoiceUrl) console.warn("[Get-Rescue] Send_Payment_Link1: no invoice URL came back — sending the WhatsApp message without a fresh payment link this time.");
@@ -3064,18 +3262,35 @@ const STAGES = [
           // Remaining Fee here, not the Booking Fee; the widget's own MODE
           // (remaining_payment) is what tells customerPage which one it is.
           const customerPageUrl = buildCustomerPageUrl(r, "remaining_payment", { bookingamount: String(r.Remaining_Fee||0) });
-          const customerLink = customerPageUrl || invoiceUrl;
-          // Diagnostic log — see Send_Payment_Link's own matching comment above.
-          console.log("[Get-Rescue] Send_Payment_Link1: CUSTOMER_PAGE_BASE_URL =", CUSTOMER_PAGE_BASE_URL || "(blank — not configured in this deployed widget)", "| buildCustomerPageUrl result =", customerPageUrl || "(empty)", "| invoiceUrl =", invoiceUrl || "(empty)", "| customerLink actually used =", customerLink || "(empty)");
-          const param2 = String(r.Total_Service_Fee||0) + (customerLink ? (" - Pay now: "+customerLink) : "");
+          // Real bug fixed 2026-09-11 — same root cause/fix as
+          // Send_Payment_Link's own matching comment above (Booking Fee):
+          // `customerLink` no longer falls back to the raw Zoho Payments
+          // `invoiceUrl` — the customer should only ever see the Customer
+          // Page link — and the send now ABORTS with a clear toast instead
+          // of silently mailing a bare-number message when the link can't
+          // be built.
+          const customerLink = customerPageUrl;
+          console.log("[Get-Rescue] Send_Payment_Link1: CUSTOMER_PAGE_BASE_URL =", CUSTOMER_PAGE_BASE_URL || "(blank — not configured in this deployed widget)", "| buildCustomerPageUrl result =", customerPageUrl || "(empty)", "| invoiceUrl (Zoho payment link, NOT sent to the customer directly) =", invoiceUrl || "(empty)");
+          if(!customerLink){
+            console.warn("[Get-Rescue] Send_Payment_Link1: no Customer Page link could be built — ABORTING the WhatsApp send rather than sending a message with a missing/garbled amount.");
+            toast("Couldn't build the Customer Page link — payment link was saved, but the WhatsApp message was NOT sent. Check CUSTOMER_PAGE_BASE_URL and the console.","err");
+            return;
+          }
+          const param2 = String(r.Total_Service_Fee||0) + " - Pay now: " + customerLink;
           // param3 added 2026-09-06 — see Send_Payment_Link's own matching
           // comment above. Purely additive alongside param2's own already-
-          // working embedded link text.
-          sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Remaining_Fee||0), param2, customerLink||""])
+          // working embedded link text. Sent as the Customer Page link too
+          // (never the raw invoiceUrl), consistent with param2 above.
+          sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Remaining_Fee||0), param2, customerLink])
             .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
         });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
+    // Soft-test item #4/#7 — same reasoning as the Booking Fee payment-link
+    // display on the Quote stage above, for the Remaining Fee.
+    { n:"__PaymentLinkDisplay_RF", l:"Remaining Fee Payment Link", t:"navlink", full:true,
+      hrefField:"Zoho_Payment_URL_Remaining", linkLabel:"💳 Open Payment Link",
+      emptyMsg:"No payment link yet — click \"Send Payment Link\" above to generate one." },
     // Label changed 2026-09-02 (build-plan item #8) — see Image_Upload's own
     // matching comment (Quote/Booking-Fee stage) for the full rationale.
     // Label-only, field API name (n:) untouched — no schema/data impact.
@@ -3175,9 +3390,38 @@ const CLOSURE_FIELDS=[
   { n:"Refund_Due", l:"Refund Due?", t:"radio", o:["Yes","No"], default:"No" },
   { n:"Refund_Reason", l:"Refund Reason", t:"select", o:REJECT_REASONS, when:(s)=>s.Refund_Due==="Yes", req:true },
   { n:"Refund_Amount", l:"Refund Amount", t:"number", when:(s)=>s.Refund_Due==="Yes", req:true },
+  // RSP Closure Status / RSP Closure Time (2026-09-11, Task Tracker PDF
+  // items 1/14 — both "field not available on closure page; CAN DISPLAY
+  // ABOVE agent CLOSURE STATUS").
+  // "RSP Closure Status (Vendor)" — no distinct field by this name exists
+  // anywhere in this app's schema (checked FIELDS.md and a full-file search);
+  // read instead as the ticket's own `Status` value at whatever point the
+  // vendor/technician/driver side left it (e.g. "RSP COMPLETE", "RSP
+  // CANCELLED", "CX REJECT") — the vendor-side outcome the agent is about to
+  // close against. ASSUMPTION, not independently confirmed — if a real,
+  // separate "RSP Closure Status" field does exist in Zoho, tell me its
+  // link name and this can point at that instead. t:"computed" (not a plain
+  // mirror of `Status`) specifically so editing it here can never
+  // accidentally overwrite the real Status field — this is read-only by
+  // construction, not just by convention.
+  { n:"__RSPClosureStatusDisplay", l:"RSP Closure Status (Vendor)", t:"computed", full:true,
+    compute:(r)=>r.Status||"", emptyHint:"No status yet." },
+  // RSP_Closure_Time — field already exists (2026-09-07, stamped in all 3
+  // vendor-facing apps' own confirmPaymentReceived(), same trigger as
+  // Remaining_Fee_Receipt_Time — see FIELDS.md) — just never shown anywhere
+  // in this widget before. Plain read-only mirror, nothing new stored.
+  { n:"RSP_Closure_Time", l:"RSP Closure Time", t:"text", readonly:true },
   // "Cancelled - Billable" added 2026-08-17 (user-provided spec) — see this
   // field's own header comment further up for the full history/rationale.
   { n:"Closure_Status", l:"Closure Status", t:"select", o:["Not Converted","Cancelled","Cancelled - Billable","Completed"], req:true, full:true },
+  // Agent_Closure_Time (2026-09-11, Task Tracker PDF item 15 — "field not
+  // available on closure page; CAN DISPLAY BELOW agent CLOSURE STATUS").
+  // Field already exists and is already written on every Final Closure save
+  // (saveClosure()'s own payload) — just never shown anywhere before. Plain
+  // read-only mirror; harmless that it lags one save behind (shows whatever
+  // was written on the LAST save, not "right now," same as every other
+  // readonly display field in this app).
+  { n:"Agent_Closure_Time", l:"Task Closure Time (Agent)", t:"text", readonly:true },
   { n:"Closure_Reason", l:"Not Converted / Cancelled Reason", t:"select", o:REJECT_REASONS, full:true,
     when:(s)=>s.Closure_Status==="Cancelled"||s.Closure_Status==="Cancelled - Billable"||s.Closure_Status==="Not Converted", req:true },
   { n:"Remarks", l:"Remarks", t:"remarks", full:true },
@@ -3221,7 +3465,7 @@ const CLOSURE_FIELDS=[
      app's other Zoho Checkbox-type fields (Send_Payment_Link1,
      Send_Link_For_The_Drop_Location — see buildPayload()'s own matching
      branch), not the plain "Yes"/"No" string shape used by t:"radio" fields. */
-  { n:"Google_Feedback_Requested", l:"Request Google Feedback", t:"check" }
+  { n:"Google_Feedback_Requested", l:"Request Google Feedback", t:"check" },
   // Customer_Feedback_Requested ("Request Customer Feedback" checkbox) and
   // Closure_Extra_Photo ("Additional Photo") REMOVED 2026-09-10 (explicit
   // client soft-test feedback: "please remove the 'REQUEST CUSTOMER
@@ -3237,6 +3481,143 @@ const CLOSURE_FIELDS=[
   // saves going forward (buildPayload() only ever sends fields present in
   // a step's own field list, same safe pattern as every other removed field
   // in this project), it never touches historical data.
+  //
+  // "Generate Invoice" (2026-09-11, explicit user request, per the
+  // "On-Demand Workflow for Invoicing" PDF: "an invoice should be created
+  // when the ticket is Closed/Complete") — a manual, agent-clicked trigger
+  // for the REAL Zoho Books invoice (GST breakup, tax, email, invoice
+  // number), reusing the EXISTING onDemandInvoicing() function verbatim —
+  // that function has been fully built and correct since 2026-08-27 but was
+  // disconnected from Send_Payment_Link/Send_Payment_Link1 on 2026-09-10
+  // ("create new custom api for that and now dont use onDemandInvoicing
+  // function we will work on this later") in favor of the simpler
+  // generateZohoPaymentLink() payment-link-only flow. This button is that
+  // "later" — it does NOT touch Send_Payment_Link/Send_Payment_Link1 or
+  // generateZohoPaymentLink() at all, so the payment-link flow for every
+  // client type (ON DEMAND included) is completely unaffected.
+  //
+  // Gated to ON DEMAND clients specifically (per the explicit request,
+  // "for tickets where the client is ON DEMAND") AND to a Closed/Complete
+  // ticket — reuses onDemandInvoiceEligibility()/computeClosureTSF() as-is
+  // (the exact same functions saveClosure()'s own maybeCreateOnDemandInvoice()
+  // already uses for its own, separate internal-tracking-record write —
+  // see that function's own comment) rather than writing a new condition,
+  // so this button's visibility rule can never drift out of sync with the
+  // existing eligibility logic.
+  //
+  // agentEditable:true — the ONE renderFields()-level exemption from
+  // state.closureReadOnly's blanket "every closure field goes readonly"
+  // clone (see renderFields()'s own comment on this exact flag) — needed so
+  // the button stays clickable when reopening an ALREADY-CLOSED ticket too,
+  // matching the spec's own ordering (ticket closes, THEN the invoice gets
+  // created) without requiring the agent to generate it in the same instant
+  // they save the closure.
+  //
+  // repeatable:true (same tradeoff as every other network-calling button in
+  // this file, e.g. Send_Payment_Link1's own matching comment: a one-off
+  // toast instead of a permanent UI lock, so a genuine network failure can
+  // be retried) — but unlike a repeatable payment-link send, a DUPLICATE
+  // Zoho Books invoice is a real financial/audit problem, not just a resent
+  // WhatsApp message. Two independent guards inside action: below instead:
+  // (1) Zoho_Books_Invoice_ID already set -> refuse outright (Books' own
+  // record of a completed invoice, the same durable signal
+  // maybeCreateOnDemandInvoice() itself relies on for its own duplicate
+  // check); (2) a local in-flight flag -> refuses a rapid double-click
+  // before the first call has even finished, since Zoho_Books_Invoice_ID
+  // itself is only ever refreshed into state.record AFTER that first call's
+  // own async write completes.
+  { n:"Generate_OnDemand_Invoice", l:"Generate Invoice", t:"button", full:true, repeatable:true, agentEditable:true, ephemeral:true,
+    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    buttonLabel:"Generate Invoice", doneLabel:"Invoice Generated",
+    action:(r)=>{
+      if(r.Zoho_Books_Invoice_ID){
+        toast("Invoice already generated — Zoho Books Invoice ID "+r.Zoho_Books_Invoice_ID,"err");
+        return;
+      }
+      if(state._generatingOnDemandInvoice){
+        toast("Already generating — please wait","err");
+        return;
+      }
+      const finalTsf = computeClosureTSF(r);
+      const elig = onDemandInvoiceEligibility(r, finalTsf);
+      if(!elig || !elig.isOnDemand){
+        toast("Not eligible for an On Demand invoice right now","err");
+        return;
+      }
+      state._generatingOnDemandInvoice = true;
+      toast("Generating invoice…","ok");
+      // amountOverride = elig.amount (computeClosureTSF()'s own confirmed-
+      // paid net total, same figure maybeCreateOnDemandInvoice() itself
+      // invoices) rather than letting onDemandInvoicing() fall back to its
+      // own default (record.Total_Service_Fee, the ORIGINAL quote, not the
+      // reconciled final amount) — matches the spec's own "final amount"
+      // wording precisely.
+      // paymentUrlField (2026-09-11, Task Tracker PDF item 27 — "INVOICE LINK
+      // [is] Missing in Closure page - DISPLAY at end of page") — CHANGED
+      // from null to "Zoho_Books_Invoice_URL": onDemandInvoicing() already
+      // returns a real invoice/payment `url` from Zoho Books (see its own
+      // "return url;") and already has a complete write-back mechanism for
+      // it via this exact parameter (see its own "if(paymentUrl &&
+      // paymentUrlField)" branch) — this call just never passed a field name
+      // in before, so the URL was computed and returned but silently
+      // discarded every time. Zoho_Books_Invoice_URL is a NEW field —
+      // needs creating in Zoho (Single Line Text, same convention as
+      // Zoho_Books_Invoice_ID) before this write actually persists; the
+      // button/display below degrade safely either way (just stays blank)
+      // until it exists. Zero overlap with Zoho_Payment_URL/_Remaining —
+      // those remain generateZohoPaymentLink()'s own exclusive fields,
+      // completely untouched by this call.
+      // referenceSuffix left blank — this is the ticket's own one dedicated
+      // invoice, not a "-BF"/"-RF" suffixed one like the old (now-disconnected)
+      // Send_Payment_Link/Send_Payment_Link1 calls used.
+      onDemandInvoicing(r, elig.amount, "Zoho_Books_Invoice_ID", "", true, "Zoho_Books_Invoice_URL").then(function(url){
+        state._generatingOnDemandInvoice = false;
+        if(url){
+          toast("Invoice generated successfully","ok");
+          // onDemandInvoicing() writes Zoho_Books_Invoice_ID/_URL back onto
+          // the TICKET in Zoho asynchronously, inside its own fire-and-forget
+          // apiUpdate() call — state.record here has no way to know that
+          // happened. Re-fetching both fields lets the display rows below
+          // (and the Zoho_Books_Invoice_ID-already-set guard above) reflect
+          // it without requiring a full ticket reopen. Also seeds
+          // Zoho_Books_Invoice_URL from `url` directly (the value this exact
+          // call just received, before any re-fetch even completes) so the
+          // link row shows immediately even if Zoho_Books_Invoice_URL isn't
+          // created in Zoho yet — same graceful-degrade philosophy as every
+          // other not-yet-created field in this app.
+          state.record.Zoho_Books_Invoice_URL = url;
+          if(state.recordId){
+            apiGetById(state.recordId).then(function(fresh){
+              if(fresh && fresh.Zoho_Books_Invoice_ID) state.record.Zoho_Books_Invoice_ID = fresh.Zoho_Books_Invoice_ID;
+              if(fresh && fresh.Zoho_Books_Invoice_URL) state.record.Zoho_Books_Invoice_URL = fresh.Zoho_Books_Invoice_URL;
+              rerenderCurrentView();
+            }).catch(function(){ rerenderCurrentView(); });
+          }
+        } else {
+          toast("Invoice generation failed — check console for details","err");
+        }
+      });
+    } },
+  // Display-only companion to the button above — Zoho_Books_Invoice_ID
+  // itself was never shown anywhere in this widget before today (confirmed
+  // via full-file search), so without this the agent would have no way to
+  // actually see/reference the invoice ID this button just generated. Same
+  // t:"computed" pattern already proven this session for the payment-link/
+  // vendor-mobile displays (soft-test items #4/#7/#17) — read-only,
+  // recomputed fresh on every render, nothing new stored.
+  { n:"__OnDemandInvoiceIdDisplay", l:"Zoho Books Invoice ID", t:"computed", full:true,
+    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    compute:(r)=>r.Zoho_Books_Invoice_ID||"",
+    emptyHint:"Not generated yet — click \"Generate Invoice\" above." },
+  // Invoice Link (2026-09-11, Task Tracker PDF item 27 — "DISPLAY at end of
+  // page") — placed last in CLOSURE_FIELDS, matching that instruction
+  // literally. Same t:"navlink" pattern already proven for the Booking
+  // Fee/Remaining Fee payment-link displays (__PaymentLinkDisplay_BF/_RF)
+  // above — a real clickable link, not just an ID string.
+  { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
+    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    hrefField:"Zoho_Books_Invoice_URL", linkLabel:"🧾 Open Invoice",
+    emptyMsg:"Not available yet — click \"Generate Invoice\" above." }
 ];
 // See STAGES' own "agentClosure" entry's comment — patched in here (rather
 // than inline in that array literal) because STAGES is built before this
@@ -3305,16 +3686,16 @@ const DISTANCE_METRICS_FIELDS=[
   // an editable one — see closureFieldRowHtml()'s own matching comment).
   { n:"_ETA_Met_Status", l:"ETA Met / Missed", t:"computed", compute:etaMetStatusText,
     emptyHint:"Not available yet — needs an ETA, an Accept time, and a Reach time." },
-  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11 — see `reach`/`reachTow`'s own new Cancel_Distance field
+  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11 — see `reach`/`reachTow`'s own new Cancel_Distance field; closureHide — see that field's own matching comment (Task Tracker PDF item 22)
   // Reach_Location→Breakdown / Cancel_Location→Breakdown (2026-08-11, user
   // request, "Missing Fields & Field Behavior" spec) — brand-new fields, see
   // `reach`/`reachTow`'s own matching comment; not yet in Create_Case.
   { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) },
   { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) },
   { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) },
-  { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
-  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
-  { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; closureHide — Task Tracker PDF item 23, see `reach`'s own matching comment
+  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11 — NOT in the PDF's removal list, left visible
+  { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; closureHide — Task Tracker PDF item 24
   { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
@@ -3363,7 +3744,13 @@ const DISTANCE_METRICS_FIELDS=[
 const FIELD_ACTIVITY_LOG_FIELDS=[
   { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
-  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
+  // closureHide:true (2026-09-11, Task Tracker PDF item 16 — "REMOVE FROM
+  // CLOSURE PAGE"; the PDF's suggested new home, "display along with invite
+  // status of various vendors in the Assignment page," is a separate,
+  // bigger UI addition to the live Assignment step — not built as part of
+  // this pass, flagged for a follow-up). Field itself is untouched — still
+  // written exactly as before, just no longer shown in Final Closure.
+  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11
   // Real bug fixed 2026-08-11 (user-reported via the "Missing Fields & Field
   // Behavior" spec's own item 3: "these fields should be read-only for the
   // agent while [the vendor is using the app]") — this was the ONE field in
@@ -3397,7 +3784,30 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // FIRST can pop up a modal titled with the OTHER copy's label — cosmetic
   // only, still edits the correct underlying field either way.
   { n:"RSP_Start_Latitude", l:"RSP Location — Accept/Drop (Lat)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
-  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) }
+  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
+  // Assignment_Time (2026-09-11, Task Tracker PDF item 10 — "RSP INVITE TIME
+  // [is] Missing in Closure page... CAN DISPLAY in the 'FIELD ACTIVITY LOG'
+  // section"). Field already exists (added 2026-09-03 for agentPerformance's
+  // "Avg Time (Creation to Assignment)" metric) and is already stamped the
+  // first time the Assignment step is successfully saved with at least one
+  // vendor picked — i.e. the moment the RSP(s) are actually invited — just
+  // never shown anywhere in this widget before. Plain read-only mirror,
+  // nothing new stored.
+  { n:"Assignment_Time", l:"RSP Invite Time", t:"text" },
+  // "BDL ETA" (2026-09-11, Task Tracker PDF items 12/21 — a matched pair:
+  // item 21 says the raw "ETA to Breakdown (mins)" fields are "not needed in
+  // closure page, need only actual time in date-time format"; item 12 asks
+  // for exactly that date-time value here, in Field Activity Log). Reuses
+  // expectedArrivalTime() completely as-is — the SAME already-live, already-
+  // tested function `_ExpectedArrival` (on the `acceptance`/`acceptanceTow`
+  // stages' own Accept screen) already computes from Accept time + ETA
+  // minutes, e.g. "12:20 PM" — no new calculation, no new field, just this
+  // same real value mirrored into the Closure summary too. t:"computed" like
+  // `_ETA_Met_Status` above — safe here since FIELD_ACTIVITY_LOG_FIELDS'
+  // own closureFieldGroups() filter (unlike grp()'s STAGES-based one) never
+  // excluded computed/navlink field types to begin with.
+  { n:"_BDL_ETA", l:"BDL ETA", t:"computed", compute:expectedArrivalTime,
+    emptyHint:"Not available yet — needs an Accept time and an ETA." }
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -4059,11 +4469,26 @@ async function runClosureDistanceCalculations(record){
     const assignedRaw = record.Assigned_Vendor;
     const assignedVendorId = assignedRaw && typeof assignedRaw==="object" ? (assignedRaw.ID||assignedRaw.id) : assignedRaw;
     const vendorOpt = assignedVendorId!=null ? OPTIONS.vendors.find(function(o){ return String(o.id)===String(assignedVendorId); }) : null;
+    // Diagnostic logging (2026-09-11, Task Tracker PDF items 26/33 — "Vendor
+    // Round Trip Distance"/"Vendor Fleet Location" both "field is there, but
+    // data not populating"). This whole block already silently no-ops
+    // whenever vendorOpt/base can't be resolved — that's why nothing ever
+    // showed up, but nothing ever explained WHY either. Doesn't change any
+    // behavior, only makes the existing silent-skip cases visible: most
+    // likely cause, based on nearestVendorBaseLocation()'s own logic, is that
+    // the assigned vendor's own Base_Location_1..5_Lat/Lon fields (on
+    // Vendors_Report) are empty in Zoho — that's real DATA this code can't
+    // fix, only report on. Next real Agent Closure save will show exactly
+    // which case fired.
+    if(!vendorOpt){
+      console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location/Vendor Round Trip Distance/Vendor Distance will NOT populate: no matching vendor found in OPTIONS.vendors for assignedVendorId =", assignedVendorId, "(raw Assigned_Vendor:", JSON.stringify(assignedRaw), ") — either no vendor has accepted this ticket yet, or OPTIONS.vendors hasn't loaded.");
+    }
     if(vendorOpt){
       let base=null;
       if(record.Vendor_Fleet_Location_Lat==null || record.Vendor_Fleet_Location_Lat===""){
         base=nearestVendorBaseLocation(vendorOpt.raw, bLat, bLon);
         if(base){ record.Vendor_Fleet_Location_Lat=String(base.lat); record.Vendor_Fleet_Location_Lon=String(base.lon); }
+        else console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location will NOT populate: vendor", vendorOpt.label||assignedVendorId, "has no Base_Location_1..5_Lat/Lon pair on file in Vendors_Report (or none parsed as valid coordinates) — check that vendor's own record in Zoho Studio.");
       } else {
         base={ lat:parseCoord(record.Vendor_Fleet_Location_Lat), lon:parseCoord(record.Vendor_Fleet_Location_Lon) };
       }
@@ -5325,6 +5750,22 @@ async function loadInviteStatuses(recordId){
 function inviteStatusFor(inv){
   if(String(inv.Status||"").trim().toUpperCase()==="RSP REJECT") return {label:"Rejected", color:"var(--stop)"};
   if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return {label:"Accepted", color:"var(--ok)"};
+  // "Timed Out" (2026-09-10, soft-test item #17, second half — "Timeout
+  // status still indistinguishable from awaiting, no real Timed Out status
+  // exists") — still awaiting AND has been that way for more than
+  // INVITE_TIMEOUT_MS (see its own comment, near LOCK_STALE_MS, for the
+  // reasoning). Invited_At is written once at invite creation (syncInvites(),
+  // see its own comment) using fmtDateTime()'s exact dash format
+  // ("10-Sep-2026 14:05:00") — parseDateTime24() already parses that exact
+  // format elsewhere in this file (activeLockOn()'s own matching Locked_At
+  // check). A missing/unparseable Invited_At (e.g. an older invite from
+  // before this field existed) just falls through to "Awaiting response"
+  // below rather than guessing — never wrongly flagged as timed out.
+  // Display-only: nothing is written back to Zoho here, so this has zero
+  // effect on Vendors1/rejectedVendorIds() (which only ever matches the
+  // "Rejected" label above) or anything else that saves — purely additive.
+  const invitedAt = parseDateTime24(inv.Invited_At);
+  if(invitedAt && (Date.now()-invitedAt.getTime()) > INVITE_TIMEOUT_MS) return {label:"Timed Out", color:"var(--muted)"};
   return {label:"Awaiting response", color:"var(--wait)"};
 }
 // Real bug fixed (2026-08-07, user-reported live: "if a vendor rejects the
@@ -5395,9 +5836,19 @@ function assignInviteStatusHtml(){
     const name = lookupNamesFor(inv.Vendor, OPTIONS.vendors) || "—";
     const st = inviteStatusFor(inv);
     const reason = st.label==="Rejected" ? (readVal(inv,"Reject_Reason")||"") : "";
+    // Elapsed-since-invited text (2026-09-10, alongside the new "Timed Out"
+    // status just above) — only shown for the two still-open states, where
+    // knowing HOW long actually helps the agent decide whether to keep
+    // waiting or intervene; Rejected/Accepted are already resolved, an
+    // elapsed time there wouldn't add anything.
+    let elapsed = "";
+    if(st.label==="Awaiting response" || st.label==="Timed Out"){
+      const invitedAt = parseDateTime24(inv.Invited_At);
+      if(invitedAt) elapsed = " ("+fmtDurationShort(Date.now()-invitedAt.getTime())+" ago)";
+    }
     return `<div class="crow" style="cursor:default">
       <span class="k">${esc(name)}</span>
-      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${reason?(" — "+esc(reason)):""}</span>
+      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${esc(elapsed)}${reason?(" — "+esc(reason)):""}</span>
     </div>`;
   }).join("");
   return `<div class="form-card" style="margin-top:14px">
@@ -5967,6 +6418,15 @@ function computeServiceTime(r){
   return fmtDateTime12(new Date(Date.now()+30*60*1000));
 }
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+// Soft-test item #12 (2026-09-10) — see vendorTicket's own matching comment
+// (same geo: URI fix for Android, only branches for Android, iOS/desktop
+// keep the existing maps.google.com link untouched). This file only has one
+// call site (buildField()'s own navlink branch, below), unlike the three
+// field-facing widgets which repeat this pattern several times each.
+function buildNavUrl(lat, lon){
+  const isAndroid = /Android/i.test(navigator.userAgent||"");
+  return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
+}
 /* every phone number in this app is an Indian number — if the agent didn't
    type a country code, assume +91 rather than leaving it bare. Matches the
    "+919696406443" shape Create_Case expects (no spaces/dashes). */
@@ -6395,6 +6855,27 @@ function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID|
 function serviceLabelFor(record){
   return [record[CONFIG.serviceTypeField]||"", lookupNamesFor(record.Vehicle_Issue, OPTIONS.issues)||""].filter(Boolean).join(" - ") || "Service Charge";
 }
+// paymentLinkDescriptionWithGst() (2026-09-11, explicit user spec — "Payment
+// & Invoicing Requirement": Booking Fee/Remaining Fee are both sent as
+// GST-inclusive amounts; "Customer Service Fee + 18% GST = Total Fee").
+// Confirmed via Zoho Payments' own "Create Payment Link" API docs: it has NO
+// tax/GST/line-item fields at all — `amount`+`description` (plain strings)
+// are the only content fields available, everything else is delivery/
+// notification config. So "including the GST part" on a payment link can
+// only mean surfacing the breakdown as readable text inside `description`
+// (the one place the customer actually sees before paying) — there's no
+// separate GST field to populate on this API. Reuses computeGstBreakup()
+// completely as-is (the same back-calculation already used by
+// maybeCreateOnDemandInvoice()/onDemandInvoicing() for the final invoice —
+// serviceCharges=amount/1.18, CGST=SGST=serviceCharges*9%) so the SAME
+// amount charged here (the GST-inclusive Booking_Fee or Remaining_Fee) is
+// what gets broken down — no change to what the customer is actually
+// charged, only to what they can see the charge is made of.
+function paymentLinkDescriptionWithGst(amount, baseLabel){
+  const { serviceCharges, cgst, sgst } = computeGstBreakup(Number(amount)||0);
+  const money=(n)=>"₹"+n.toFixed(2);
+  return (baseLabel||"Service Charge")+" — Service Charges "+money(serviceCharges)+" + CGST(9%) "+money(cgst)+" + SGST(9%) "+money(sgst)+" = "+money(Number(amount)||0)+" (incl. GST)";
+}
 let toastT;
 function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
 
@@ -6433,6 +6914,13 @@ $("mYes").onclick=()=>{ $("modal").classList.remove("on"); if(modalResolve) moda
    Deluge function doing a real compare-and-set, not attempted here. */
 const LOCK_STALE_MS = 15*60*1000; // no heartbeat in 15 min -> treat as abandoned (crashed tab, forgotten session), safe to silently take over
 const LOCK_HEARTBEAT_MS = 60*1000; // refresh Locked_At this often while the wizard is genuinely open, so an active session's own lock never goes stale mid-edit
+// Vendor invite "Timed Out" threshold — see inviteStatusFor()'s own comment
+// for the full reasoning. 15 minutes chosen to match LOCK_STALE_MS's own
+// value above as a reasonable default for "how long is too long to wait for
+// a vendor to respond to an invite" — this was NOT an explicit client
+// requirement/SLA, just a sensible starting point; easy to change here if a
+// different threshold is wanted later.
+const INVITE_TIMEOUT_MS = 15*60*1000;
 let LOCK_HEARTBEAT_TIMER=null;
 // Generalized out of agentDisplayName() below (2026-08-11) — that function
 // only ever resolved the CURRENT logged-in agent's own name; the lock UI
@@ -6671,7 +7159,22 @@ const EXPANDED_BUCKETS=new Set();
 const CHEV_ICON='<svg class="chev" viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M8 5l8 7-8 7" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function renderReportLists(recs){
   const cols = BUCKETS.map(()=>[]);
-  recs.forEach(r=>{ const b=bucketOfStatus(readVal(r,CONFIG.stageField)); if(b>=0) cols[b].push(r); });
+  recs.forEach(r=>{
+    // Soft-test item #22 (2026-09-10): "closed tickets remain visible in the
+    // main dashboard list; should be archived and reachable only via search,
+    // view-only" — Status==="CLOSED" (the final Agent-Closure state, written
+    // by saveClosure()) is excluded from the default dashboard render only;
+    // still fully findable via the existing phone/Case-ID search box, which
+    // calls getTickets() itself with its own criteria (see runSearch()'s own
+    // comment) — completely independent of this filtered render, so nothing
+    // about search changes. "RSP CLOSED"/"RSP CANCELLED"/"CX REJECT" are
+    // deliberately left visible here — those are earlier-stage "no longer
+    // active but not yet fully closed out" statuses in the same bucket, not
+    // what this specific complaint was about.
+    const status = String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase();
+    if(status==="CLOSED") return;
+    const b=bucketOfStatus(status); if(b>=0) cols[b].push(r);
+  });
   // Added 2026-09-02 (build-plan item #6, wireframe: "sorted by STATUS and
   // TIMERS") — within each status bucket, oldest ticket (longest since
   // Added_Time) first, so whatever's been sitting longest bubbles to the top
@@ -7445,11 +7948,22 @@ function renderWizard(){
   // are shared/reused across renders and must not carry a one-time lock
   // forward into a later, editable open of the same ticket.
   renderFields(state.closureReadOnly ? Object.assign({}, step, {viewOnly:true}) : step);
-  // Vendor Invite Status panel — assignment step only, see its own
-  // assignInviteStatusHtml() comment. state.inviteStatuses is loaded by
-  // openTicket() (on reopen) and refreshed by saveStep() (right after a
-  // fresh syncInvites() call) — this just renders whatever's already there.
-  $("assignInviteStatus").innerHTML = step.key==="assignment" ? assignInviteStatusHtml() : "";
+  // Vendor Invite Status panel — real bug fixed 2026-09-11 (user-reported
+  // live: "Vendor information (rejections/timeouts) fails to display on the
+  // Assignment page after a case is accepted by another vendor") — this used
+  // to render ONLY while step.key==="assignment" specifically. The moment ANY
+  // vendor accepts, the ticket's own Status moves past assignment, so
+  // stageIndexForStatus() resumes a reopened ticket on `acceptance`/
+  // `acceptanceTow` (or later) — never back on `assignment` — meaning this
+  // panel silently stopped rendering at all unless the agent manually
+  // clicked back to the Assign step in the stepper. The underlying data/
+  // render logic (assignInviteStatusHtml(), state.inviteStatuses) was never
+  // broken — it just had nowhere to render once the wizard moved on. Now
+  // also shown on `acceptance`/`acceptanceTow` — the exact step the wizard
+  // naturally lands on right after an accept/reject — so the full
+  // rejection/timeout history (including which vendor ultimately accepted)
+  // stays visible without any extra navigation.
+  $("assignInviteStatus").innerHTML = (step.key==="assignment"||step.key==="acceptance"||step.key==="acceptanceTow") ? assignInviteStatusHtml() : "";
   // Real bug fixed (2026-08-07, user-reported live: Receipt Photo on the
   // Payment step showed "Already uploaded" text but the thumbnail above it
   // stayed a placeholder icon forever) — this was WRONGLY believed to only
@@ -7753,14 +8267,26 @@ function buildField(f){
     // static f.hint (e.g. "Required unless paid via Payment Gateway.") only
     // when there's nothing uploaded yet to report on — existing file fields
     // with no f.hint set keep showing exactly nothing here, same as before.
-    const noFileHintText = (!has && !cur && f.hint) ? `<span class="hint">${esc(f.hint)}</span>` : "";
+    // Real bug fixed 2026-09-11 (user-reported live, screenshot: "image is
+    // not uploaded but label show already uploaded") — both checks below
+    // used to test raw `cur` truthiness directly. That's correct for a
+    // regular single File Upload field (empty is null/"", genuinely falsy),
+    // but Image_Upload3/Image_Upload4 ("Pre-service Photo"/"Post-service
+    // Photo" — confirmed Zoho Multiple File Upload fields, see FIELDS.md)
+    // come back as an empty array `[]` when nothing's been uploaded yet —
+    // and `[]` is truthy in JS, so "Already uploaded" showed even with zero
+    // real files. `fileCount` (just above) already runs every value through
+    // fileCountFor(), which correctly treats `[]` as 0 — using it here
+    // instead of raw `cur` makes the hint text agree with the thumbnail
+    // count (which was already correct; only the hint text was wrong).
+    const noFileHintText = (!has && !fileCount && f.hint) ? `<span class="hint">${esc(f.hint)}</span>` : "";
     // Hint text now names the actual count (2026-09-07) — "Already uploaded"
     // alone gave no indication multiple photos existed, part of the same
     // confusion the thumbnail bug above caused.
     const uploadedHintText = fileCount>1 ? `<span class="hint">${fileCount} photos already uploaded</span>` : `<span class="hint">Already uploaded</span>`;
     wrap.innerHTML=lab
       +thumbs
-      +`<input type="file" id="${id}" accept="image/*"${isReadonly(f)?" disabled":""}>`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(cur?uploadedHintText:noFileHintText));
+      +`<input type="file" id="${id}" accept="image/*"${isReadonly(f)?" disabled":""}>`+(has?`<span class="hint">Selected: ${esc(has.name)}</span>`:(fileCount?uploadedHintText:noFileHintText));
   } else if(f.t==="navlink"){
     // Clickable maps link, computed (not stored) — matches technicianTicket/
     // driverTicket/vendorTicket's own "Navigate to Breakdown" nav-link
@@ -7768,11 +8294,39 @@ function buildField(f){
     // Navigation_Link/Navigate_To_Breakdown_Link textareas — nothing ever
     // wrote to those (see FIELDS.md's own 🟡 note), so they always rendered
     // blank here even though the field-facing widgets show a working link.
+    // Generalized 2026-09-10 (soft-test items #4/#7: "the generated payment
+    // link must be clearly displayed on the interface" / "the direct
+    // location-sharing page link needs to be displayed to the agent") — two
+    // OPTIONAL new field properties, both backward-compatible (neither
+    // Navigation_Link nor Navigate_To_Breakdown_Link sets either one, so
+    // both keep their exact original Break_Down_Location1/lat-lon behavior
+    // unchanged):
+    // - f.hrefField: read the link straight from a stored record field
+    //   (e.g. Zoho_Payment_URL) instead of the hardcoded breakdown-location
+    //   computation.
+    // - f.hrefCompute(record): compute the link at render time from a
+    //   function instead (e.g. rebuilding the same Customer Page URL
+    //   Send_Link_For_The_Breakdown_Location's own WhatsApp send already
+    //   builds, via buildCustomerPageUrl() — that link was never persisted
+    //   to any field, so there's nothing for hrefField to point at here).
     const r=state.record;
-    const href = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? ("https://maps.google.com/?q="+r.Latitude+","+r.Longitude) : "");
+    let href, linkLabel, emptyMsg;
+    if(typeof f.hrefCompute==="function"){
+      href = f.hrefCompute(r) || "";
+      linkLabel = f.linkLabel || "Open Link";
+      emptyMsg = f.emptyMsg || "Not available yet.";
+    } else if(f.hrefField){
+      href = r[f.hrefField] ? String(r[f.hrefField]) : "";
+      linkLabel = f.linkLabel || "Open Link";
+      emptyMsg = f.emptyMsg || "Not available yet.";
+    } else {
+      href = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
+      linkLabel = "🧭 Navigate to Breakdown";
+      emptyMsg = "Breakdown location not captured yet — capture it on the Locations step.";
+    }
     wrap.innerHTML = href
-      ? lab+`<a href="${esc(href)}" target="_blank" rel="noopener" class="btn ghost" style="width:100%;justify-content:center;text-decoration:none">🧭 Navigate to Breakdown</a>`
-      : lab+`<span class="hint">Breakdown location not captured yet — capture it on the Locations step.</span>`;
+      ? lab+`<a href="${esc(href)}" target="_blank" rel="noopener" class="btn ghost" style="width:100%;justify-content:center;text-decoration:none">${esc(linkLabel)}</a>`
+      : lab+`<span class="hint">${esc(emptyMsg)}</span>`;
   } else if(f.t==="computed"){
     // Read-only computed display, nothing stored — same "computed at render
     // time, not saved" pattern as navlink above (see collectStep()'s own
@@ -8279,8 +8833,21 @@ function wireField(f,id){
           // nothing changed.
           const latOk = !isNaN(lat) && lat>=-90 && lat<=90;
           const lonOk = !isNaN(lon) && lon>=-180 && lon<=180;
-          if(latOk) state.record[f.parseTarget[0]]=roundCoord(lat);
-          if(lonOk) state.record[f.parseTarget[1]]=roundCoord(lon);
+          // Explicit 6 (2026-09-10, after the field's real Zoho config was
+          // confirmed: Latitude/Longitude/DropLocationLat/DropLocationLong
+          // are now Max Digits=15/Decimal Points=6) — was roundCoord(lat)
+          // with no second argument, which defaults to 17 decimals (see
+          // roundCoord()'s own comment). That default relied entirely on
+          // saveWithCoordFallback()'s own retry loop (COORD_PRECISION_FALLBACKS)
+          // converging down to 6 after several rejected attempts, which in
+          // turn depends on Zoho's own error text matching /maximum digits/i
+          // — unconfirmed for a "too many decimal places" rejection
+          // specifically (only ever confirmed live for the old "too few
+          // whole-number digits" error). Matching the real field limit
+          // directly here removes that dependency for the common case; the
+          // retry loop itself is untouched and still runs as a fallback.
+          if(latOk) state.record[f.parseTarget[0]]=roundCoord(lat,6);
+          if(lonOk) state.record[f.parseTarget[1]]=roundCoord(lon,6);
           if((!isNaN(lat)||!isNaN(lon)) && (!latOk||!lonOk)){
             toast("Invalid coordinates — latitude must be -90 to 90, longitude -180 to 180","err");
           }
@@ -8526,6 +9093,19 @@ function closureFieldGroups(){
   const tow = (state.record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const byKey={}; STAGES.forEach(function(s){ byKey[s.key]=s; });
   FIELD_ORIGIN_STAGE={};
+  // closureHide:true (2026-09-11, per the "Task Tracker" PDF's own
+  // CLOSURE PAGE column — several rows explicitly say "REMOVE FROM CLOSURE
+  // PAGE" or "field not needed [here]") — a NEW, narrowly-scoped flag: skips
+  // a field from the Final Closure summary ONLY, while leaving it completely
+  // untouched on its own live wizard step (still visible, still editable,
+  // still saved exactly as before). Deliberately separate from `when:`
+  // (which controls the field's real visibility on its own step too) and
+  // from `ephemeral`/ephemeral-adjacent flags (which control save-payload
+  // inclusion, not display) — this ONLY ever affects whether grp() below (or
+  // the two synthetic-group filters just under it) include the field in the
+  // closure summary's own read/edit rows. Checked in 3 places: this helper
+  // (STAGES-based groups) and DISTANCE_METRICS_FIELDS'/FIELD_ACTIVITY_LOG_
+  // FIELDS' own inline filters below (the two synthetic, non-STAGES groups).
   function grp(title, keys){
     const fields=[];
     keys.forEach(function(k){
@@ -8533,6 +9113,7 @@ function closureFieldGroups(){
       st.fields.forEach(function(f){
         if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||f.t==="computed"||f.t==="qrblock") return; // no meaningful value to show/edit here
         if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
+        if(f.closureHide) return;
         fields.push(f);
         FIELD_ORIGIN_STAGE[f.n]=st;
       });
@@ -8553,13 +9134,13 @@ function closureFieldGroups(){
     // Distance/ETA metrics (2026-08-04) — not tied to any STAGES entry, see
     // DISTANCE_METRICS_FIELDS' own header comment for why these live only here.
     (function(){
-      const fields=DISTANCE_METRICS_FIELDS.filter(function(f){ return !f.when || f.when(state.record); });
+      const fields=DISTANCE_METRICS_FIELDS.filter(function(f){ return (!f.when || f.when(state.record)) && !f.closureHide; });
       return fields.length ? {title:"Distance & ETA Metrics", fields:fields} : null;
     })(),
     // Field-activity timestamps/GPS (2026-08-04) — see
     // FIELD_ACTIVITY_LOG_FIELDS' own header comment for why these live only here.
     (function(){
-      const fields=FIELD_ACTIVITY_LOG_FIELDS.filter(function(f){ return !f.when || f.when(state.record); });
+      const fields=FIELD_ACTIVITY_LOG_FIELDS.filter(function(f){ return (!f.when || f.when(state.record)) && !f.closureHide; });
       return fields.length ? {title:"Field Activity Log", fields:fields} : null;
     })()
   ].filter(Boolean);
@@ -8617,7 +9198,15 @@ function closureFieldValueDisplay(f){
   }
   if(f.t==="file"){
     if(state.files[f.n]) return {text:"Selected: "+state.files[f.n].name, empty:false};
-    return v ? {text:"Uploaded", empty:false} : {text:"Not uploaded", empty:true};
+    // Real bug fixed 2026-09-11 — same root cause as buildField()'s own
+    // matching fix (see its own comment): a Zoho Multiple File Upload field
+    // (Image_Upload3/Image_Upload4 — "Pre-service"/"Post-service Photo")
+    // comes back as an empty array `[]` when nothing's uploaded, and `[]` is
+    // truthy in JS, so this used to say "Uploaded" even with zero real
+    // files. fileCountFor() already correctly treats `[]` as 0 — using it
+    // here instead of raw `v` truthiness fixes this same-shaped bug in the
+    // Final Closure summary view.
+    return fileCountFor(v) ? {text:"Uploaded", empty:false} : {text:"Not uploaded", empty:true};
   }
   if(Array.isArray(v)){
     if(!v.length) return {text:"None selected", empty:true};
@@ -8950,7 +9539,27 @@ async function saveFieldEditor(){
         if(f.t==="date") v=fmtDate(v);
         else if(f.t==="datetime") v=fmtDateTime(v);
         else if(f.t==="number"||f.t==="decimal") v=Number(v);
-        if(COORD_FIELDS.indexOf(f.n)>=0) v=roundCoord(v);
+        // Explicit 6 (2026-09-10) — see the parseTarget branch's own
+        // matching comment (wireField, above) for the full reasoning.
+        // Sent as a STRING (2026-09-11). CORRECTION same day: originally
+        // described as "matching" RSP_Start_Latitude/Longitude's own write
+        // pattern, on the assumption getPositionSafe() returns a string
+        // (pos.coords.latitude.toFixed(15)) — rechecked, it actually returns
+        // Number(...toFixed(15)), so RSP_Start_Latitude/RSP_Drop_Latitude/
+        // Pickup_Location_Lat/Handover_Location_Lat/Work_Completion_Lat/
+        // Cancel_Location_Lat (all written straight from getPositionSafe())
+        // have been receiving raw NUMBERS all along, into what are now all
+        // Single Line Text fields — and that's been working live since
+        // RSP_Start_Latitude was converted 2026-08-03. That's actually
+        // stronger evidence this is safe (empirically proven over weeks),
+        // not weaker — this explicit String() is extra insurance, not a
+        // required fix. Zoho also auto-converts a numeric string into a
+        // Decimal field on write (relied on elsewhere in this project, e.g.
+        // submitCustomerLocation.deluge's own latVal.toString() write), so
+        // either type works on either side of the Latitude/Longitude/
+        // DropLocationLat/DropLocationLong Decimal->Text conversion — now
+        // confirmed done in Zoho (2026-09-11, user-confirmed).
+        if(COORD_FIELDS.indexOf(f.n)>=0) v=String(roundCoord(v,6));
         payload[f.n]=v;
       }
       // Real bug fixed (2026-08-11, user-reported live: editing "Schedule
@@ -9012,7 +9621,17 @@ function collectStep(validate){
       // uploaded photo (reopening a saved ticket); state.files[f.n] covers
       // one just picked in this session, not uploaded yet.
       if(validate && typeof f.reqFile==="function" && f.reqFile(state.record)){
-        const has = state.files[f.n] || state.record[f.n];
+        // Same root cause as buildField()'s/closureFieldValueDisplay()'s own
+        // matching fixes (2026-09-11) — a Multiple File Upload field with
+        // zero files comes back as `[]`, which is truthy in JS, so
+        // `state.files[f.n] || state.record[f.n]` could evaluate to a
+        // truthy empty array and silently satisfy this mandatory-photo gate
+        // with NO real file present. Not actively triggered today (no
+        // multi-file field currently sets reqFile — only Image_Upload does,
+        // a regular single File Upload field where empty is null/""), but
+        // fileCountFor() makes this correct regardless of field type, at
+        // zero behavior change for the single-file case that works today.
+        const has = state.files[f.n] || (fileCountFor(state.record[f.n]) > 0);
         if(!has){ ok=false; missing=missing||(f.l+" (required for this payment method)"); }
       }
       return; // handled via state.files
@@ -9095,7 +9714,12 @@ async function saveWithCoordFallback(payload, saveFn){
   for(let i=0;i<COORD_PRECISION_FALLBACKS.length;i++){
     if(i>0){
       const dp=COORD_PRECISION_FALLBACKS[i];
-      COORD_FIELDS.forEach(function(k){ if(payload[k]!=null) payload[k]=roundCoord(payload[k],dp); });
+      // String() added 2026-09-11 — keeps every retry attempt consistent
+      // with the initial payload's own string send (see buildPayload's own
+      // matching comment); roundCoord() itself already Number()s its input
+      // first, so a string coming back in here from a previous attempt is
+      // handled fine either way.
+      COORD_FIELDS.forEach(function(k){ if(payload[k]!=null) payload[k]=String(roundCoord(payload[k],dp)); });
       console.warn("[Get-Rescue] coordinate save rejected for exceeding max digits — retrying at "+dp+" decimal place(s)");
     }
     try{ return await saveFn(payload); }
@@ -9108,7 +9732,20 @@ async function saveWithCoordFallback(payload, saveFn){
 function buildPayload(step){
   const p={}; const r=state.record;
   step.fields.forEach(f=>{
-    if(f.t==="summary"||f.t==="file") return;
+    // f.ephemeral (2026-09-11, added for Generate_OnDemand_Invoice) — every
+    // OTHER field type already has a natural way to stay out of the save
+    // payload when nothing meaningful is stored under its own name (a
+    // computed/navlink/qrblock field's state.record[f.n] is always
+    // undefined, so the generic "v==null -> omit" check below already
+    // excludes them for free) — but t:"check"/t:"button" fields are the ONE
+    // exception: the branch just below ALWAYS assigns p[f.n] to ["Yes"]/[]
+    // unconditionally, regardless of whether state.record[f.n] is set,
+    // which requires a REAL backing Zoho field to exist. This flag is an
+    // explicit opt-out for a button whose action is purely a client-side
+    // trigger with no Zoho field of its own — every existing field leaves
+    // this unset (falsy), so nothing about any current field's behavior
+    // changes; only a field that explicitly sets ephemeral:true is affected.
+    if(f.t==="summary"||f.t==="file"||f.ephemeral) return;
     if(f.when && !f.when(r)) return;
     let v=r[f.n];
     if(f.t==="check"||f.t==="button"){ p[f.n]= (v===true||v==="Yes")?["Yes"]:[]; return; }
@@ -9148,7 +9785,12 @@ function buildPayload(step){
     else if(f.t==="number"||f.t==="decimal") v=Number(v);
     // safety net for manual edits to the lat/long boxes themselves, not just
     // pasted via parseTarget (which already rounds on the way in — see wireField)
-    if(COORD_FIELDS.indexOf(f.n)>=0) v=roundCoord(v);
+    // Explicit 6 (2026-09-10) — see wireField's own matching comment for the
+    // full reasoning (the real Zoho field limit is now confirmed as exactly
+    // 6 decimal places; matching it directly here, not the 17-default).
+    // Sent as a STRING (2026-09-11) — see the quick-edit payload builder's
+    // own matching comment (buildPayload, above) for the full reasoning.
+    if(COORD_FIELDS.indexOf(f.n)>=0) v=String(roundCoord(v,6));
     p[f.n]=v;
   });
   // Real bug fixed (2026-08-19, user-reported live: assigning a vendor then

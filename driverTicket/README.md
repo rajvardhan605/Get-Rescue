@@ -285,6 +285,38 @@ Two fixes from the full soft-test gap audit (see the published findings), picked
 
 **Tested**: syntax-checked and packed — not yet independently live-tested.
 
+## 2026-09-10 (later) — least-effort-first pass: Android nav-link fix + image capture downscale
+
+Same two fixes as vendorTicket's own matching entry (see `getRescueTicket/README.md` for the full shared writeup):
+
+**Item #12** — new `buildNavUrl(lat, lon)` helper (near `esc()`); this widget's 4 nav-link call sites (`renderAcceptScreen()` breakdown+drop, `renderReachScreen()`, `renderReachedDropScreen()`) now route through it. Android gets a `geo:` URI; iOS/desktop unchanged.
+
+**Item #14** — new `CAPTURE_MAX_DIM = 1600` constant; `capturePhoto()`'s canvas now caps at that dimension before encoding, same as vendorTicket's own copy of this identical function.
+
+**Tested**: syntax-checked and packed. **Not yet live-tested** — needs a real Android device for the nav-link fix specifically.
+
+## 2026-09-11 — Location+timestamp capture: fixed a real field-reuse bug, added 3 new capture points
+
+Part of an app-wide "capture location+time at every relevant step" request — full lifecycle audit and field list in `getRescueTicket/README.md`'s own matching entry. This file's own changes:
+
+- **`reachedDrop()` — real bug fixed**: used to write the driver's GPS fix into `RSP_Start_Latitude`/`RSP_Start_Longitude`, the SAME fields Accept (`acceptService()`) already writes — silently overwriting and permanently losing the Accept-time position every time a drop location was reached. Now writes into a new, dedicated `RSP_Drop_Latitude`/`RSP_Drop_Longitude` pair instead.
+- **`vehiclePicked()`**: a live GPS fix was already being fetched here (for the pickup→drop distance/ETA calc) but only ever used transiently, then discarded. Now also persisted to new `Pickup_Location_Lat`/`Pickup_Location_Lon` fields — no second GPS fetch, just saves what was already fetched.
+- **`confirmDropped()`**: had a timestamp (`RSP_Completion_Time`) but no location capture at all. Added a `getPositionSafe()` call and new `Handover_Location_Lat`/`Handover_Location_Lon` fields.
+
+All 3 new field pairs are Single Line Text (matching `RSP_Start_Latitude`'s own type) and all reuse the existing `getPositionSafe()` helper — no new GPS mechanism, same best-effort/graceful-degrade-on-denial behavior as Accept/Reach/Cancel already have.
+
+**Tested**: syntax check passed, `zet pack` re-run, all 3 new field pairs confirmed present via fresh grep. **Not yet live-tested** — needs a real TOW ticket walked through Accept → Reach → Loading → Reached Drop → Unloading to confirm each step's own location lands in its own field, and that Accept's `RSP_Start_Latitude`/`Longitude` survives past the Reached Drop step now.
+
+## 2026-09-11 — 2 real bugs fixed, from a client "Task Tracker" audit (same fixes as vendorTicket, applied here identically)
+
+**Bug 1**: `confirmPaymentReceived()` called `apiUpdate()` (marking the ticket closed/paid) **before** `uploadPendingPhotos()` — a genuine photo-upload failure could leave the ticket closed and marked PAID without its mandatory receipt photo actually saved. Fixed by reordering: the photo upload now runs first, and a real failure blocks the close.
+
+**Bug 2**: `openGallery()` (choose-from-gallery) pushed the picked file straight into `state.photos` with zero compression, unlike `capturePhoto()` (the in-app camera), which already resizes to 1600px/quality 0.85. New `compressImageFile()` helper now applies that same treatment to gallery picks too, falling back to the original file if compression ever fails.
+
+See `vendorTicket/README.md`'s own matching entry for the full root-cause writeup — identical code, identical reasoning, ported here.
+
+**Needs redeploying**: `dist/driverTicket.zip` (re-packed). **Not yet live-tested**.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

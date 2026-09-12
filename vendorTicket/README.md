@@ -377,6 +377,39 @@ Two fixes from the full soft-test gap audit (see the published findings), picked
 
 **Tested**: syntax-checked and packed — not yet independently live-tested.
 
+## 2026-09-10 (later) — least-effort-first pass: Android nav-link fix + image capture downscale
+
+Two more items from the same soft-test gap audit — see `getRescueTicket/README.md`'s own matching entry for the full writeup shared across all 4 widgets; summarized here for this file specifically.
+
+**Item #12 — "Navigate to Breakdown"/"Navigate to Drop Location" now use a `geo:` URI on Android.** New `buildNavUrl(lat, lon)` helper (near `esc()`); all 5 of this widget's own nav-link call sites (`renderAcceptScreen()` breakdown+drop, `renderReachScreenRsr()`, `renderReachScreenTow()`, `renderReachedDropScreen()`) now route their URL-construction through it instead of building `https://maps.google.com/?q=...` inline. iOS/desktop get the exact same link as before; only Android gets a `geo:` URI, detected via `navigator.userAgent`.
+
+**Item #14 — camera capture no longer encodes at full native resolution.** New `CAPTURE_MAX_DIM = 1600` constant; `capturePhoto()`'s canvas now scales down (never up) to that cap before drawing/encoding. JPEG quality (0.85) unchanged — this widget's own capture code is the "original" copy that `technicianTicket`/`driverTicket` mirror, so the same fix was applied to all three identically.
+
+**Tested**: syntax-checked and packed. **Not yet live-tested** — the Android fix in particular needs a real Android device to confirm the `geo:` URI actually opens a map app correctly (no such device was available during this pass).
+
+## 2026-09-11 — Location+timestamp capture: fixed a real field-reuse bug, added 4 new capture points
+
+Part of an app-wide "capture location+time at every relevant step" request — full lifecycle audit and field list in `getRescueTicket/README.md`'s own matching entry. This file handles both RSR and TOW, so it got the most changes:
+
+- **`reachedDrop()` (TOW) — real bug fixed**: same as `driverTicket`'s own matching entry — used to overwrite Accept's own `RSP_Start_Latitude`/`RSP_Start_Longitude` fix. Now writes into a new, dedicated `RSP_Drop_Latitude`/`RSP_Drop_Longitude` pair.
+- **`vehiclePicked()` (TOW)**: persists the GPS fix already being fetched for the distance/ETA calc, into new `Pickup_Location_Lat`/`Pickup_Location_Lon` fields, instead of discarding it.
+- **`confirmDropped()` (TOW)**: added a `getPositionSafe()` call (none existed before) + new `Handover_Location_Lat`/`Handover_Location_Lon` fields.
+- **`workCompleted()`/`confirmCxReject()` (RSR)**: both had a timestamp (`RSP_Completion_Time`) but no location capture. Added `getPositionSafe()` + new `Work_Completion_Lat`/`Work_Completion_Lon` fields to both (they're the two possible outcomes of the same "work completion" moment — issue resolved vs. customer rejected).
+
+All new field pairs are Single Line Text (matching `RSP_Start_Latitude`'s own type) and all reuse the existing `getPositionSafe()` helper — no new GPS mechanism.
+
+**Tested**: syntax check passed, `zet pack` re-run, all 4 new field pairs confirmed present via fresh grep. **Not yet live-tested** — needs a real TOW ticket walked through the full Loading→Reached Drop→Unloading sequence, and a real RSR ticket through Work Completed, to confirm each step's own location lands correctly.
+
+## 2026-09-11 — 2 real bugs fixed, from a client "Task Tracker" audit: Final Payment could close without its mandatory photo actually saved; gallery photos skipped compression entirely
+
+**Bug 1 — real, confirmed**: `confirmPaymentReceived()` called `apiUpdate()` (marking the ticket `Status:"RSP CLOSED"`/`Payment_Status:"PAID"`) **before** `uploadPendingPhotos()`. The mandatory-photo gate on the "Payment Received" button (`effectivePhotoCount()`) only checks whether a file was *picked* locally, not whether it actually finished uploading — so if the real upload (immediate-on-pick, then retried here) genuinely failed (a network blip, a Zoho error), the ticket was **already closed and marked paid** by the time that failure surfaced. The error toast only ever complained about the photo; the job looked fully done regardless. **Fixed**: reordered so `uploadPendingPhotos()` runs first — a genuine upload failure now blocks the close entirely (the vendor sees a real error and can retry) instead of the ticket silently closing without its required proof-of-payment photo on file. The QR-code-for-"Payment Gateway"-mode display and the per-payment-method mandatory-photo gate itself were both checked against the same audit and are already correct — no change needed there.
+
+**Bug 2 — real, confirmed**: `capturePhoto()` (the in-app camera) already resizes/re-encodes every shot to 1600px/JPEG-quality-0.85 (see the 2026-09-10 entry above) — but `openGallery()` (the "choose from device gallery" option, the other of the two add-photo tiles) pushed the picked file straight into `state.photos` completely untouched, meaning a full-resolution multi-MB gallery photo skipped compression entirely. **Fixed**: new `compressImageFile()` helper (same resize-only-down math as `capturePhoto()`, via an off-screen `<img>`+canvas instead of the live camera `<video>` element) now runs on every gallery pick before it's added to `state.photos` — falls back to the original file untouched if decoding/canvas ever fails, so a compression error can never block an upload outright.
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed). Same 2 fixes applied identically to `technicianTicket`/`driverTicket` — see their own matching README entries.
+
+**Tested**: syntax-checked, packed. **Not yet live-tested** — worth deliberately forcing an upload failure (e.g. airplane mode mid-flow) to confirm Bug 1's fix actually blocks the close, and picking a large gallery photo to confirm Bug 2's fix visibly reduces its size before upload.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

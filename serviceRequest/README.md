@@ -411,3 +411,30 @@ Explicit user request: "remove vehicle issue validation." Vehicle itself is stil
 **Needs redeploying**: `dist/serviceRequest.zip` (re-packed, same zip as the search-combo entry above).
 
 **Tested**: syntax-checked only (braces balanced, script parses) — not yet independently live-tested.
+
+## 2026-09-11 — Placeholder issue chips, for UI verification when a real vehicle has no configured issues
+
+User hit exactly the data-gap scenario the 2026-09-10 diagnostics entry predicted, live: selecting "ROYAL ENFIELD THUNDERBIRD" showed "No issues configured for this vehicle." Explicit request: "please show dummy issue in the list so that i can verify that UI is perfect" — a UI-verification need, not a request to fix the underlying data gap (that's still a real Zoho issue — see below).
+
+**Built**: new `PLACEHOLDER_ISSUES` (3 rows: General Service, Battery Check, Flat Tyre — ids prefixed `__placeholder_`), separate from `SAMPLE_ISSUES`/`SHOW_SAMPLE_DATA` (which replaces the WHOLE vehicle+issue dataset for a fully offline demo). This is narrower: `renderStep2()` now falls back to these chips specifically when a real vehicle IS selected but its real, Zoho-filtered issue list comes back empty — "Select a vehicle first" still takes priority as before. A small muted notice (`.issue-placeholder-note`) appears above the chips: *"No issues configured for this vehicle yet in our system — showing sample options below so you can preview this screen. Selections here are for preview only and won't be submitted."*
+
+**Safety**: `onSubmit()`'s payload now filters `STATE.issueIds` to drop anything with the `__placeholder_` prefix before building `vehicleIssueIds` — a placeholder chip can never reach `createServiceRequest.deluge` as if it were a real Vehicle_Issue ID, even if selected and the form is genuinely submitted (Vehicle Issue selection isn't required to submit at all since the 2026-09-10 validation removal, so this matters more than it might otherwise).
+
+**The real root cause is still open, not fixed by this change** — same diagnosis already in place since 2026-09-10: either this vehicle's own `Category` field is blank on `Vehicle_Master` in Zoho, or no `Vehicle_Issue` record's `VEHICLE_TYPE` actually contains that category value. Reload the page, select this same vehicle again, and check the browser console for `[Get-Rescue SR] categoryForVehicle` / `[Get-Rescue SR] issuesForType` — that log will show exactly which one it is. This placeholder fallback is a UI-preview aid, not a substitute for fixing that data gap so real customers see real issues for this vehicle.
+
+**Needs redeploying**: `dist/serviceRequest.zip` (re-packed). No `.deluge` changes — purely client-side.
+
+**Tested**: syntax-checked (script block parses cleanly). Not yet independently live-tested — next step is reloading the live page and re-selecting the same vehicle to confirm the placeholder chips render and the notice text is correct.
+
+## 2026-09-11 (later) — `SHOW_SAMPLE_DATA` flipped back to `true`, temporarily
+
+User's live page regressed to the generic `boot()` fallback screen — "Couldn't load the request form right now" — meaning `getVehicleOptions`/`getIssueOptions` aren't currently succeeding in Zoho. Explicit request: "please recheck so that i can see all the steps without any dependency." Flipped `SHOW_SAMPLE_DATA` back to `true` — this is the exact mechanism built 2026-09-09 for this exact situation: `boot()`/`waitForSDK()` skip the real Custom API calls entirely and populate `OPTIONS` from `SAMPLE_VEHICLES`/`SAMPLE_ISSUES`, so all 3 steps render and are clickable regardless of the backend's current state. Submitting still only shows the mock "Sample confirmation — no real ticket created" screen — no real ticket gets created while this is on.
+
+**This does not fix the real Custom API failure** — that's still broken and needs its own check once you're done previewing the steps. Same checklist as the 2026-09-10 "Couldn't load the request form" entry above, most likely causes in order:
+1. `getVehicleOptions`/`getIssueOptions` → Settings/Authentication in Zoho → confirm PublicKey auth is actually still enabled (it can get switched off independent of the key value being correct).
+2. Confirm each Custom API's currently-pasted code in Zoho actually matches this file's current `.deluge` scripts — several rounds of fixes happened on these two files (see the "returnstring pattern" entry above), worth a fresh re-paste of both to be sure.
+3. Open the live page's browser console (F12 → Console) — `boot()` already logs the full `getVehicleOptions`/`getIssueOptions` results, including which one failed and why, whenever this fallback screen shows.
+
+**Needs redeploying**: `dist/serviceRequest.zip` (re-packed). **Reminder**: flip `SHOW_SAMPLE_DATA` back to `false` (and redeploy again) once the real Custom API issue above is actually fixed — otherwise the live page will keep showing sample data and mock confirmations to real customers indefinitely.
+
+**Tested**: syntax-checked. Not yet independently confirmed — next step is reloading the live page to confirm all 3 steps now render.

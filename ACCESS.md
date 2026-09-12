@@ -28,6 +28,7 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 | **Agent Performance** (`agentPerformance`) | — | `Agent_Ticket_Report` | — (read-only, aggregate stats only) |
 | **Toggle** (`toggleGetRescue` — superseded, see root `README.md`) | — | — | `Technicians_Report` (this widget was never updated for the `Vendors_Report` unification — see its own section below) |
 | **Operations Manager — Fleet Map** (`opsMap`) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report`, `Agent_Report` | — |
+| **Call Center** (`callCenter`) | `Call_Log` (⚠ not yet created — see its own section below) | — | `Call_Log_Report` (⚠ not yet created) |
 
 ---
 
@@ -116,6 +117,14 @@ Standalone widget, added 2026-08-31, retired 2026-09-04 in favor of `getRescueTi
 - `Vendors_Report` — View. Marker data — location, online/offline status, Engagement Type.
 - `Technicians_Report` — View. Same, for technicians/drivers.
 - `Agent_Report` — View. Resolves the logged-in user's own `User_Type`, to gate access to Operations Managers only.
+
+## Call Center (`callCenter`)
+
+New standalone widget, added 2026-09-10 — places/checks voice callback calls via two user-built Custom APIs (`getVoiceCallbackDetails`/`getCallbackStatus`, Ozonetel-backed), and logs a history of calls placed. Not embedded on any ticket — a free-standing page, phone number entered manually. See its own `README.md` for the full writeup and exact field list.
+
+- **`Call_Log` (form) — Add.** ⚠ **Does not exist yet** — needs creating in Zoho Studio before call history works at all (placing/checking calls itself doesn't depend on this, only the history list does — the widget degrades honestly with an on-screen banner if this is missing). Fields needed: `Phone_Number`, `Reference_ID`, `Callback_Message`, `UCID`, `Call_Status`, `Call_Duration`, `Call_Outcome`, `Placed_By` (all Single Line Text) — see `callCenter/README.md` for the full spec.
+- **`Call_Log_Report` — View + Edit.** ⚠ **Does not exist yet**, same as above — the report exposing `Call_Log`'s records, read for the history table and updated in place each time a call's status is re-checked (rather than adding a new row per check).
+- Does **not** need access to `Create_Case`/`Agent_Ticket_Report` or any other existing form/report — deliberately standalone, no ticket lookups.
 
 ## Open questions this file doesn't resolve on its own
 

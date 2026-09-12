@@ -465,4 +465,51 @@ Explicit user request: "if i dont do what happen please manage submitCustomerLoc
 
 **Needs re-pasting**: `submitCustomerLocation.deluge` into its Custom API.
 
+## 2026-09-10 (later still) — retry loop confirmed dead-on-arrival by the math; removed and replaced with a direct fix message
+
+The honest flag in the entry above ("if the real constraint is specifically on the field's integer part... this retry may not actually rescue a failing write") is now confirmed true, not just a possibility. Zoho's Decimal field type works like SQL `DECIMAL(precision, scale)`: the whole-number part can only ever hold `Max Digits - Decimal Points` digits. With the confirmed live configuration (Max Digits=16, Decimal Points=15), that's **1 digit** — and every real latitude/longitude has a 2-3 digit whole-number part (`28` in `28.613977`, `77` in `77.209023`). Reducing decimal places (the retry's whole strategy) never touches the whole-number part at all, so all 4 of its precision levels (6/4/2/0) were mathematically guaranteed to fail identically, every single time — this was never going to rescue a write, regardless of how many levels were tried.
+
+**Removed**: the entire `precisionLevels` retry loop; write logic simplified back to a single clean attempt (no more dead-weight retry iterations).
+
+**Changed**: the error message now names the exact fix instead of a vague "may need widening" — *"FIX: in Zoho Studio, open Create_Case's field list, edit each of those 4 fields, and change Decimal Points from 15 to 6 (leave Max Digits at 16 — that leaves 10 whole-number digits, far more than the 2-3 ever needed)."* Confirmed safe to be this specific/technical: `customerPage/app/widget.html`'s own `submitLocation()` never shows this raw message to the customer — on any non-`SUCCESS` response it calls `renderError("Couldn't save your location — please try again, or contact your agent directly.")`, a fixed generic string; the detailed message is only ever visible in this Custom API's own execution log and the browser console (`console.error`).
+
+**The only real fix remains Zoho-side** — widening `Decimal Points` on `Latitude`/`Longitude`/`DropLocationLat`/`DropLocationLong` from 15 to 6 in Zoho Studio (Create_Case's own field list → each field → Edit Properties). No code-side workaround can exist given the math above.
+
+**Needs re-pasting**: `submitCustomerLocation.deluge` into its Custom API.
+
+**Tested**: braces/parens verified balanced (`node` scan). Not yet live-tested — but the write path itself is unchanged from the confirmed-working `generateZohoPaymentLink.deluge` pattern (string-cast values, single fetch, no re-query), so it should behave identically to that file once the Zoho fix is applied — the only thing genuinely gating this now is the field configuration, not the code.
+
+## 2026-09-10 (yet later) — Zoho fix confirmed applied (Max Digits=15/Decimal Points=6)
+
+User widened `Latitude`'s field config live in Zoho Studio (screenshot confirmed: Max Digits=15, Decimal Points=6) — same change applied to the other 3 fields per the same instruction. 9 whole-number digits of headroom (15-6), far more than the 2-3 any real coordinate needs — this resolves the root cause directly.
+
+This widget's own write path (`submitCustomerLocation.deluge`, simplified in the entry above) was already safe under this new config without any further change — it rounds to exactly 6 decimal places server-side (`.round(6)`) before writing, both client-side (`customerPage/app/widget.html`'s own `.toFixed(6)`) and server-side, so nothing here needed touching.
+
+**Cross-check run across the whole app suite** (at the user's request, to confirm nothing else breaks under the new *stricter* 6-decimal-place limit — the old config nominally allowed 15 decimals, even though the 1-digit whole-number cap made it unusable regardless): `getRescueTicket` needed a small fix (its own `roundCoord()` defaulted to 17 decimals on the first save attempt, relying on a retry loop to converge to 6 — see `getRescueTicket/README.md`'s own matching entry). A separate, older widget (`Ticket Kanban`) was found to have zero rounding/retry protection at all for these same fields — a real, pre-existing gap, flagged to the user but not fixed (outside this session's authorized scope so far).
+
 **Tested**: braces verified balanced. Not yet independently live-tested — and this doesn't replace actually widening the field's Decimal Points setting in Zoho if that's feasible; that remains the more certain fix.
+
+## 2026-09-11 — `submitCustomerLocation.deluge`: stamps its own received-time now, instead of relying on the agent to catch up
+
+Part of a wider "capture location+time at every relevant step" request — see `getRescueTicket/README.md`'s own matching entry for the full lifecycle audit and field list. `Location_Received_Time` (breakdown) already existed but was only ever stamped later, whenever the agent's own `locations` wizard step next happened to save (`getRescueTicket/app/widget.html`'s `extra()` for that stage) — not the actual moment the customer shared it. User created a new `Drop_Location_Received_Time` field (drop side had no timestamp at all before this).
+
+**Changed**: right after the existing `Latitude`/`Longitude` or `DropLocationLat`/`DropLocationLong` write (unchanged), a new nested block stamps `Location_Received_Time` or `Drop_Location_Received_Time` (whichever applies) via Deluge's own `zoho.currenttime` system variable. Wrapped in its **own** try/catch, separate from the coordinate write — the timestamp is new, unverified-live territory (Deluge's documented behavior for `zoho.currenttime` is confirmed for form-submit inserts; behavior in this file's own fetch-then-update pattern isn't independently confirmed yet), and it must never be allowed to fail the actual coordinate save, which remains this function's one genuinely critical job and was already working correctly before this change. On a timestamp-write failure, the function still returns `SUCCESS` (coordinate saved) and just logs the timestamp failure via `info`.
+
+`getRescueTicket/app/widget.html`'s own `locations`-stage `Location_Received_Time` stamp is left completely unchanged — now effectively a harmless no-op for any ticket where this Custom API already set it, since that code only fires when the field is still blank.
+
+Also updated the stale error message in the coordinate-write catch block — it used to cite the OLD field config (Max Digits=16/Decimal Points=15), which the user has since corrected; that text would have been actively misleading if this branch ever fired again post-fix.
+
+**Needs re-pasting**: `submitCustomerLocation.deluge` into its Custom API.
+
+**Tested**: braces/parens verified balanced. Not yet live-tested — the `zoho.currenttime` assignment specifically needs a real coordinate save (both breakdown and drop) to confirm it's accepted by Zoho in this exact context; if it isn't, the try/catch means the coordinate still saves correctly and only the timestamp silently stays blank (visible in this Custom API's own execution log).
+
+## 2026-09-11 (later) — Stale Decimal-field comments/error message replaced, now that `Latitude`/`Longitude`/`DropLocationLat`/`DropLocationLong` are Single Line Text
+
+User converted all 4 of these fields (plus `RSP_Start_*`/`RSP_Drop_*`/`Cancel_Location_Lat`/`Cancel_Location_Lon` elsewhere in the app) from Decimal to Single Line Text, per `getRescueTicket/README.md`'s own matching entries — eliminates the "exceeded maximum digits" error class entirely (no digit limit on Text). This file's write logic needed **no change** — it already wrote a Deluge string (`latVal.toString()`) either way — but its comments and the catch block's error message still described the old Decimal(precision,scale) math and the specific Max Digits/Decimal Points values from the previous (now superseded) fix, which would have been actively misleading if read after this conversion.
+
+- The root-cause comment block (above the write) now explains the fields were converted to Text instead of continuing to describe stale Decimal config numbers.
+- The catch block's error message dropped its Decimal-specific explanation (`"...were reconfigured 2026-09-11 to Max Digits=15/Decimal Points=6..."`) since it no longer applies to anything — now just surfaces Zoho's own error text directly.
+
+**Needs re-pasting**: `submitCustomerLocation.deluge` into its Custom API (comment/message-only change, but the file still needs to be re-synced with Zoho — same as every other pending edit to this file).
+
+**Tested**: braces/parens verified balanced (0/0). No logic changed, so no new live-testing need beyond what was already pending above.

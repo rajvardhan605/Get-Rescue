@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Call Center</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+/* Same design tokens as every other Get-Rescue widget (getRescueTicket/app/widget.html:10-20)
+   — kept in sync deliberately so this reads as part of the same product family,
+   not a bolt-on. This file is otherwise fully self-contained (no shared CSS/JS
+   across widgets anywhere in this project, per its own established convention —
+   every widget carries its own copy of whatever it needs). */
+:root{
+  --signal:#F15A22; --signal-deep:#C2410C; --signal-soft:#FCE9DF;
+  --ink:#15171C; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --ok:#12A150; --ok-soft:#E3F4EA; --stop:#E23A2E; --stop-soft:#FBE4E2; --wait:#E8890B; --wait-soft:#FCEEDA;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+img,svg{max-width:100%}
+
+.topbar{display:flex;align-items:center;gap:12px;background:var(--ink);border-radius:16px;padding:14px 18px;box-shadow:var(--sh-1);margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:11px}
+.brand .mk{width:38px;height:38px;border-radius:10px;background:var(--signal);display:grid;place-items:center;box-shadow:0 4px 12px rgba(241,90,34,.45);flex:none}
+.brand .mk svg{width:22px;height:22px}
+.brand b{font-family:var(--f-disp);font-weight:900;font-size:19px;color:#fff;letter-spacing:.3px}
+
+.sec-head{display:flex;align-items:center;gap:10px;margin:22px 2px 12px}
+.sec-head h2{font-family:var(--f-disp);font-size:19px;font-weight:800}
+.sec-head .sub{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.sec-head .spacer{flex:1}
+
+.card{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:var(--sh-1)}
+
+.banner{background:var(--wait-soft);color:#7A4D07;border:1.5px solid var(--wait);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13.5px;line-height:1.5}
+.banner b{font-weight:700}
+
+.fld-row{display:grid;grid-template-columns:repeat(var(--row-cols,3),1fr);gap:14px 16px}
+@media (max-width:720px){ .fld-row{grid-template-columns:1fr} }
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld label{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.fld label .req{color:var(--stop);margin-left:2px}
+.fld input{border:1.5px solid var(--line-strong);border-radius:10px;padding:11px 12px;font-size:14.5px;font-family:var(--f-body);color:var(--text);background:#fff;outline:0;transition:.15s;width:100%}
+.fld input:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
+
+.btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:14.5px;letter-spacing:.02em;
+  padding:12px 18px;border-radius:11px;display:inline-flex;align-items:center;gap:8px;transition:.15s;white-space:nowrap}
+.btn.primary{background:var(--signal);color:#fff;box-shadow:0 4px 12px rgba(241,90,34,.34)}
+.btn.primary:hover{background:var(--signal-deep)}
+.btn.ghost{background:transparent;color:var(--text);border:1.5px solid var(--line-strong)}
+.btn.ghost:hover{background:var(--worktop)}
+.btn:disabled{opacity:.55;cursor:default;box-shadow:none}
+.btn.sm{padding:8px 12px;font-size:12.5px}
+
+.hint{font-size:11.5px;color:var(--muted-2);font-family:var(--f-mono)}
+
+.cc-detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px 18px}
+.cc-detail-row{display:flex;flex-direction:column;gap:3px}
+.cc-detail-row .k{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.cc-detail-row .v{font-size:14.5px;font-weight:600;color:var(--text);word-break:break-word}
+.cc-raw{margin-top:8px;background:var(--worktop);border-radius:8px;padding:10px 12px;font-family:var(--f-mono);font-size:11px;color:var(--muted);overflow-x:auto;white-space:pre-wrap}
+
+.cc-table{width:100%;border-collapse:collapse;font-size:13px}
+.cc-table th{text-align:left;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:2px solid var(--line-strong);white-space:nowrap}
+.cc-table td{padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.cc-table tr:last-child td{border-bottom:0}
+
+.center-state{display:flex;align-items:center;justify-content:center;padding:30px}
+.spin{width:26px;height:26px;border:3px solid var(--line-strong);border-top-color:var(--signal);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
+  background:var(--ink);color:#fff;font-family:var(--f-body);font-size:13.5px;font-weight:600;padding:12px 20px;border-radius:11px;
+  box-shadow:0 12px 30px rgba(20,22,28,.25);transition:.2s;z-index:200}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--stop)} .toast.ok{background:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mk"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z" fill="#fff"/></svg></span>
+      <b>GET-RESCUE · CALL CENTER</b>
+    </div>
+  </div>
+
+  <div id="degradedBanner" class="banner" hidden>
+    ⚠ <b>Call history isn't set up in Zoho yet.</b> Calls can still be placed and their status checked — nothing here is broken — but nothing is being saved to a history list. See this widget's README.md for the exact Call_Log form/fields to create in Zoho Studio.
+  </div>
+
+  <div class="sec-head"><h2>Place a Call</h2></div>
+  <div class="card">
+    <div class="fld-row" style="--row-cols:3">
+      <div class="fld"><label>Phone Number <span class="req">*</span></label><input id="ccPhone" type="tel" placeholder="10-digit mobile number"></div>
+      <div class="fld"><label>Reference / Case ID</label><input id="ccRef" type="text" placeholder="Optional — e.g. a ticket's Case ID"></div>
+      <div class="fld"><label>Callback Message</label><input id="ccMsg" type="text" placeholder="Optional — defaults to a standard message"></div>
+    </div>
+    <button type="button" id="ccPlaceBtn" class="btn primary" style="margin-top:16px">📲 Place Call</button>
+  </div>
+
+  <div id="currentCallSec" hidden>
+    <div class="sec-head"><h2>Current Call</h2><span class="spacer"></span><button type="button" id="ccRefreshBtn" class="btn ghost sm">↻ Refresh Status</button></div>
+    <div class="card" id="currentCallCard"></div>
+  </div>
+
+  <div class="sec-head"><h2>Call History</h2><span class="sub" id="historySub"></span><span class="spacer"></span><button type="button" id="ccHistoryRefreshBtn" class="btn ghost sm">↻ Refresh</button></div>
+  <div class="card" style="padding:0;overflow:hidden" id="historyCard"><div class="center-state"><div class="spin"></div></div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   Get-Rescue · Call Center — standalone widget
+   =====================================================================
+   Built 2026-09-10. Split out of getRescueTicket as its own widget per
+   explicit user decision ("create separate widget for these function and
+   detailing" -> "Replace the inline button" when asked whether to keep
+   both — see getRescueTicket/README.md's own 2026-09-10 revert entry for
+   the full history of what USED to be inline there).
+
+   Consumes two Custom APIs the user built and confirmed live directly (NOT
+   built by this session):
+     https://www.zohoapis.in/creator/custom/getrescued/getVoiceCallbackDetails
+     https://www.zohoapis.in/creator/custom/getrescued/getCallbackStatus
+   api_name below matches each URL's own last path segment; workspace_name
+   "getrescued" matches the URL's own path segment too.
+
+   ⚠ Response-shape not independently confirmed: two draft versions of
+   getCallbackStatus were shown during this work with different field names
+   for the call's outcome ("call_result" vs "disconnect_reason") — the user
+   said they'd finalized their own Custom API without confirming which shape
+   it actually returns. checkVoiceCallbackStatus() below reads BOTH
+   defensively. If the on-screen Outcome ever looks blank, check the real
+   field name in that Custom API's own execution log first.
+
+   Call history requires a NEW Zoho Form (Call_Log) + Report (Call_Log_Report)
+   that do NOT exist yet — this widget was never told to create them (it
+   can't, this session has no Zoho Studio access) and degrades honestly:
+   placing/checking calls works either way; only the history list and the
+   the failed-attempt log entries need the form. See README.md for the
+   exact field list to create. */
+
+const CONFIG = {
+  appName: "get-rescue",        // same Zoho app every other Get-Rescue widget targets
+  workspaceName: "getrescued",  // matches the Custom API URLs' own path segment
+  logFormName: "Call_Log",         // ⚠ NOT YET CREATED — see README.md
+  logReportName: "Call_Log_Report" // ⚠ NOT YET CREATED — see README.md
+};
+
+/* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init — same pattern as
+   every other widget in this project, e.g. agentPerformance/app/widget.html
+   and getRescueTicket/app/widget.html's own matching comment) ---------- */
+let LOGIN_EMAIL = "";
+let CALL_LOG_AVAILABLE = null; // null = not yet known, true/false once first checked
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE];
+  for (let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+function $(id){ return document.getElementById(id); }
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+let toastT;
+function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
+
+/* ---------- Creator data layer — same shapes as getRescueTicket/app/widget.html's
+   own apiAdd()/apiUpdateReport()/apiGetReport() (lines ~896-920 there),
+   copied rather than shared since this project has no cross-widget module
+   system (every widget is fully self-contained, confirmed convention). ---------- */
+async function apiAddCallLog(data){
+  const fn = resolve("addRecords") || resolve("addRecord"); if(!fn) throw new Error("addRecords unavailable");
+  const r = await fn({ app_name:CONFIG.appName, form_name:CONFIG.logFormName, payload:{ data:data } });
+  if(r && r.code===3000){ const d=r.data; return Array.isArray(d) ? (d[0]&&(d[0].ID||d[0].id)) : (d&&(d.ID||d.id)); }
+  throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Add failed");
+}
+async function apiUpdateCallLog(id, data){
+  const fn = resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
+  const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.logReportName, id:id, payload:{ data:data } });
+  if(!r || r.code!==3000) throw new Error((r&&(r.message||JSON.stringify(r.error)))||"Update failed");
+  return true;
+}
+async function apiGetCallLogs(){
+  const fn = resolve("getRecords"); if(!fn) return null;
+  const cfg = { app_name:CONFIG.appName, report_name:CONFIG.logReportName, field_config:"all", max_records:200 };
+  try{
+    const r = await fn(cfg);
+    if(r && r.code===3000 && Array.isArray(r.data)) return r.data;
+    console.warn("[GR-CallCenter] apiGetCallLogs: report unavailable or errored — code:", r&&r.code, "message:", r&&r.message);
+    return null; // null = couldn't read (report likely doesn't exist yet) — degrade gracefully, distinct from [] (report exists, genuinely empty)
+  }catch(e){ console.warn("[GR-CallCenter] apiGetCallLogs threw — report likely doesn't exist yet:", e); return null; }
+}
+
+/* ---------- Ozonetel voice-callback calls ---------- */
+async function placeVoiceCallback(phoneNumber, referenceId, callbackMessage){
+  const fn=resolve("invokeCustomApi");
+  if(!fn) return {ok:false, message:"Can't place call — invokeCustomApi unavailable"};
+  if(!phoneNumber) return {ok:false, message:"No phone number to call"};
+  const config = {
+    api_name: "getVoiceCallbackDetails",
+    workspace_name: CONFIG.workspaceName,
+    http_method: "POST",
+    content_type: "application/json",
+    payload: {
+      customerId: referenceId || phoneNumber,
+      phoneNumber: phoneNumber,
+      callbackMessage: callbackMessage || ("Agent-requested callback" + (referenceId?(" for "+referenceId):""))
+    }
+  };
+  try{
+    const res = await fn(config);
+    let data = res;
+    if(data && typeof data.result==="string"){
+      try{ data = JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-CallCenter] placeVoiceCallback: response.result wasn't valid JSON", e); return {ok:false, message:"Unexpected response from the call API — check console"}; }
+    }
+    if(!data || data.code!=="SUCCESS"){
+      console.warn("[GR-CallCenter] placeVoiceCallback: call failed — code:", data && data.code, "message:", data && data.message, "| full response:", res);
+      return {ok:false, message:(data && data.message) || "Call could not be placed"};
+    }
+    const ucid = data.ucid || data.callback_id || "";
+    if(!ucid){
+      console.warn("[GR-CallCenter] placeVoiceCallback: SUCCESS response had no ucid/callback_id. Full response:", res);
+      return {ok:false, message:"Call placed, but no call ID came back — status can't be checked"};
+    }
+    return {ok:true, ucid:ucid, raw:data};
+  }catch(e){
+    console.warn("[GR-CallCenter] placeVoiceCallback: invokeCustomApi failed", e);
+    return {ok:false, message:"Call request failed — check console"};
+  }
+}
+async function checkVoiceCallbackStatus(callbackId){
+  const fn=resolve("invokeCustomApi");
+  if(!fn) return {ok:false, message:"Can't check status — invokeCustomApi unavailable"};
+  if(!callbackId) return {ok:false, message:"No call ID to check"};
+  const config = {
+    api_name: "getCallbackStatus",
+    workspace_name: CONFIG.workspaceName,
+    http_method: "POST",
+    content_type: "application/json",
+    payload: { callbackId: callbackId }
+  };
+  try{
+    const res = await fn(config);
+    let data = res;
+    if(data && typeof data.result==="string"){
+      try{ data = JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-CallCenter] checkVoiceCallbackStatus: response.result wasn't valid JSON", e); return {ok:false, message:"Unexpected response from the status API — check console"}; }
+    }
+    if(!data || data.code!=="SUCCESS"){
+      console.warn("[GR-CallCenter] checkVoiceCallbackStatus: status check failed — code:", data && data.code, "message:", data && data.message, "| full response:", res);
+      return {ok:false, message:(data && data.message) || "Could not check call status"};
+    }
+    return {
+      ok:true,
+      status: data.status || "",
+      duration: data.call_duration || "",
+      outcome: data.call_result || data.disconnect_reason || "",
+      raw: data
+    };
+  }catch(e){
+    console.warn("[GR-CallCenter] checkVoiceCallbackStatus: invokeCustomApi failed", e);
+    return {ok:false, message:"Status check failed — check console"};
+  }
+}
+
+/* ---------- state + rendering ---------- */
+const state = { current:null, calls:[] };
+
+function normalizePhone(raw){
+  // Bare 10-digit number — same convention as getRescueTicket's own
+  // customerPhoneDigits computation (strips a leading "91" country code if
+  // present, keeps the last 10 digits either way).
+  const digits = String(raw||"").replace(/\D/g,"").replace(/^91(?=\d{10}$)/,"");
+  return digits.length>=10 ? digits.slice(-10) : "";
+}
+function fmtWhen(v){
+  if(v==null || v==="") return "";
+  if(typeof v==="object") return String(v.display_value || v.value || "");
+  return String(v);
+}
+function showDegradedBanner(){ $("degradedBanner").hidden = false; }
+function hideDegradedBanner(){ $("degradedBanner").hidden = true; }
+
+function renderCurrent(){
+  const cur = state.current;
+  const sec = $("currentCallSec");
+  if(!cur){ sec.hidden = true; return; }
+  sec.hidden = false;
+  const card = $("currentCallCard");
+  if(cur.placing){ card.innerHTML = '<div class="hint">Placing call…</div>'; return; }
+  if(cur.error && !cur.ucid){
+    card.innerHTML = `<div class="hint" style="color:var(--stop)">⚠ ${esc(cur.error)}</div>`;
+    return;
+  }
+  const rows = [
+    ["Phone", cur.phone],
+    ["Reference", cur.reference || "—"],
+    ["Call ID (UCID)", cur.ucid || "—"],
+    ["Status", cur.checking ? "Checking…" : (cur.status || "—")],
+    ["Duration", cur.duration ? (cur.duration+"s") : "—"],
+    ["Outcome", cur.outcome || "—"]
+  ];
+  const rawHtml = cur.raw ? `<details style="margin-top:10px"><summary class="hint" style="cursor:pointer">Raw response</summary><pre class="cc-raw">${esc(JSON.stringify(cur.raw,null,2))}</pre></details>` : "";
+  const errHtml = cur.error ? `<div class="hint" style="color:var(--stop);margin-top:8px">⚠ ${esc(cur.error)}</div>` : "";
+  card.innerHTML = `<div class="cc-detail-grid">${rows.map(([k,v])=>`<div class="cc-detail-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>${errHtml}${rawHtml}`;
+}
+
+function renderHistoryTable(rows){
+  return `<div style="overflow-x:auto"><table class="cc-table">
+    <thead><tr><th>Placed At</th><th>Phone</th><th>Reference</th><th>Status</th><th>Duration</th><th>Outcome</th><th>Placed By</th><th></th></tr></thead>
+    <tbody>${rows.map(function(r){
+      return `<tr>
+        <td>${esc(fmtWhen(r.Added_Time))}</td>
+        <td>${esc(r.Phone_Number||"")}</td>
+        <td>${esc(r.Reference_ID||"")}</td>
+        <td>${esc(r.Call_Status||"")}</td>
+        <td>${esc(r.Call_Duration||"")}</td>
+        <td>${esc(r.Call_Outcome||"")}</td>
+        <td>${esc(r.Placed_By||"")}</td>
+        <td>${r.UCID ? `<button type="button" class="btn ghost sm" data-hist-refresh="${esc(r.ID)}" data-hist-ucid="${esc(r.UCID)}">↻</button>` : ""}</td>
+      </tr>`;
+    }).join("")}</tbody>
+  </table></div>`;
+}
+function wireHistoryRefreshButtons(){
+  document.querySelectorAll("[data-hist-refresh]").forEach(function(btn){
+    btn.onclick = async function(){
+      const id = btn.dataset.histRefresh, ucid = btn.dataset.histUcid;
+      btn.disabled = true;
+      const res = await checkVoiceCallbackStatus(ucid);
+      btn.disabled = false;
+      if(res.ok) await updateCallLogSafe(id, { Call_Status: res.status||"", Call_Duration: res.duration||"", Call_Outcome: res.outcome||"" });
+      else toast(res.message||"Status check failed","err");
+    };
+  });
+}
+
+async function loadHistory(){
+  $("historyCard").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
+  const rows = await apiGetCallLogs();
+  if(rows===null){
+    CALL_LOG_AVAILABLE = false;
+    showDegradedBanner();
+    $("historyCard").innerHTML = '<div class="hint" style="padding:16px;display:block">Call history isn\'t available yet — see the banner above.</div>';
+    $("historySub").textContent = "";
+    return;
+  }
+  CALL_LOG_AVAILABLE = true;
+  hideDegradedBanner();
+  // Newest first — Zoho record IDs are monotonically increasing, same
+  // "sort by ID as a reliable recency proxy" convention getRescueTicket's
+  // own loadDashboard() already uses (avoids needing to parse Added_Time).
+  rows.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+  state.calls = rows;
+  $("historySub").textContent = rows.length + " call" + (rows.length===1?"":"s");
+  $("historyCard").innerHTML = rows.length ? renderHistoryTable(rows) : '<div class="hint" style="padding:16px;display:block">No calls yet.</div>';
+  wireHistoryRefreshButtons();
+}
+
+/* ---------- write helpers — degrade silently (console only) if the
+   Call_Log form/report doesn't exist yet, never block the actual call
+   placing/checking flow which works independently ---------- */
+async function logCallAttempt(fields){
+  try{
+    const id = await apiAddCallLog({
+      Phone_Number: fields.phone,
+      Reference_ID: fields.reference || "",
+      Callback_Message: fields.message || "",
+      UCID: fields.ucid || "",
+      Call_Status: fields.status || "",
+      Call_Duration: fields.duration || "",
+      Call_Outcome: fields.outcome || "",
+      Placed_By: LOGIN_EMAIL || ""
+    });
+    CALL_LOG_AVAILABLE = true;
+    hideDegradedBanner();
+    loadHistory();
+    return id;
+  }catch(e){
+    console.warn("[GR-CallCenter] logCallAttempt failed — Call_Log form probably doesn't exist yet (see README.md):", e);
+    CALL_LOG_AVAILABLE = false;
+    showDegradedBanner();
+    return null;
+  }
+}
+async function updateCallLogSafe(id, fields){
+  try{ await apiUpdateCallLog(id, fields); loadHistory(); }
+  catch(e){ console.warn("[GR-CallCenter] updateCallLogSafe failed:", e); }
+}
+
+/* ---------- actions ---------- */
+async function onPlaceCall(){
+  const phone = normalizePhone($("ccPhone").value);
+  const reference = $("ccRef").value.trim();
+  const message = $("ccMsg").value.trim();
+  if(!phone){ toast("Enter a valid 10-digit phone number","err"); return; }
+  $("ccPlaceBtn").disabled = true;
+  state.current = { phone:phone, reference:reference, message:message, placing:true };
+  renderCurrent();
+  const res = await placeVoiceCallback(phone, reference, message);
+  $("ccPlaceBtn").disabled = false;
+  if(!res.ok){
+    state.current = { phone:phone, reference:reference, message:message, error:res.message };
+    toast(res.message||"Call could not be placed","err");
+    renderCurrent();
+    logCallAttempt({ phone:phone, reference:reference, message:message, status:"FAILED", outcome:res.message, ucid:"" });
+    return;
+  }
+  state.current = { phone:phone, reference:reference, message:message, ucid:res.ucid, raw:res.raw, status:"Placed" };
+  toast("Call placed to "+phone,"ok");
+  renderCurrent();
+  const logId = await logCallAttempt({ phone:phone, reference:reference, message:message, status:"Placed", outcome:"", ucid:res.ucid });
+  if(logId) state.current.logId = logId;
+  // One automatic status check a few seconds after placing, same UX pattern
+  // proven in getRescueTicket's own earlier (now-reverted) inline version.
+  setTimeout(onRefreshCurrent, 4000);
+}
+async function onRefreshCurrent(){
+  const cur = state.current;
+  if(!cur || !cur.ucid) return;
+  cur.checking = true; renderCurrent();
+  const res = await checkVoiceCallbackStatus(cur.ucid);
+  cur.checking = false;
+  if(res.ok){
+    cur.status = res.status; cur.duration = res.duration; cur.outcome = res.outcome; cur.raw = res.raw; cur.error = null;
+    if(cur.logId) updateCallLogSafe(cur.logId, { Call_Status: res.status||"", Call_Duration: res.duration||"", Call_Outcome: res.outcome||"" });
+  } else {
+    cur.error = res.message;
+  }
+  renderCurrent();
+}
+
+function wireForm(){
+  $("ccPlaceBtn").onclick = onPlaceCall;
+  $("ccRefreshBtn").onclick = onRefreshCurrent;
+  $("ccHistoryRefreshBtn").onclick = loadHistory;
+}
+
+/* ---------- boot ---------- */
+async function boot(){
+  let tries=0;
+  while(!resolve("getRecords") && tries<40){ await new Promise(function(r){ setTimeout(r,200); }); tries++; }
+  if(!resolve("getRecords")){ toast("Couldn't connect to Zoho — please reopen this page","err"); return; }
+  const getInit = resolve("getInitParams");
+  if(getInit){ try{ const p = await getInit(); LOGIN_EMAIL = (p && p.loginUser) || ""; }catch(e){} }
+  wireForm();
+  await loadHistory();
+}
+document.addEventListener("DOMContentLoaded", boot);
+</script>
+</body>
+</html>
