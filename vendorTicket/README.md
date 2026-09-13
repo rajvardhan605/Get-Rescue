@@ -410,6 +410,42 @@ All new field pairs are Single Line Text (matching `RSP_Start_Latitude`'s own ty
 
 **Tested**: syntax-checked, packed. **Not yet live-tested** — worth deliberately forcing an upload failure (e.g. airplane mode mid-flow) to confirm Bug 1's fix actually blocks the close, and picking a large gallery photo to confirm Bug 2's fix visibly reduces its size before upload.
 
+## 2026-09-12 — Full-application audit: 1 real bug fixed here (camera-permission-denied fallback skipped compression)
+
+Part of a 5-parallel-audit full-application verification pass (see `getRescueTicket/README.md`'s own matching entry for the full scope). This app's audit found: `openCamera()`'s catch block — the fallback that fires when `getUserMedia()` is denied/unavailable, handing off to the OS's own picker via `cameraFallbackInput` — pushed the picked file straight into `state.photos` with zero compression, the same gap the 2026-09-11 fix already closed for `openGallery()` (choose-from-gallery) but missed for this 3rd photo-entry path. **Fixed**: routed through the same `compressImageFile(f, CAPTURE_MAX_DIM, 0.85)` helper.
+
+Everything else audited for this app (the 2026-09-11 payment-order fix, gallery compression, Android nav-link, notification sound, click-to-dial, capture downscale) was independently re-verified present and correct — no other changes needed.
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed).
+
+## 2026-09-12 (later) — Client's own soft-test email: real Final-Payment bug fixed, camera lag improved further
+
+**Real bug fixed — Final Payment could unlock without a photo, for a reason the code itself hadn't spotted before.** Client: "The app currently allows users to proceed without uploading a photo when selecting Cash." Root cause: `renderPaymentScreen()`'s own `alreadySuccess` check read `Payment_Status` — the SAME field the agent's Quote stage already uses for the Booking Fee. Once the agent collected the Booking Fee (`Payment_Status="PAID"` at Quote time), `alreadySuccess` read true the instant a vendor opened Final Payment, bypassing the mandatory-photo gate regardless of Payment_Method — before the vendor had done anything at all. Fixed to check `Payment_received==="Yes"` instead — a field only ever written by this exact screen's own `confirmPaymentReceived()` action, matching the same unambiguous signal `getRescueTicket`'s own closure logic already uses for this identical shared-field problem.
+
+**Camera lag — further improvement.** The 2026-09-10 fix (downscale to 1600px after capture) only ever reduced the SAVED file's size — the live video stream and the capture-time canvas draw were still working with whatever full native resolution the device handed back, un-constrained. `getUserMedia()` now requests an `ideal` (soft, non-mandatory) 1600×1600 resolution directly, so devices that support it do less work throughout the whole capture pipeline, not just at the final encode step.
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed). Same 2 fixes applied identically to `technicianTicket`/`driverTicket`.
+
+## 2026-09-13 — Real bug fixed: `formatIndianPhone()` could double the country code on a 12-digit number
+
+Found while investigating a `getRescueTicket` WhatsApp-delivery report ("check customer phone number and country code"). `isValidIndianPhoneDigits()` in that file already strips a leading `91` from a 12-digit number before judging its length — proving a phone number stored/typed as `91XXXXXXXXXX` (no `+`) is an anticipated real shape in this project. `formatIndianPhone()` here had no equivalent strip: that exact shape got another `+91` prepended, producing a broken double-country-code number for this widget's own click-to-dial `tel:` links. Same fix applied identically across every widget that has a copy of this function (`getRescueTicket`, `technicianTicket`, `driverTicket`, `Ticket Kanban`, `serviceRequest`).
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed).
+
+## 2026-09-13 — Real bug fixed: "NAVIGATE to Breakdown Location" still unresponsive on Android
+
+Same root cause and fix as `getRescueTicket`'s own matching entry — see that file for the full write-up. Short version: every nav-link call site here (`renderAcceptScreen()`, both `renderReachScreenRsr()`/`renderReachScreenTow()`) checked the stored `Break_Down_Location1`/`Navigate_To_Drop_Link` field before `buildNavUrl()`'s Android-aware `geo:` URI, silently bypassing the 2026-08-21 Android fix whenever that field was populated. New `resolveNavHref()` helper now prefers live coordinates on Android specifically; iOS/desktop unchanged. All 5 call sites in this file updated (breakdown nav on Accept/Reach-RSR/Reach-TOW, drop nav on Accept/Reach-TOW).
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed).
+
+## 2026-09-13 (later) — Real fix: camera capture lag re-checked, found the actual dominant cost
+
+User re-reported "In-app image capture lag/time is excessively high" after the 2026-09-10/2026-09-12 canvas-resolution fixes — those addressed real overhead (full native-resolution video/canvas), but left the bigger cost untouched: `capturePhoto()` awaits `getPositionSafe()` before it can finish, and that function requested a **brand-new GPS fix every single time**, with no `maximumAge` set at all (defaults to 0 — never reuse a cached position) and an 8-second timeout — meaning every photo could genuinely block for up to 8 full seconds on the GPS fetch alone, regardless of how fast the camera/canvas itself was.
+
+**Fixed**: `getPositionSafe()` now accepts an optional `maximumAge` parameter (still defaults to 0, so every other call site — Accept/Reach/WIP/etc., where a fresh, current-moment position genuinely matters — is completely unaffected). `capturePhoto()` specifically now passes `15000` (15 seconds): a vendor taking several photos in quick succession during the same job hasn't meaningfully moved between shots, so the 2nd/3rd/4th photo in a sequence (pre/post-service is min 2 each, on-truck is 3 mandatory) can reuse the first photo's already-resolved position instead of waiting up to 8 seconds all over again. The first photo of a session still pays the full cost if GPS is cold — this doesn't touch `enableHighAccuracy` or the timeout itself, only adds reuse for photos taken shortly after one another.
+
+**Needs redeploying**: `dist/vendorTicket.zip` (re-packed). **Not yet live-tested** — worth timing a real multi-photo capture sequence before/after to confirm the 2nd+ photo now feels noticeably faster.
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

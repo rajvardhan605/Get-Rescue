@@ -297,11 +297,19 @@ async function apiUpdateReport(report, id, data){
 // integration before now. Same Custom API (sendWhatsAppMessage), same
 // param shape, same fire-and-forget convention — never blocks or throws
 // into the caller's own existing save/navigate flow.
+// Real bug fixed 2026-09-13 — same fix, same reason, as getRescueTicket's
+// own matching function (that file's own isValidIndianPhoneDigits() already
+// anticipates and strips this exact shape for validation purposes — this
+// widget has no equivalent validator, but the underlying number shape is
+// the same): a 12-digit number already starting "91" (no "+") used to get
+// ANOTHER "+91" prepended here, producing a broken double-country-code
+// number for tel: links.
 function formatIndianPhone(v){
   if(!v) return "";
   const s=String(v).trim();
   if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
-  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  let digits=s.replace(/\D/g,""); if(!digits) return "";
+  if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
 async function sendWhatsAppTemplate(phone, templateName, params){
@@ -520,6 +528,21 @@ function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,
 function buildNavUrl(lat, lon){
   const isAndroid = /Android/i.test(navigator.userAgent||"");
   return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
+}
+// Real bug fixed 2026-09-13 — same fix, same reason, as vendorTicket's own
+// matching function (repeats soft-test item #12, "NAVIGATE to Breakdown
+// Location button unresponsive on Android devices"): the stored
+// Break_Down_Location1/Navigate_To_Drop_Link link was always checked BEFORE
+// buildNavUrl()'s Android-aware geo: URI, bypassing that fix on Android
+// whenever it was populated (its own real shape has never been confirmed —
+// see FIELDS.md). iOS/desktop behavior is completely unchanged.
+function resolveNavHref(storedLink, lat, lon){
+  const hasCoords = lat!=null && lon!=null && lat!=="" && lon!=="";
+  const isAndroid = /Android/i.test(navigator.userAgent||"");
+  if(isAndroid && hasCoords) return buildNavUrl(lat, lon);
+  if(storedLink) return String(storedLink);
+  if(hasCoords) return buildNavUrl(lat, lon);
+  return "";
 }
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
 function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
@@ -893,12 +916,12 @@ function renderAcceptScreen(){
   // own matching comment; same computation the Reach screen already uses.
   // Shown ahead of the existing Drop Location link below — breakdown comes
   // first in the actual flow (pick up, then drop).
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
+  const navHref = resolveNavHref(r.Break_Down_Location1, r.Latitude, r.Longitude);
   // Same fallback as renderLoadingScreen()/renderReachedDropScreen() — this
   // is just an informational row (no button gating here), lower priority,
   // but kept consistent with the fields those two actually depend on.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? buildNavUrl(dropLat,dropLon) : "");
+  const dropHref = resolveNavHref(r.Navigate_To_Drop_Link, dropLat, dropLon);
   $("ascreenBody").innerHTML = `
     ${navHref?`<a class="nav-link" href="${esc(navHref)}" target="_blank" rel="noopener">🧭 Navigate to Breakdown</a>`:`<div class="hint" style="margin-bottom:8px">Breakdown location not available yet</div>`}
     ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
@@ -1001,7 +1024,7 @@ async function rejectService(){
 /* ===== Action 6a: Reach Breakdown & Cancel (Tow) ===== */
 function renderReachScreen(){
   const r=state.current;
-  const navHref = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
+  const navHref = resolveNavHref(r.Break_Down_Location1, r.Latitude, r.Longitude);
   // Diagnostic (2026-08-04, user-reported live: nav link missing on this
   // screen) — see vendorTicket's own matching comment, not repeated here.
   if(!navHref) console.warn("[Get-Rescue] renderReachScreen: no nav link for ticket", r.ID, "— Break_Down_Location1:", JSON.stringify(r.Break_Down_Location1), "| Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude));
@@ -1252,7 +1275,7 @@ function renderReachedDropScreen(){
   // a maps.google.com link built from real coordinates) — Navigate_To_Drop_Link
   // has no confirmed writer, so this link would otherwise never show at all.
   const dropLat=parseCoord(r.DropLocationLat), dropLon=parseCoord(r.DropLocationLong);
-  const dropHref = r.Navigate_To_Drop_Link ? String(r.Navigate_To_Drop_Link) : (dropLat!=null && dropLon!=null ? buildNavUrl(dropLat,dropLon) : "");
+  const dropHref = resolveNavHref(r.Navigate_To_Drop_Link, dropLat, dropLon);
   if(!dropHref) console.warn("[Get-Rescue] renderReachedDropScreen: no drop nav link for ticket", r.ID, "— Navigate_To_Drop_Link:", JSON.stringify(r.Navigate_To_Drop_Link), "| DropLocationLat:", JSON.stringify(r.DropLocationLat), "| DropLocationLong:", JSON.stringify(r.DropLocationLong));
   $("ascreenBody").innerHTML = `
     ${dropHref ? `<a class="nav-link" href="${esc(dropHref)}" target="_blank" rel="noopener">🧭 Navigate to Drop Location</a>` : `<div class="hint" style="margin-bottom:8px">Drop location not available yet</div>`}
@@ -1401,7 +1424,12 @@ function renderPaymentScreen(){
   // Real bug fixed (2026-08-03, user-confirmed via the actual Zoho field
   // config) — see technicianTicket's own comment on this same line. Real
   // options are PAID / PENDING / NOT APPLICABLE, not "Pending"/"Success".
-  const alreadySuccess=String(r.Payment_Status||"").toUpperCase()==="PAID";
+  // Real bug fixed 2026-09-12 — see vendorTicket's own matching comment
+  // (identical bug: Payment_Status is shared with the agent's Booking Fee
+  // stage, so it could already read "PAID" before this screen was ever
+  // opened, bypassing the mandatory-photo gate). Payment_received is only
+  // ever written by this exact confirmPaymentReceived() action.
+  const alreadySuccess=r.Payment_received==="Yes";
   // Payment_Method_Final's real options confirmed 2026-08-03 (user's own Zoho
   // field screenshot): Cash / UPI / Card / Net Banking — replaces the
   // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
@@ -1600,7 +1628,22 @@ async function uploadPhotoNow(fieldName, file, max){
 }
 
 let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
-function getPositionSafe(){
+// maximumAge param added 2026-09-13 (user request: "In-app image capture
+// lag/time is excessively high" — re-checked after the earlier 2026-09-10/
+// 2026-09-12 camera-resolution fixes, which addressed the canvas/stream size
+// but left the real dominant cost untouched: getPositionSafe() itself can
+// block for up to 8 FULL SECONDS per call, on every single photo, since it
+// always requested a brand-new GPS fix with no maximumAge at all (defaults
+// to 0 — "never accept a cached position"). Defaults to 0 here too, so every
+// EXISTING call site (Accept/Reach/WIP/etc., where a fresh, current-moment
+// position genuinely matters) is completely unaffected — only capturePhoto()
+// below now opts into a 15s cache window, since a driver taking several
+// photos in quick succession during the same job hasn't meaningfully moved
+// between shots; the 2nd/3rd/4th photo in a sequence can reuse the 1st
+// photo's already-resolved position instead of waiting up to 8s all over
+// again. Does not touch enableHighAccuracy or the 8s timeout itself — a
+// genuinely cold GPS fix (first photo of a session) is unaffected either way.
+function getPositionSafe(maximumAge){
   return new Promise(function(res){
     if(!navigator.geolocation){ res(null); return; }
     navigator.geolocation.getCurrentPosition(
@@ -1610,25 +1653,33 @@ function getPositionSafe(){
       // which can exceed Number.MAX_SAFE_INTEGER for lat/lon-sized values.
       function(pos){ res({lat:Number(pos.coords.latitude.toFixed(15)), lon:Number(pos.coords.longitude.toFixed(15))}); },
       function(){ res(null); },
-      { enableHighAccuracy:true, timeout:8000 }
+      { enableHighAccuracy:true, timeout:8000, maximumAge:maximumAge||0 }
     );
   });
 }
 async function openCamera(fieldName,max){
   currentPhotoField=fieldName; currentPhotoMax=max;
   try{
-    cameraStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:"environment"}, audio:false });
+    // width/height ideal constraints added 2026-09-12 — see vendorTicket's
+    // own matching comment (client email: capture lag) for the full
+    // reasoning. Soft `ideal` preference, matches CAPTURE_MAX_DIM below.
+    cameraStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:"environment", width:{ideal:1600}, height:{ideal:1600}}, audio:false });
     $("cameraVideo").srcObject=cameraStream;
     $("cameraModal").classList.add("on");
   }catch(e){
     toast("Camera unavailable — pick a photo instead","err");
     $("cameraFallbackInput").onchange=function(){
       const f=$("cameraFallbackInput").files[0]; if(!f) return;
-      state.photos[fieldName]=state.photos[fieldName]||[];
-      state.photos[fieldName].push(f);
-      renderPhotoGrid(fieldName,max);
-      uploadPhotoNow(fieldName,f,max);
       $("cameraFallbackInput").value="";
+      // Compressed 2026-09-12 — see vendorTicket's own matching comment
+      // (identical fix, same gap: this fallback path skipped compression
+      // entirely until now).
+      compressImageFile(f, CAPTURE_MAX_DIM, 0.85).then(function(compressed){
+        state.photos[fieldName]=state.photos[fieldName]||[];
+        state.photos[fieldName].push(compressed);
+        renderPhotoGrid(fieldName,max);
+        uploadPhotoNow(fieldName,compressed,max);
+      });
     };
     $("cameraFallbackInput").click();
   }
@@ -1713,7 +1764,10 @@ async function capturePhoto(){
     canvas.width=Math.round(nativeW*scale); canvas.height=Math.round(nativeH*scale);
     const ctx=canvas.getContext("2d");
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
-    const pos=await getPositionSafe();
+    // maximumAge:15000 (2026-09-13) — see getPositionSafe()'s own comment;
+    // this is the specific call site that benefits from reusing a very-
+    // recent GPS fix instead of always requesting a brand-new one.
+    const pos=await getPositionSafe(15000);
     const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
     const lonText = pos ? pos.lon.toFixed(6) : "";
     const barH=56, pad=14;

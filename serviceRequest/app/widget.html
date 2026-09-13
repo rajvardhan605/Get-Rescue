@@ -329,11 +329,19 @@ async function callCustomApi(apiName, payload){
 
 /* every phone number in this app is an Indian number — mirrors
    getRescueTicket's own formatIndianPhone() exactly. */
+// Real bug fixed 2026-09-13 — same fix, same reason, as getRescueTicket's
+// own matching function (that file's own isValidIndianPhoneDigits() already
+// anticipates and strips this exact shape for validation purposes — this
+// widget has no equivalent validator, but the underlying number shape is
+// the same): a 12-digit number already starting "91" (no "+") used to get
+// ANOTHER "+91" prepended here, producing a broken double-country-code
+// number wherever this widget uses it.
 function formatIndianPhone(v){
   if(!v) return "";
   const s=String(v).trim();
   if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
-  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  let digits=s.replace(/\D/g,""); if(!digits) return "";
+  if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
 function pad(n){ return n<10 ? "0"+n : ""+n; }

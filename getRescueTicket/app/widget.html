@@ -1389,7 +1389,14 @@ const STAGES = [
     // same behavior the row mechanism already had, not something new here.
     fields:[
     { n:"Customer_Name", l:"Customer Name", t:"text", req:true, row:"contact" },
-    { n:"Phone_Number1", l:"Phone Number", t:"tel", req:true, row:"contact" },
+    // ozonetelCall:true added 2026-09-14 (user request, after explicitly
+    // confirming via AskUserQuestion this means a REAL Ozonetel-placed call,
+    // not the plain tel: click-to-dial link just below it) — see
+    // placeVoiceCallbackFromTicket()'s own header comment for the full
+    // reasoning/history. Opt-in per field on purpose: only this field sets
+    // it, so every OTHER t:"tel" field in this app (Alternate_Phone_Number,
+    // etc.) is completely unaffected and still only shows the plain tel: link.
+    { n:"Phone_Number1", l:"Phone Number", t:"tel", req:true, row:"contact", ozonetelCall:true },
     // Re-added 2026-07-31 (was removed 2026-07-25) per the flow spec, which
     // shows it paired with Phone Number — same +91-prefixing `t:"tel"`
     // treatment as Phone_Number1, per explicit choice. Field link name is the
@@ -1779,6 +1786,20 @@ const STAGES = [
           // message with the link goes out (next lines below).
           console.log("[Get-Rescue] Send_Payment_Link: invoice URL for ticket", r.ID, "->", invoiceUrl||"(none)");
           if(!invoiceUrl) console.warn("[Get-Rescue] Send_Payment_Link: no invoice URL came back — sending the WhatsApp message without a payment link this time.");
+          // Real gap fixed 2026-09-13 (client soft-test item #4/#7 re-checked:
+          // "the generated payment link must be clearly displayed on the
+          // interface") — __PaymentLinkDisplay_BF below already reads
+          // Zoho_Payment_URL correctly, but nothing here ever updated the
+          // agent's own in-memory `r`/state.record (they're the same object —
+          // f.action(state.record), see buildField()'s own call site) or
+          // re-rendered after a successful generate, so the navlink kept
+          // showing "No payment link yet" on screen until the agent left and
+          // reopened the ticket, even though Zoho_Payment_URL was already
+          // saved correctly server-side by generateZohoPaymentLink.deluge.
+          // Updates the display immediately, independent of whether the
+          // WhatsApp send below succeeds/fails/aborts — the payment link
+          // itself is already real and valid the moment invoiceUrl is truthy.
+          if(invoiceUrl){ r.Zoho_Payment_URL = invoiceUrl; renderWizard(); }
           // Real bug fixed 2026-08-25 (user-reported live: the sent message
           // showed no link at all — "Rs. 200/- : 1000. The remaining
           // amount...", nothing more) — the approved WhatsApp template only
@@ -2049,12 +2070,12 @@ const STAGES = [
     // it. hrefCompute rebuilds the exact same URL customerNameWithPageLink()
     // above just sent — never stored anywhere, so it's recomputed fresh each
     // render (works even before the button above has ever been clicked).
-    // Hidden 2026-09-10 (explicit user request, live screenshot) — kept as a
-    // when:false gate rather than deleted, so it's a one-line, obviously
-    // reversible toggle if this is ever wanted back (just remove the
-    // when: line). The underlying navlink hrefCompute generalization itself
-    // is untouched — still used by the payment-link displays elsewhere.
-    { n:"__LocationLinkDisplay_Breakdown", l:"Breakdown Location Share Link", t:"navlink", full:true, when:(s)=>false,
+    // RE-ENABLED 2026-09-12 (client email, "Location Page: ... The direct
+    // location-sharing page link needs to be displayed to the agent") —
+    // reverses the 2026-09-10 hide, which was exactly this reversible
+    // when:false toggle described in this comment's own prior wording.
+    // Same client, same underlying request, now confirmed wanted again.
+    { n:"__LocationLinkDisplay_Breakdown", l:"Breakdown Location Share Link", t:"navlink", full:true,
       hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"breakdown"}),
       linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
     // 2026-07-31: user explicitly confirmed location is captured ONLY this
@@ -2097,10 +2118,9 @@ const STAGES = [
         sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"drop"})])
           .then(function(ok){ toast(ok?"Drop location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
-    // Soft-test item #7 — same reasoning as the Breakdown link display above.
-    // Hidden 2026-09-10 (explicit user request, live screenshot) — see that
-    // field's own matching comment; same reversible when:false approach.
-    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true, when:(s)=>false,
+    // RE-ENABLED 2026-09-12 — see __LocationLinkDisplay_Breakdown's own
+    // matching comment just above (same client request, same reversal).
+    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true,
       hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"drop"}),
       linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
     { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
@@ -2359,20 +2379,16 @@ const STAGES = [
     // (always shown) — if the technician side is hidden, that row just
     // renders as a single full-width field instead, per renderFields()'s own
     // "column count matches however many fields actually land" behavior.
-    // closureHide:true (2026-09-11, Task Tracker PDF item 3 — "email can be
-    // removed" from the closure page's own Vendor Response section, now that
-    // Name/Mobile are shown there instead) — still fully live/editable on
-    // this Accept step itself, only hidden from the Final Closure summary.
-    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true },
-    // Moved here from `assignment` 2026-07-31 (UI simplification, matches
-    // the Action 4 mock) — these are outcome fields, shown once someone's
-    // actually accepted, not something the agent fills in upfront.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
-    // Technician fields below all gated on vendorHasTechnicians() (2026-08-07,
-    // user request) — pointless clutter for an Individual vendor who will
-    // never hand a job to a technician; see that function's own comment.
-    { n:"Technician_Email", l:"Technician Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment above
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
+    //
+    // REORDERED 2026-09-12 (client email: "For the accepted vendor, the
+    // system currently exposes their email address instead of their Name
+    // and Mobile Number") — Name (Assigned_Vendor) and Mobile
+    // (__VendorMobileDisplay) already existed on this screen, just AFTER
+    // the raw email fields, so an agent scanning top-to-bottom saw email
+    // first. Nothing was removed (email is still fully present, still
+    // editable in Agent-manual mode, still hidden from the Closure summary
+    // per the existing closureHide flags below) — Name+Mobile just now come
+    // first, matching what the client actually wants to see first.
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
     // Added 2026-07-31 (user-confirmed): a single Lookup, set by the vendor's
     // OWN Accept action once they accept — not written by this widget at
@@ -2389,6 +2405,20 @@ const STAGES = [
     { n:"__VendorMobileDisplay", l:"Vendor Mobile Number", t:"computed", full:true,
       compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
       emptyHint:"No accepted vendor yet." },
+    // closureHide:true (2026-09-11, Task Tracker PDF item 3 — "email can be
+    // removed" from the closure page's own Vendor Response section, now that
+    // Name/Mobile are shown there instead) — still fully live/editable on
+    // this Accept step itself, only hidden from the Final Closure summary.
+    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true },
+    // Moved here from `assignment` 2026-07-31 (UI simplification, matches
+    // the Action 4 mock) — these are outcome fields, shown once someone's
+    // actually accepted, not something the agent fills in upfront.
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
+    // Technician fields below all gated on vendorHasTechnicians() (2026-08-07,
+    // user request) — pointless clutter for an Individual vendor who will
+    // never hand a job to a technician; see that function's own comment.
+    { n:"Technician_Email", l:"Technician Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment above
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
     // Added 2026-08-11 (user request) — Distance_To_Breakdown/Service_Acceptance
     // are normally written automatically by the vendor's own acceptService()
     // action (confirmed live in vendorTicket/technicianTicket's own write
@@ -2781,13 +2811,9 @@ const STAGES = [
     // scattered" request) — see `acceptance`'s own matching comment on why
     // same-row fields have to sit adjacent in this array.
     { n:"Image_Upload1", l:"Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment (Vendor_Email1)
-    // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
-    // Technician/driver hand-off fields below all gated on
-    // vendorHasTechnicians() — see `acceptance`'s own matching comment above.
-    { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment
-    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
+    // REORDERED 2026-09-12 — see `acceptance`'s own matching comment (same
+    // client email, same reasoning): Name (Assigned_Vendor) and Mobile
+    // (__VendorMobileDisplay_TOW) now come before the raw email fields.
     { n:"Assigned_Technician", l:"Assigned Technician", t:"select", o:"@technicians", useId:true, when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
     // See `acceptance`'s own comment on this same new field.
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
@@ -2796,6 +2822,13 @@ const STAGES = [
     { n:"__VendorMobileDisplay_TOW", l:"Vendor Mobile Number", t:"computed", full:true,
       compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
       emptyHint:"No accepted vendor yet." },
+    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment (Vendor_Email1)
+    // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
+    // Technician/driver hand-off fields below all gated on
+    // vendorHasTechnicians() — see `acceptance`'s own matching comment above.
+    { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment
+    { n:"Assigned_Technician_Email", l:"Technician Email (Assignment)", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment (`acceptance`)
     // Added 2026-08-11 (user request) — see `acceptance`'s own matching
     // comment (TOW's own copy: Distance_To_Breakdown_TOW, Service_Acceptance_For_Tow).
     // "Reject Time"/"Accept Location (Lat)"/"Accept Location (Lon)" removed
@@ -3251,6 +3284,15 @@ const STAGES = [
         invoicingPromise.then(function(invoiceUrl){
           console.log("[Get-Rescue] Send_Payment_Link1: invoice URL for ticket", r.ID, "->", invoiceUrl||"(none)");
           if(!invoiceUrl) console.warn("[Get-Rescue] Send_Payment_Link1: no invoice URL came back — sending the WhatsApp message without a fresh payment link this time.");
+          // Real gap fixed 2026-09-13 — same fix, same reason, as
+          // Send_Payment_Link's own matching comment above (Booking Fee):
+          // __PaymentLinkDisplay_RF already reads Zoho_Payment_URL_Remaining
+          // correctly, but nothing here ever updated the agent's own
+          // in-memory r/state.record or re-rendered after a successful
+          // generate, so the navlink kept showing "No payment link yet"
+          // until the ticket was reopened, even though the field was already
+          // saved correctly server-side.
+          if(invoiceUrl){ r.Zoho_Payment_URL_Remaining = invoiceUrl; renderWizard(); }
           // Customer Page link (2026-09-02, extended 2026-09-07 to also fall
           // back to the raw invoiceUrl — same "|| invoiceUrl" pattern
           // Send_Payment_Link's own booking-fee flow already uses — now that
@@ -3277,11 +3319,19 @@ const STAGES = [
             return;
           }
           const param2 = String(r.Total_Service_Fee||0) + " - Pay now: " + customerLink;
-          // param3 added 2026-09-06 — see Send_Payment_Link's own matching
-          // comment above. Purely additive alongside param2's own already-
-          // working embedded link text. Sent as the Customer Page link too
-          // (never the raw invoiceUrl), consistent with param2 above.
-          sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Remaining_Fee||0), param2, customerLink])
+          // param3 REMOVED 2026-09-12 (full-application audit — real
+          // inconsistency found, not live-reported) — this call was still
+          // sending a stale 3rd parameter (customerLink again) from before
+          // 2026-09-08, the day `Send_Payment_Link`'s own identical call was
+          // confirmed live to reject with "(#132018) There's an issue with
+          // the parameters in your template" and fixed by dropping to
+          // exactly 2 params (see that action's own matching comment,
+          // above) — the approved `booking_fees_link` template only has 2
+          // placeholders. This call was never updated to match at the time,
+          // so it's been sending the same shape that's already confirmed
+          // broken for the identical template. Now matches
+          // `Send_Payment_Link`'s own 2-param call exactly.
+          sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Remaining_Fee||0), param2])
             .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
         });
         }); // end persistPromise.then — see the field-persist block at the top of this action
@@ -3294,7 +3344,17 @@ const STAGES = [
     // Label changed 2026-09-02 (build-plan item #8) — see Image_Upload's own
     // matching comment (Quote/Booking-Fee stage) for the full rationale.
     // Label-only, field API name (n:) untouched — no schema/data impact.
-    { n:"Upload_Photo_of_receipt", l:"Remaining Fee Receipt Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // reqFile added 2026-09-12 (full-application audit — real gap found,
+    // not live-reported) — this field had NO mandatory-photo gate at all,
+    // unlike its Booking Fee counterpart (Image_Upload, `quote` stage, see
+    // that field's own reqFile a few hundred lines up) despite FIELDS.md
+    // explicitly documenting the same "mandatory whenever a payment method
+    // is selected and isn't Payment Gateway" rule for both. Same exact
+    // condition, same hint text convention, mirrored here — Payment Gateway
+    // stays exempt (nothing to photograph, the QR block above covers it).
+    { n:"Upload_Photo_of_receipt", l:"Remaining Fee Receipt Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s),
+      reqFile:(s)=> !!s.Payment_Method_Final && s.Payment_Method_Final!=="Payment Gateway",
+      hint:"Required unless paid via Payment Gateway." },
     // Added 2026-07-31 (Action 8 reconciliation) — this is the exact SAME
     // Payment_Status field the `quote` stage already declares above (a real
     // Select, PAID/PENDING/NOT APPLICABLE — user-confirmed 2026-08-03 via
@@ -4586,18 +4646,26 @@ function sendCustomerFeedbackRequest(record){
    customerPage's own side again with no other explanation, this hash form
    is the first thing to try reintroducing; customerPage's own
    getPageParams() still has an independent hash-fallback either way. */
-// ⚠ Real, confirmed live 2026-09-08 AND AGAIN 2026-09-09: republishing the
-// Customer Page in Zoho Creator generates a BRAND NEW permalink token every
-// time — the original token (ending "...UndSYeGuUb8RBzNDBtF") stopped
-// working after the first republish, and the token that replaced it
-// (ending "...QSCZtJQ4nxF2S954f7R9") stopped working after the second. If
-// Customer Page links ever start 404ing (or landing on a dead/expired page)
-// after some future change to that page, re-check its permalink FIRST —
-// any republish of the page itself is enough to rotate this token again;
-// this constant does NOT update itself, and neither does any already-sent
+// ⚠ Real, confirmed live 2026-09-08, AGAIN 2026-09-09, AND AGAIN 2026-09-13:
+// republishing the Customer Page in Zoho Creator generates a BRAND NEW
+// permalink token every time — the original token (ending
+// "...UndSYeGuUb8RBzNDBtF") stopped working after the first republish, the
+// token that replaced it (ending "...QSCZtJQ4nxF2S954f7R9") stopped working
+// after the second, and THAT token (ending "...VwH8fPFZCqaROx4z5T6QRyEQV
+// Tshspvv...", see git history for the 2026-09-09 value in full) stopped
+// working after a third republish — user-reported live 2026-09-13: clicking
+// "Send Payment Link & Request Location" showed "Couldn't build the
+// Customer Page link... " (the abort-with-toast guard in Send_Payment_Link/
+// Send_Payment_Link1 doing exactly its job — see those actions' own
+// comments — refusing to send a WhatsApp message with a dead link rather
+// than silently mailing one out). If Customer Page links ever start 404ing
+// (or landing on a dead/expired page, or trigger this exact toast) after
+// some future change to that page, re-check its permalink FIRST — any
+// republish of the page itself is enough to rotate this token again; this
+// constant does NOT update itself, and neither does any already-sent
 // WhatsApp message (their links stay dead — a fresh Send Payment Link click
 // is needed after updating this constant, not just a redeploy).
-const CUSTOMER_PAGE_BASE_URL = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/BmNeZMPJCNr5kpsYVWrg9AF7DpdE2qGsrwYvHKRh0nV5pyOV2e70gDke74rUHGWPSJFkU6twnwWaut60qZWpBMp06XWH1XCtQZAj"; // 2026-09-09 (updated after 2nd republish), real published Permalink, user-confirmed
+const CUSTOMER_PAGE_BASE_URL = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/0gVCSNX48ASbYtRFUJ563eAbKzNFNnaVwH8fPFZCqaROx4z5T6QRyEQVTshspvvXSgyt5vuyPJSQQC0dwZGyYQKdMeySnUS6mYJr"; // 2026-09-13 (updated after 3rd republish), real published Permalink, user-confirmed
 
 function buildCustomerPageUrl(record, mode, extraParams){
   if(!CUSTOMER_PAGE_BASE_URL || !record || !record.ID) return "";
@@ -4992,8 +5060,22 @@ async function loadVendorAcct(){
   console.log("[Get-Rescue] loadVendorAcct: "+all.length+" total tickets, "+VA_CASES.length+" pending Operations approval");
   renderVendorAcctList();
 }
+// Real bug fixed 2026-09-13 (user-reported live, screenshot: RSID590002
+// showing "(no vendor)" in Vendor Accounting despite genuinely having an
+// assigned vendor) — this only ever matched Assigned_Vendor by `o.id` (a
+// real Lookup object's own record id). vendorRawForTicket() right above
+// already needs an `o.v` (label) fallback too for exactly this reason —
+// Assigned_Vendor isn't always a clean Lookup object; on some tickets it's
+// been written as a bare vendor-name string instead (see this file's own
+// "Lookup write-shape revert" history). unwrapLookup() then just returns
+// that name string unchanged, which never matches any `o.id`, so this
+// always fell through to "(no vendor)" for those tickets specifically —
+// same root cause, same fix as vendorRawForTicket()'s own matching pattern.
 function vaVendorDisplayName(r){
-  const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===String(unwrapLookup(r.Assigned_Vendor)); });
+  const vid=unwrapLookup(r.Assigned_Vendor);
+  if(!vid) return "(no vendor)";
+  const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===String(vid); })
+    || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vid); });
   return (vopt && vopt.v) || "(no vendor)";
 }
 // Accordion item: the row button plus its own (initially empty/closed)
@@ -6427,14 +6509,53 @@ function buildNavUrl(lat, lon){
   const isAndroid = /Android/i.test(navigator.userAgent||"");
   return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
 }
+// Real bug fixed 2026-09-13 (user-reported live, repeats soft-test item #12,
+// "NAVIGATE to Breakdown Location button unresponsive on Android devices" —
+// same symptom the 2026-08-21 buildNavUrl()/geo: fix was built for). Root
+// cause: every nav-link call site checks a STORED link field
+// (Break_Down_Location1/Navigate_To_Drop_Link) FIRST, only falling back to
+// buildNavUrl()'s Android-aware geo: URI when that stored field is empty —
+// but FIELDS.md has always flagged Break_Down_Location1's own real shape as
+// unconfirmed ("Single Line or Formula... not confirmed whether this is a
+// real formula field or something else"). Whether it's actually a plain
+// maps.google.com link (exactly the shape soft-test item #12 already found
+// unreliable on Android from inside a webview) or something else entirely,
+// using it in place of buildNavUrl() on Android bypasses that fix completely
+// whenever it happens to be populated — which is most real tickets. Doesn't
+// touch iOS/desktop at all (still prefers the stored link there, unchanged,
+// since that's the platform this was never reported broken on) — only
+// reorders priority on Android specifically, and only when real coordinates
+// are actually available to build a geo: URI from; otherwise still falls
+// back to the stored link exactly as before.
+function resolveNavHref(storedLink, lat, lon){
+  const hasCoords = lat!=null && lon!=null && lat!=="" && lon!=="";
+  const isAndroid = /Android/i.test(navigator.userAgent||"");
+  if(isAndroid && hasCoords) return buildNavUrl(lat, lon);
+  if(storedLink) return String(storedLink);
+  if(hasCoords) return buildNavUrl(lat, lon);
+  return "";
+}
 /* every phone number in this app is an Indian number — if the agent didn't
    type a country code, assume +91 rather than leaving it bare. Matches the
    "+919696406443" shape Create_Case expects (no spaces/dashes). */
+// Real bug fixed 2026-09-13 (user request: "check customer phone number and
+// country code" while investigating why WhatsApp messages weren't arriving)
+// — isValidIndianPhoneDigits() right below already strips a leading "91"
+// from a 12-digit number before judging its length, proving this codebase
+// already anticipated a phone number sometimes being stored/typed as
+// "91XXXXXXXXXX" (no "+"). This function never had the same defensive
+// strip: it would pass THAT exact shape straight through and prepend
+// another "+91", producing a broken, double-country-code number
+// ("+9191XXXXXXXXXX") handed to sendWhatsAppTemplate() — a plausible real
+// cause of a message silently never arriving. Same stripping rule as
+// isValidIndianPhoneDigits(), now applied here too, so a number that
+// already passes validation is also dialed/messaged correctly.
 function formatIndianPhone(v){
   if(!v) return "";
   const s=String(v).trim();
   if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
-  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  let digits=s.replace(/\D/g,""); if(!digits) return "";
+  if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
 // Added 2026-09-02 (build-plan item #1, wireframe: "Phone Number [Number
@@ -6551,6 +6672,102 @@ async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl){
   }catch(e){
     console.warn("[Get-Rescue] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
     return false;
+  }
+}
+/* Ozonetel click-to-call, ADDED BACK 2026-09-14 (explicit user request —
+   confirmed via AskUserQuestion this is genuinely wanted, not a plain tel:
+   link bug). An Ozonetel-integrated "Call via System" button used to live
+   inline in this exact widget; it was fully removed 2026-09-10 in favor of
+   the standalone `callCenter` widget ("Replace the inline button", not
+   "keep both" — see this file's own 2026-09-10 revert entry). This restores
+   ONLY a place-a-call action on the Create step's Phone Number field,
+   reusing callCenter's own placeVoiceCallback()/checkVoiceCallbackStatus()
+   verbatim (same Custom API names "getVoiceCallbackDetails"/
+   "getCallbackStatus", same workspace_name "getrescued", same payload
+   shape, same defensive response parsing — including reading both
+   call_result/disconnect_reason for Outcome, since callCenter's own README
+   flags that field name as never independently confirmed against the real
+   Custom API). Deliberately narrower than callCenter's own UI: no
+   persistent "Current Call" panel, no Call_Log write — callCenter's own
+   Call_Log form doesn't even exist in Zoho yet (see that widget's README),
+   so depending on it here too would just be a second unmet dependency for
+   no benefit over the toast already shown. If per-ticket call history is
+   ever wanted, wire in the same logCallAttempt() pattern once Call_Log is
+   confirmed to exist. Purely additive: the plain tel: click-to-dial link
+   right next to this button is completely untouched. */
+async function placeVoiceCallbackFromTicket(phoneNumber){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ toast("Can't place call — invokeCustomApi unavailable","err"); return; }
+  const digits = String(phoneNumber||"").replace(/\D/g,"").replace(/^91(?=\d{10}$)/,"").slice(-10);
+  if(digits.length<10){ toast("No valid phone number to call","err"); return; }
+  const reference = caseLabel(state.record);
+  const config = {
+    api_name: "getVoiceCallbackDetails",
+    workspace_name: "getrescued",
+    http_method: "POST",
+    content_type: "application/json",
+    payload: {
+      customerId: reference || digits,
+      phoneNumber: digits,
+      callbackMessage: "Agent-requested callback for "+(reference||digits)
+    }
+  };
+  toast("Placing call to "+digits+"…","ok");
+  try{
+    const res=await fn(config);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: response.result wasn't valid JSON", e); toast("Unexpected response from the call API — check console","err"); return; }
+    }
+    if(!data || data.code!=="SUCCESS"){
+      console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: call failed — code:", data && data.code, "message:", data && data.message, "| full response:", res);
+      toast((data && data.message) || "Call could not be placed","err");
+      return;
+    }
+    const ucid = data.ucid || data.callback_id || "";
+    if(!ucid){
+      console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: SUCCESS response had no ucid/callback_id. Full response:", res);
+      toast("Call placed, but no call ID came back — status can't be checked","ok");
+      return;
+    }
+    toast("Call placed to "+digits,"ok");
+    // One automatic status check a few seconds after placing — same UX
+    // pattern callCenter's own onPlaceCall() already uses (setTimeout, 4s).
+    setTimeout(function(){ checkVoiceCallbackStatusFromTicket(ucid); }, 4000);
+  }catch(e){
+    console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: invokeCustomApi failed", e);
+    toast("Call request failed — check console","err");
+  }
+}
+async function checkVoiceCallbackStatusFromTicket(callbackId){
+  const fn=resolve("invokeCustomApi");
+  if(!fn || !callbackId) return;
+  const config = {
+    api_name: "getCallbackStatus",
+    workspace_name: "getrescued",
+    http_method: "POST",
+    content_type: "application/json",
+    payload: { callbackId: callbackId }
+  };
+  try{
+    const res=await fn(config);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[Get-Rescue] checkVoiceCallbackStatusFromTicket: response.result wasn't valid JSON", e); return; }
+    }
+    if(!data || data.code!=="SUCCESS"){
+      console.warn("[Get-Rescue] checkVoiceCallbackStatusFromTicket: status check failed — code:", data && data.code, "message:", data && data.message, "| full response:", res);
+      return;
+    }
+    const status = data.status||"";
+    const outcome = data.call_result || data.disconnect_reason || "";
+    const duration = data.call_duration||"";
+    console.log("[Get-Rescue] checkVoiceCallbackStatusFromTicket — status:", status, "| outcome:", outcome, "| duration:", duration, "| full response:", data);
+    toast("Call status: "+(status||"unknown")+(outcome?(" — "+outcome):""), "ok");
+  }catch(e){
+    console.warn("[Get-Rescue] checkVoiceCallbackStatusFromTicket: invokeCustomApi failed", e);
   }
 }
 // onDemandInvoicing() (2026-08-25, user request) — same invokeCustomApi()
@@ -8320,7 +8537,7 @@ function buildField(f){
       linkLabel = f.linkLabel || "Open Link";
       emptyMsg = f.emptyMsg || "Not available yet.";
     } else {
-      href = r.Break_Down_Location1 ? String(r.Break_Down_Location1) : (r.Latitude&&r.Longitude ? buildNavUrl(r.Latitude,r.Longitude) : "");
+      href = resolveNavHref(r.Break_Down_Location1, r.Latitude, r.Longitude);
       linkLabel = "🧭 Navigate to Breakdown";
       emptyMsg = "Breakdown location not captured yet — capture it on the Locations step.";
     }
@@ -8362,7 +8579,19 @@ function buildField(f){
     // other t:"tel" field on this app's own Create/edit forms (not just
     // Phone_Number1) picks this up too, for free.
     const telLinkHtml = (f.t==="tel" && cur) ? ` <a href="tel:${esc(formatIndianPhone(cur))}" style="display:inline-block;margin-top:6px;font-family:var(--f-mono);font-size:12px;color:var(--muted);text-decoration:none" title="Call ${esc(cur)}">📞 Call</a>` : "";
-    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+    // Ozonetel click-to-call (2026-09-14) — see Phone_Number1's own field def
+    // comment and placeVoiceCallbackFromTicket()'s own header comment for the
+    // full reasoning. Purely additive, right next to the plain tel: link
+    // above (unchanged) — opt-in via f.ozonetelCall, so no other field is
+    // affected.
+    const ozonetelCallHtml = (f.t==="tel" && f.ozonetelCall && cur) ? ` <a href="#" id="${id}_ozonetelCall" style="display:inline-block;margin-top:6px;margin-left:10px;font-family:var(--f-mono);font-size:12px;color:var(--accent-ink,#7A3D0C);text-decoration:none" title="Call ${esc(cur)} via Ozonetel">📲 Call via System</a>` : "";
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+ozonetelCallHtml+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+    if(f.t==="tel" && f.ozonetelCall && cur){
+      setTimeout(function(){
+        const ozBtn=$(id+"_ozonetelCall");
+        if(ozBtn) ozBtn.onclick=function(e){ e.preventDefault(); placeVoiceCallbackFromTicket(cur); };
+      },0);
+    }
   }
   // interactions
   setTimeout(()=>wireField(f,id),0);
@@ -9907,6 +10136,37 @@ async function saveStep(advance){
     // uploadPendingFiles()'s own comment for why this is awaited now.
     const failedUploads = await uploadPendingFiles(state.recordId);
     $("wizCaseId").textContent=caseLabel(state.record)||("#"+state.recordId);
+    // Real bug fixed 2026-09-12 (client-reported live: "Cash Payment
+    // Uploads... photo is currently failing to save... but the flow is
+    // moving forward" — same root cause already found/fixed this session
+    // for the 3 vendor apps' own confirmPaymentReceived()). The record's
+    // OTHER fields (Payment_Method, Booking_Fee, etc.) are already saved by
+    // the time this line runs — that part can't be un-done without a much
+    // bigger change to this shared, every-stage save function. What CAN be
+    // fixed here: if the field that failed to upload is one this step
+    // actually marks mandatory (reqFile), the wizard must not silently
+    // advance/exit as if the step fully succeeded — that's the exact
+    // "flow moving forward" the client reported. Non-mandatory attachments
+    // (most photo fields on most stages) are unaffected — same lenient
+    // "saved, but check console/retry" behavior as before.
+    const failedRequiredUpload = failedUploads.some(function(fieldName){
+      const f = (step.fields||[]).find(function(x){ return x.n===fieldName; });
+      return f && typeof f.reqFile==="function" && f.reqFile(state.record);
+    });
+    if(failedRequiredUpload){
+      // Deliberately does NOT reuse the `blocked`/canAdvance mechanism below
+      // (that path calls backToDash() — meant for "you haven't done X yet,
+      // come back later," a fine pattern for genuinely incomplete work, but
+      // wrong here: a failed upload is a transient error to retry RIGHT NOW,
+      // not unfinished work to resume another day). uploadPendingFiles()
+      // only deletes state.files[k] on SUCCESS (see its own code) — the
+      // file that just failed is still queued, so simply staying on this
+      // same step and re-rendering is enough for a plain re-click of Save
+      // to retry it, no extra plumbing needed.
+      toast("A REQUIRED photo failed to upload ("+failedUploads.join(", ")+") — this step has NOT advanced. Please retry (click Save again) before continuing.","err");
+      renderWizard();
+      return;
+    }
     // Folded into ONE toast (not a second call right after "Saved") — see
     // uploadPendingFiles()'s own comment on why a second toast() call would
     // otherwise just silently replace this one before the agent ever saw it.

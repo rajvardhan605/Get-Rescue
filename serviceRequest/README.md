@@ -438,3 +438,9 @@ User's live page regressed to the generic `boot()` fallback screen — "Couldn't
 **Needs redeploying**: `dist/serviceRequest.zip` (re-packed). **Reminder**: flip `SHOW_SAMPLE_DATA` back to `false` (and redeploy again) once the real Custom API issue above is actually fixed — otherwise the live page will keep showing sample data and mock confirmations to real customers indefinitely.
 
 **Tested**: syntax-checked. Not yet independently confirmed — next step is reloading the live page to confirm all 3 steps now render.
+
+## 2026-09-13 — Real bug fixed: `formatIndianPhone()` could double the country code on a 12-digit number
+
+Found while investigating a `getRescueTicket` WhatsApp-delivery report ("check customer phone number and country code"). That file's own `isValidIndianPhoneDigits()` already strips a leading `91` from a 12-digit number before judging its length — proving a phone number stored/typed as `91XXXXXXXXXX` (no `+`) is an anticipated real shape in this project. `formatIndianPhone()` here had no equivalent strip: that exact shape got another `+91` prepended, producing a broken double-country-code number wherever this widget uses it. Same fix applied identically across every widget that has a copy of this function (`getRescueTicket`, `technicianTicket`, `driverTicket`, `vendorTicket`, `Ticket Kanban`).
+
+**Needs redeploying**: `dist/serviceRequest.zip` (re-packed).

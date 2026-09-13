@@ -20,9 +20,9 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 |---|---|---|---|
 | **Agent** (`getRescueTicket`) | `Create_Case`, `Invites` | `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Vendors_Report`, `Technicians_Report`, `Client_Report`, `Rate_Master_Report`, `Invites_Report` (duplicate check before creating) | `Agent_Ticket_Report` |
 | **Kanban / Ops board** (`ticketKanbanGetRescue`) | `Create_Case` (only if a ticket is somehow opened before it has an ID — see its own code comment) | same option reports as Agent | `Agent_Ticket_Report` |
-| **Vendor** (`vendorTicket`) | `Task_Rejections`, `Invites` (fleet hand-off only) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report` (read for fleet hand-off list, but see note below), `Invites_Report` |
-| **Technician** (`technicianTicket`) | `Task_Rejections` | — | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
-| **Driver** (`driverTicket`) | `Task_Rejections` | — | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
+| **Vendor** (`vendorTicket`) | `Task_Rejections`, `Invites` (fleet hand-off only) | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (corrected 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report` (read for fleet hand-off list, but see note below), `Invites_Report` |
+| **Technician** (`technicianTicket`) | `Task_Rejections` | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (added 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
+| **Driver** (`driverTicket`) | `Task_Rejections` | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (added 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
 | **Customer** (`customerPage`) | — | — | — (no direct report/form access at all — see its own section below) |
 | **Vendor Performance** (`vendorPerformance`) | — | `Agent_Ticket_Report`, `Task_Rejections`, `Vendors_Report` | — (read-only, aggregate stats only) |
 | **Agent Performance** (`agentPerformance`) | — | `Agent_Ticket_Report` | — (read-only, aggregate stats only) |
@@ -46,6 +46,7 @@ The back-office agent creates and drives a ticket through its entire lifecycle, 
 - **`Rate_Master_Report` — View.** Fee calculation rules (Quote step).
 - **`Invites` (form) — Add.** `syncInvites()` creates one `Invites_Report` record per invited vendor when the Assignment step is saved.
 - **`Invites_Report` — View.** Read before adding, so `syncInvites()` never creates a duplicate record for the same ticket/vendor pair on a re-save.
+- **Custom APIs `getVoiceCallbackDetails`/`getCallbackStatus`** — added 2026-09-14. Same two Ozonetel-backed Custom APIs `callCenter` already uses (see that widget's own section below) — this widget now also calls them directly, for the Create step's "📲 Call via System" button. Not a Form/Report permission (Custom APIs aren't governed by this file's usual View/Add/Edit model) — noted here only for completeness/consistency, since this is a new dependency this widget didn't have before.
 
 Not needed: `Task_Rejections` (agent never writes a rejection log — only the field-facing widgets do, since only they ever reject a job).
 
@@ -62,8 +63,10 @@ Same underlying access as Agent — it's a different view (Kanban columns) over 
 - **`Task_Rejections` — Add.** Best-effort rejection log (non-blocking) on Reject.
 - **`Invites` (form) — Add.** `assignTechnician()` creates an `Invites_Report` record (`RSID`/`Technician`) when a fleet vendor hands a job off to one of their own technicians. (Fixed 2026-08-03 — this used to incorrectly write into the `Vendor` field; see `Invites`' own field list in `FIELDS.md`.)
 - **`Invites_Report` — View + Edit.** `loadMyInvites()` reads this report to match "my tickets" (by the vendor's own `Vendors_Report` record ID — fixed 2026-08-05, was comparing against a name and never matched anything — falling back to the older `Vendor_Emails` email match). `updateMyInvite()` writes this vendor's own invite record on Accept/Reject (`Service_Acceptance_Next`, `Status`, `Reject_Reason`).
+- **`Vehicle_Master_Report` — View.** **Corrected 2026-09-13 — this row previously said "Not needed" below, which was already stale the day it was written.** `loadVehicleNames()`/`vehicleDisplayFor()` (added 2026-08-21) reads this report to resolve the ticket's `Vehicle` id to a real name for the dashboard cards and the Vehicle row on every action screen; without View access here, `loadVehicleNames()` fails closed (empty map) and every ticket falls back to showing the raw `Vehicle_Master_Report` record id instead of a name — **user-reported live 2026-09-13** (dashboard cards showing e.g. `4488810000000057692` where the vehicle name belongs). Grant this in Zoho, then re-check: if the raw id still shows after the grant, the remaining possibility is that specific vehicle's own `Vehicle_Master` record has a blank `Name` field — a data-entry gap, not a permissions one — check the console's `loadVehicleNames` warning (says "0 records" for a permission/report-name problem, vs. "N of M records had no name" for specific blank records) to tell the two apart.
+- **`Vehicle_Issue_Report` — View.** Also previously listed as "not needed" below, also already stale — `loadIssueNames()` (2026-08-05, i.e. *older* than that stale note) reads this report to resolve issue ids to names for the same ticket cards/screens. Apparently already working live today (issue names do render correctly), so this grant is likely already in place in Zoho even though it was never reflected here — noted for consistency with the `Vehicle_Master_Report` correction above, not because it's newly broken.
 
-Not needed: `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Client_Report`, `Rate_Master_Report` — this widget never touches vehicle/issue/client/rate master data, only the ticket record itself.
+Not needed: `Client_Report`, `Rate_Master_Report` — this widget never touches client/rate master data, only the ticket record itself.
 
 ## Technician (`technicianTicket`)
 
@@ -71,6 +74,7 @@ Not needed: `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Client_Report`, `R
 - **`Technicians_Report` — View + Edit.** Both the "assigned to me" dashboard match (View) and this technician's own online/offline toggle (Edit).
 - **`Task_Rejections` — Add.** Best-effort rejection log.
 - **`Invites_Report` — View + Edit.** `loadMyInvites()` reads this report first to match "my tickets" (by technician name against the `Technician` field, falling back to `Technician_Emails`); `updateMyInvite()` writes this technician's own invite record on Accept/Reject. (Fixed 2026-08-03 — this used to match against the wrong field, `Vendor`, which a fleet hand-off could never actually have populated correctly; see `FIELDS.md`.)
+- **`Vehicle_Master_Report` — View** and **`Vehicle_Issue_Report` — View.** **Added 2026-09-13 — this section never listed either, even though this widget runs the identical `loadVehicleNames()`/`loadIssueNames()` calls as `vendorTicket` (see that widget's own matching, corrected entries above for the full rationale and the live symptom this causes when missing).**
 
 ## Driver (`driverTicket`)
 
@@ -78,6 +82,7 @@ Not needed: `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Client_Report`, `R
 - **`Technicians_Report` — View + Edit.** Same dual purpose as Technician's own entry above.
 - **`Task_Rejections` — Add.** Best-effort rejection log.
 - **`Invites_Report` — View + Edit.** Same as Technician's own entry above (same fix applies).
+- **`Vehicle_Master_Report` — View** and **`Vehicle_Issue_Report` — View.** Same addition and same reason as Technician's own entry just above.
 
 ## Toggle (`toggleGetRescue`) — superseded 2026-07-31
 

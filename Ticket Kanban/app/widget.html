@@ -1018,11 +1018,19 @@ function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,
 /* every phone number in this app is an Indian number — if the agent didn't
    type a country code, assume +91 rather than leaving it bare. Matches the
    "+919696406443" shape Create_Case expects (no spaces/dashes). */
+// Real bug fixed 2026-09-13 — same fix, same reason, as getRescueTicket's
+// own matching function (that file's own isValidIndianPhoneDigits() already
+// anticipates and strips this exact shape for validation purposes — this
+// widget has no equivalent validator, but the underlying number shape is
+// the same): a 12-digit number already starting "91" (no "+") used to get
+// ANOTHER "+91" prepended here, producing a broken double-country-code
+// number for tel: links.
 function formatIndianPhone(v){
   if(!v) return "";
   const s=String(v).trim();
   if(s.charAt(0)==="+") return "+"+s.slice(1).replace(/\D/g,"");
-  const digits=s.replace(/\D/g,""); if(!digits) return "";
+  let digits=s.replace(/\D/g,""); if(!digits) return "";
+  if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.first_name&&((v.first_name||"")+" "+(v.last_name||"")).trim()||v.value||""; return String(v); }
@@ -1050,10 +1058,23 @@ async function loadDashboard(){
   recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
   renderBoard(recs);
 }
+// closed tickets hidden from the default board (2026-09-12, client email:
+// "Tasks closed by agent remain visible in the main 'ALL Tickets' list
+// post-closure. Closed tickets should be archived and only accessible via
+// explicit search queries...") — matches getRescueTicket's own dashboard
+// exactly (see that widget's own renderReportLists(), "if(status===CLOSED)
+// return"): only the literal AGENT-closed status is hidden here, not
+// RSP CLOSED/RSP CANCELLED/CX REJECT, which stay visible in their own
+// columns exactly as before — same narrow scope as the client's own
+// wording ("closed BY AGENT"). bucketOfStatus()/runSearch() are both
+// untouched, so a CLOSED ticket is still fully findable by phone/Case ID/
+// reg. no./tracking ID search — only the default board view changes.
+const HIDDEN_FROM_BOARD = ["CLOSED"];
 function renderBoard(recs){
   const cols = BUCKETS.map(()=>[]);
   recs.forEach(r=>{ const b=bucketOfStatus(readVal(r,CONFIG.stageField)); if(b>=0) cols[b].push(r); });
   $("columns").innerHTML = BUCKETS.map((bk,i)=>{
+    if(HIDDEN_FROM_BOARD.indexOf(bk.status)>=0) return "";
     const g = GROUPS[bk.group];
     const items = cols[i]; // show every matching ticket, not just the first few
     const cards = items.length ? items.map(cardHtml).join("") : `<div class="kcol-empty">No tickets right now</div>`;

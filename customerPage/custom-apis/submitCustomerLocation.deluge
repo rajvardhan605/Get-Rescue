@@ -115,15 +115,42 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 				{
 					latToWrite = latVal.toString();
 					lonToWrite = lonVal.toString();
+					// 2026-09-13 — REVERTED the previous attempt here (a bulk
+					// `update Create_Case set ... where ...;` statement),
+					// confirmed live in Zoho's own script editor to be an
+					// "Improper Statement" — that exact syntax is not valid in
+					// this account/version, so it's ruled out cleanly, with no
+					// live/customer-facing impact (it never got past Save).
+					// Back to the dot-notation write, independently proven
+					// working elsewhere in this project against this same
+					// Create_Case form (generateZohoPaymentLink.deluge's own
+					// `rec.Zoho_Payment_URL = ...`) — the one thing added this
+					// time is a FRESH re-fetch of the record immediately before
+					// the write (recForWrite, right below), using the exact
+					// same already-proven `Create_Case[ID == ...]` pattern as
+					// the original fetch at the top of this function — a
+					// zero-new-syntax hedge against the original runtime error
+					// ("'rec' has no matching records. Unable to update the
+					// value rec.Latitude.") being caused by the much-earlier
+					// `rec` reference having gone stale by the time this
+					// point in the function runs, rather than the write
+					// pattern itself. Not confirmed to fix the underlying
+					// issue — if this exact error recurs even with a fresh
+					// fetch right here, that rules out staleness and points
+					// squarely at something Zoho-side (this Custom API's own
+					// "Execute the script as" permission, compared against
+					// generateZohoPaymentLink's — check that next, directly in
+					// Zoho, not in code).
+					recForWrite = Create_Case[ID == recordId.trim().toLong()];
 					if(isDrop)
 					{
-						rec.DropLocationLat = latToWrite;
-						rec.DropLocationLong = lonToWrite;
+						recForWrite.DropLocationLat = latToWrite;
+						recForWrite.DropLocationLong = lonToWrite;
 					}
 					else
 					{
-						rec.Latitude = latToWrite;
-						rec.Longitude = lonToWrite;
+						recForWrite.Latitude = latToWrite;
+						recForWrite.Longitude = lonToWrite;
 					}
 					// Drop_Location_Received_Time / Location_Received_Time
 					// (2026-09-11, part of the wider "capture location+time at
@@ -152,11 +179,13 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 					// this must NEVER be allowed to take down the actual
 					// coordinate save above it, which is this function's one
 					// truly critical job and was already working correctly
-					// before this change.
+					// before this change. Reuses the same recForWrite reference
+					// as the lat/lon write just above (already confirmed live by
+					// this point), not a second fresh fetch.
 					try
 					{
-						if(isDrop) { rec.Drop_Location_Received_Time = zoho.currenttime; }
-						else { rec.Location_Received_Time = zoho.currenttime; }
+						if(isDrop) { recForWrite.Drop_Location_Received_Time = zoho.currenttime; }
+						else { recForWrite.Location_Received_Time = zoho.currenttime; }
 					}
 					catch (tsEx)
 					{

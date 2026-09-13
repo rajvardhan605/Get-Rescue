@@ -345,6 +345,38 @@ See `vendorTicket/README.md`'s own matching entry for the full root-cause writeu
 
 **Needs redeploying**: `dist/technicianTicket.zip` (re-packed). **Not yet live-tested**.
 
+## 2026-09-12 — Full-application audit: 1 real bug fixed here (camera-permission-denied fallback skipped compression)
+
+Same fix as `vendorTicket`'s own matching entry — `openCamera()`'s catch-block fallback (`cameraFallbackInput`, used when the camera itself isn't available) skipped compression entirely; now routed through `compressImageFile()`, same as `openGallery()` already was since 2026-09-11.
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed).
+
+## 2026-09-12 (later) — Client's own soft-test email: real Final-Payment bug fixed, camera lag improved further
+
+Same 2 fixes as `vendorTicket`'s own matching entry — see that file for the full root-cause writeup:
+1. `alreadySuccess` was reading the shared `Payment_Status` field (also used by the agent's Booking Fee stage), which could bypass the mandatory-photo gate before the technician had done anything. Now checks `Payment_received==="Yes"` — written only by this screen's own action.
+2. `getUserMedia()` now requests an `ideal` 1600×1600 resolution directly, reducing capture-pipeline overhead beyond what the post-capture downscale alone could fix.
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed).
+
+## 2026-09-13 — Real bug fixed: `formatIndianPhone()` could double the country code on a 12-digit number
+
+Found while investigating a `getRescueTicket` WhatsApp-delivery report ("check customer phone number and country code"). `isValidIndianPhoneDigits()` in that file already strips a leading `91` from a 12-digit number before judging its length — proving a phone number stored/typed as `91XXXXXXXXXX` (no `+`) is an anticipated real shape in this project. `formatIndianPhone()` here had no equivalent strip: that exact shape got another `+91` prepended, producing a broken double-country-code number for this widget's own click-to-dial `tel:` links. Same fix applied identically across every widget that has a copy of this function (`getRescueTicket`, `driverTicket`, `vendorTicket`, `Ticket Kanban`, `serviceRequest`).
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed).
+
+## 2026-09-13 — Real bug fixed: "NAVIGATE to Breakdown Location" still unresponsive on Android
+
+Same root cause and fix as `getRescueTicket`'s own matching entry — see that file for the full write-up. `Break_Down_Location1` was checked before `buildNavUrl()`'s Android-aware `geo:` URI, bypassing that fix whenever it was populated. New `resolveNavHref()` helper now prefers live coordinates on Android specifically; iOS/desktop unchanged. This app has no Drop Location nav (RSR-only), so only the two breakdown-nav call sites needed updating.
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed).
+
+## 2026-09-13 (later) — Real fix: camera capture lag re-checked, found the actual dominant cost
+
+Same root cause and fix as `vendorTicket`'s own matching entry — see that file for the full write-up. `getPositionSafe()` was always requesting a brand-new GPS fix (no `maximumAge`, 8s timeout), meaning every photo could block up to 8 full seconds on the GPS fetch alone, on top of whatever the canvas/resolution fixes already saved. Now accepts an optional `maximumAge`; `capturePhoto()` passes `15000` so the 2nd+ photo in a quick sequence reuses a recent fix instead of waiting again. Every other call site (Accept/Reach/WIP/etc.) is unaffected — still always requests fresh.
+
+**Needs redeploying**: `dist/technicianTicket.zip` (re-packed).
+
 ## Running locally
 
 Same as every other project in this repo: `npm install && npm start` inside this folder serves `app/widget.html` over HTTPS for Zoho widget preview/development.

@@ -377,10 +377,11 @@ function renderDebugFields(info){
 // comes around they've already agreed once. Flagged as an interpretation,
 // not a literal instruction on placement — "at one place" didn't specify
 // which; easy to move/duplicate elsewhere if a different page was meant.
-// Real link text/URL is a placeholder (# — no real T&C page exists in this
-// project yet) — swap in the real one once it exists.
+// Real T&C URL (2026-09-12, full-application audit) — the sibling
+// `serviceRequest` widget already got this same real link on 2026-09-09;
+// this page was never updated to match and was still on the "#" placeholder.
 function tncCheckboxHtml(){
-  return '<label class="tnc-row"><input type="checkbox" id="tncCheck"><span>I agree to the <a href="#" target="_blank" rel="noopener">Terms &amp; Conditions</a> of this service.</span></label>';
+  return '<label class="tnc-row"><input type="checkbox" id="tncCheck"><span>I agree to the <a href="https://www.getrescued.in/terms-and-conditions" target="_blank" rel="noopener">Terms &amp; Conditions</a> of this service.</span></label>';
 }
 function renderBookingOrRemainingPayment(info, isRemaining){
   console.error("[Get-Rescue Customer] STEP: renderBookingOrRemainingPayment — isRemaining:", isRemaining, "| amountDue:", info.amountDue, "| paid:", info.paid, "| has invoiceUrl:", !!info.invoiceUrl, "| IS_PREVIEW:", IS_PREVIEW);
@@ -864,26 +865,24 @@ async function boot(){
     "| getPageParams() result:", p,
     "| resolved RECORD_ID:", RECORD_ID||"(empty)", "| resolved MODE:", MODE||"(empty)");
   if(!RECORD_ID || !MODE){
-    // TEMP DEBUG (2026-09-08, actively diagnosing: a correctly-built link
-    // with ?recordId=&mode= on it still lands here instead of loading real
-    // ticket data) — shows exactly what getPageParams() actually received,
-    // whether ZOHO.CREATOR.UTIL.getQueryParams() was even found, and the
-    // raw browser location, so we can tell whether the SDK call is failing/
-    // unavailable here vs. the params landing somewhere this widget isn't
-    // looking (e.g. after Zoho's own #hash — see this function's own
-    // comment above). No dev tools needed, just screenshot the popup and
-    // send it back. REMOVE this alert() once the real cause is confirmed.
-    alert("[DEBUG] Customer Page — no recordId/mode found\n\n"+
-      "getQueryParams function found: "+(resolve("getQueryParams")?"YES":"NO")+"\n"+
-      "Params object received: "+JSON.stringify(p)+"\n"+
-      "window.location.href: "+window.location.href+"\n"+
-      "window.location.search: "+(window.location.search||"(empty)")+"\n"+
-      "window.location.hash: "+(window.location.hash||"(empty)")+"\n\n"+
-      "Please screenshot this popup and send it back.");
-    // TEMPORARY — see renderDesignPreview()'s own comment above. Restore
-    // the real error below before this goes live to real customers:
-    // renderError("This link looks incomplete — please contact your agent for a new one.");
-    renderDesignPreview();
+    // REVERTED 2026-09-12 (full-application audit — this project's own
+    // README had flagged both of the lines below as "MUST be reverted
+    // before going live" since 2026-09-02/08, and this page is confirmed to
+    // already be handling real customer traffic). Removed the debug
+    // alert() popup (its diagnostic purpose — confirming how recordId/mode
+    // reach this widget — was already resolved back on 2026-09-08; the
+    // always-on console.error() log two lines above it covers the same
+    // information for any future debugging, without interrupting a real
+    // customer with a popup). Restored the real error message in place of
+    // renderDesignPreview() — a genuinely incomplete/broken link now tells
+    // the customer to contact their agent, instead of silently showing
+    // fake "Priya Sharma" sample data as if it were their own ticket.
+    // renderDesignPreview() itself is left in the file rather than deleted
+    // (smaller, safer diff) — but note this was its ONLY call site, so it's
+    // now orphaned/unreachable code, not a still-available dev/demo mode.
+    // If a no-real-ticket UI preview is wanted again later, it needs a new,
+    // deliberate entry point (e.g. a `?preview=1` param), not this one.
+    renderError("This link looks incomplete — please contact your agent for a new one.");
     return;
   }
   const info = await callCustomApi("getCustomerTicketInfo", { recordId: RECORD_ID, mode: MODE });

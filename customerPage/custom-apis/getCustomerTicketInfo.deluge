@@ -271,7 +271,19 @@ string getCustomerTicketInfo(string recordId, string mode)
 			// change needed.
 			// Same real-payment-page preference as booking_payment above —
 			// see that branch's own comment.
-			paymentUrlRemaining = rec.Zoho_Books_Payment_URL_Remaining;
+			// Real bug fixed 2026-09-12 (found during a full-application audit,
+			// not live-reported): this read the OLD placeholder field name
+			// (Zoho_Books_Payment_URL_Remaining), which nothing in this project
+			// ever writes to — confirmed via a repo-wide search. The real,
+			// user-confirmed field getRescueTicket/app/widget.html actually
+			// writes/reads is Zoho_Payment_URL_Remaining (same rename that
+			// already applied correctly to the Booking Fee side just above:
+			// Zoho_Books_Payment_URL -> Zoho_Payment_URL, 2026-09-10). This
+			// branch always silently fell through to the hand-built Books
+			// invoice-view URL fallback below, even when a real, payable Zoho
+			// Payments link existed — every Remaining Fee "Pay Now" link a
+			// customer has ever received was the older, non-preferred URL.
+			paymentUrlRemaining = rec.Zoho_Payment_URL_Remaining;
 			paymentUrlRemainingText = "";
 			if(paymentUrlRemaining != null)
 			{
@@ -319,10 +331,15 @@ string getCustomerTicketInfo(string recordId, string mode)
 		}
 		else if(mode == "location")
 		{
-			// Same 2026-09-07 fix — Latitude/DropLocationLat are Decimal
-			// fields (confirmed elsewhere in this project), so the original
-			// "!= null && != ''" inline expressions here hit the exact same
-			// DECIMAL-vs-TEXT criteria error as the invoice checks above.
+			// Same 2026-09-07 fix as the invoice checks above — this
+			// nested if + .toString() pattern was originally needed because
+			// Latitude/DropLocationLat were Decimal fields at the time (a
+			// direct "!= ''" comparison against a Decimal throws a DECIMAL-
+			// vs-TEXT criteria error in Deluge). Both fields were converted
+			// to Single Line Text on 2026-09-11 (user-confirmed) — the
+			// pattern is no longer strictly necessary (.toString() on an
+			// already-string value is a harmless no-op), but left exactly
+			// as-is since it still produces the correct result either way.
 			hasBreakdown = false;
 			lat = rec.Latitude;
 			if(lat != null)
