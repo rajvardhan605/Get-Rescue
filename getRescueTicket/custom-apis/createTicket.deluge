@@ -1,0 +1,196 @@
+string createTicket(string customerName, string mobile, string email, string vehicle, string issue)
+{
+	returnstring = "";
+	try
+	{
+		result = Map();
+		if(customerName == null || customerName.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Customer Name is required");
+			returnstring = result.toString();
+		}
+		else if(mobile == null || mobile.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Mobile is required");
+			returnstring = result.toString();
+		}
+		else if(vehicle == null || vehicle.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Vehicle is required");
+			returnstring = result.toString();
+		}
+		else if(issue == null || issue.trim() == "")
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Issue is required");
+			returnstring = result.toString();
+		}
+		else
+		{
+			vehicleTrim = vehicle.trim();
+			vehicleFound = false;
+			resolvedVehicleId = 0;
+			try
+			{
+				vehicleMaybeId = vehicleTrim.toLong();
+				if(vehicleMaybeId > 0)
+				{
+					vehicleById = vehicle_master[ID == vehicleMaybeId];
+					if(vehicleById != null)
+					{
+						resolvedVehicleId = vehicleMaybeId;
+						vehicleFound = true;
+					}
+				}
+			}
+			catch (vehicleIdEx)
+			{
+				vehicleFound = false;
+			}
+			if(vehicleFound == false)
+			{
+				vehicleWanted = vehicleTrim.toLowerCase();
+				for each vehicleRec in vehicle_master[ID != 0]
+				{
+					if(vehicleFound == false)
+					{
+						vehicleNameText = ifnull(vehicleRec.Name,"").toString().trim().toLowerCase();
+						if(vehicleNameText == vehicleWanted)
+						{
+							resolvedVehicleId = vehicleRec.ID.toString().toLong();
+							vehicleFound = true;
+						}
+					}
+				}
+			}
+			if(vehicleFound == false)
+			{
+				result.put("code", "ERROR");
+				result.put("message", "Vehicle not recognised: '" + vehicleTrim + "'. Send either a Vehicle Master record ID, or the vehicle name exactly as it appears in Vehicle Master (case does not matter).");
+				returnstring = result.toString();
+			}
+			else
+			{
+				issueNameList = issue.toList(",");
+				issueLongIds = List();
+				unmatchedIssues = "";
+				isTow = false;
+				for each issueNameRaw in issueNameList
+				{
+					issueNameTrim = issueNameRaw.trim();
+					if(issueNameTrim != "")
+					{
+						issueMatched = false;
+						matchedIssueType = "";
+						try
+						{
+							issueMaybeId = issueNameTrim.toLong();
+							if(issueMaybeId > 0)
+							{
+								issueById = Vehicle_Issue[ID == issueMaybeId];
+								if(issueById != null)
+								{
+									issueLongIds.add(issueMaybeId);
+									issueMatched = true;
+									matchedIssueType = ifnull(issueById.Issue_Type,"").toString().toLowerCase();
+								}
+							}
+						}
+						catch (issueIdEx)
+						{
+							issueMatched = false;
+						}
+						if(issueMatched == false)
+						{
+							issueWanted = issueNameTrim.toLowerCase();
+							for each issueRec in Vehicle_Issue[ID != 0]
+							{
+								if(issueMatched == false)
+								{
+									issueNameText = ifnull(issueRec.Issue_Name,"").toString().trim().toLowerCase();
+									if(issueNameText == issueWanted)
+									{
+										issueLongIds.add(issueRec.ID.toString().toLong());
+										issueMatched = true;
+										matchedIssueType = ifnull(issueRec.Issue_Type,"").toString().toLowerCase();
+									}
+								}
+							}
+						}
+						if(issueMatched)
+						{
+							if(matchedIssueType.contains("tow"))
+							{
+								isTow = true;
+							}
+						}
+						else
+						{
+							if(unmatchedIssues == "")
+							{
+								unmatchedIssues = issueNameTrim;
+							}
+							else
+							{
+								unmatchedIssues = unmatchedIssues + ", " + issueNameTrim;
+							}
+						}
+					}
+				}
+				if(issueLongIds.size() == 0)
+				{
+					result.put("code", "ERROR");
+					result.put("message", "Issue not recognised: '" + unmatchedIssues + "'. Send either a Vehicle Issue record ID, or the issue name exactly as it appears in Vehicle Issue (case does not matter).");
+					returnstring = result.toString();
+				}
+				else
+				{
+					serviceType = "RSR";
+					if(isTow)
+					{
+						serviceType = "TOW";
+					}
+					newId = insert into Create_Case
+					[
+						Customer_Name = customerName.trim()
+						Phone_Number1 = mobile.trim()
+						Phone_Number = mobile.trim()
+						Email = ifnull(email,"").trim()
+						Vehicle = resolvedVehicleId
+						Vehicle_Issue = issueLongIds
+						Vehicle_Status = "ONROAD"
+						Service_Type = serviceType
+						Time_of_service = "NOW"
+						Remarks = "Raised via Client API."
+						Lead_Source = "App"
+						Status = "SERVICE FEE QUOTE"
+					];
+					caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
+					updateRec = Create_Case[ID == newId];
+					updateRec.Case_ID = caseId;
+					result.put("code", "SUCCESS");
+					result.put("message", "Service request created");
+					result.put("recordId", newId);
+					result.put("caseId", caseId);
+					result.put("serviceType", serviceType);
+					if(unmatchedIssues != "")
+					{
+						result.put("unmatchedIssues", unmatchedIssues);
+					}
+					returnstring = result.toString();
+				}
+			}
+		}
+	}
+	catch (e)
+	{
+		errResult = Map();
+		errResult.put("code", "ERROR");
+		errResult.put("message", e.toString());
+		returnstring = errResult.toString();
+	}
+	return returnstring;
+}

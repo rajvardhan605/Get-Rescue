@@ -1,0 +1,207 @@
+string paymentWebhook(string event_type, string event_id, string data, string token)
+{
+	try
+	{
+		EXPECTED_TOKEN = "grx9K4mQ7pT2vL8sN3dW6yB1cZ5hJ0fE";
+		info "=== paymentWebhook fired ===";
+		info "event_type = " + ifnull(event_type,"(null)");
+		info "event_id   = " + ifnull(event_id,"(null)");
+		info "data       = " + ifnull(data,"(null)");
+
+		tokenOk = true;
+		if(EXPECTED_TOKEN != "")
+		{
+			tokenOk = false;
+			tokenGiven = ifnull(token,"").trim();
+			if(tokenGiven == EXPECTED_TOKEN)
+			{
+				tokenOk = true;
+			}
+		}
+		if(tokenOk == false)
+		{
+			info "paymentWebhook REJECTED — the shared token was missing or did not match. NOTHING was updated. The webhook URL configured in Zoho Payments must carry &token=" + EXPECTED_TOKEN + " on the end. If a real payment was just missed because of this, fix the URL and mark the ticket by hand.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+
+		payloadText = ifnull(event_type,"") + " " + ifnull(event_id,"") + " " + ifnull(data,"");
+		if(payloadText.trim() == "")
+		{
+			info "paymentWebhook — nothing bound to any parameter. The webhook body did not reach this script; a different receiver is needed. No record touched.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+
+		isBookingFee = false;
+		if(payloadText.contains("-BF"))
+		{
+			isBookingFee = true;
+		}
+		isRemainingFee = false;
+		if(payloadText.contains("-RF"))
+		{
+			isRemainingFee = true;
+		}
+
+		resolvedRecordId = 0;
+		foundRecordId = false;
+		idParts = payloadText.toList("recordId");
+		if(idParts.size() > 1)
+		{
+			afterKey = idParts.get(1);
+			idTokens = afterKey.toList("\"");
+			for each idToken in idTokens
+			{
+				if(foundRecordId == false)
+				{
+					idTokenTrim = idToken.trim();
+					if(idTokenTrim.length() >= 15)
+					{
+						try
+						{
+							maybeRecordId = idTokenTrim.toLong();
+							if(maybeRecordId > 0)
+							{
+								resolvedRecordId = maybeRecordId;
+								foundRecordId = true;
+							}
+						}
+						catch (idEx)
+						{
+							foundRecordId = false;
+						}
+					}
+				}
+			}
+		}
+
+		txnId = "";
+		txnKeys = List();
+		txnKeys.add("payment_id");
+		txnKeys.add("transaction_id");
+		txnKeys.add("payment_link_id");
+		for each txnKey in txnKeys
+		{
+			if(txnId == "")
+			{
+				txnParts = payloadText.toList(txnKey);
+				if(txnParts.size() > 1)
+				{
+					afterTxnKey = txnParts.get(1);
+					txnTokens = afterTxnKey.toList("\"");
+					for each txnToken in txnTokens
+					{
+						if(txnId == "")
+						{
+							txnTrim = txnToken.trim();
+							txnOk = true;
+							if(txnTrim == "")
+							{
+								txnOk = false;
+							}
+							if(txnTrim.length() < 4)
+							{
+								txnOk = false;
+							}
+							if(txnTrim.length() > 64)
+							{
+								txnOk = false;
+							}
+							if(txnTrim.contains("{"))
+							{
+								txnOk = false;
+							}
+							if(txnTrim.contains("}"))
+							{
+								txnOk = false;
+							}
+							if(txnTrim.contains(":"))
+							{
+								txnOk = false;
+							}
+							if(txnTrim.contains(","))
+							{
+								txnOk = false;
+							}
+							if(txnTrim.contains(" "))
+							{
+								txnOk = false;
+							}
+							if(txnOk)
+							{
+								txnId = txnTrim;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		info "paymentWebhook — isBookingFee=" + isBookingFee + " | isRemainingFee=" + isRemainingFee + " | foundRecordId=" + foundRecordId + " | resolvedRecordId=" + resolvedRecordId + " | txnId=" + txnId;
+
+		if(foundRecordId == false)
+		{
+			info "paymentWebhook — no recordId could be read out of the payload. Nothing updated. Check the data dump above for where the metadata actually sits.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+
+		feeTypeCount = 0;
+		if(isBookingFee)
+		{
+			feeTypeCount = feeTypeCount + 1;
+		}
+		if(isRemainingFee)
+		{
+			feeTypeCount = feeTypeCount + 1;
+		}
+		if(feeTypeCount == 0)
+		{
+			info "paymentWebhook — payload carries neither a '-BF' nor a '-RF' marker, so this is not a Booking Fee or Remaining Fee link. Nothing updated.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+		if(feeTypeCount > 1)
+		{
+			info "paymentWebhook — payload carries BOTH a '-BF' and a '-RF' marker, so which fee was actually paid is ambiguous. Nothing updated, deliberately — marking the wrong fee paid would put real money on the wrong line. Check the data dump above and mark the ticket by hand.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+
+		ticketRec = Create_Case[ID == resolvedRecordId];
+		if(ticketRec == null)
+		{
+			info "paymentWebhook — recordId " + resolvedRecordId + " does not match any Create_Case record. Nothing updated.";
+			return "{\"code\": \"SUCCESS\"}";
+		}
+
+		updateRec = Create_Case[ID == resolvedRecordId];
+		updateRec.Payment_Status = "PAID";
+		if(isBookingFee)
+		{
+			if(txnId != "")
+			{
+				updateRec.Booking_Fee_Transaction_ID = txnId;
+				info "paymentWebhook — Booking Fee marked PAID on record " + resolvedRecordId + ", transaction ID " + txnId + " stored.";
+			}
+			else
+			{
+				info "paymentWebhook — Booking Fee marked PAID on record " + resolvedRecordId + ". No transaction ID found in the payload, so that field was left as-is.";
+			}
+		}
+		if(isRemainingFee)
+		{
+			updateRec.Payment_received = "Yes";
+			if(txnId != "")
+			{
+				updateRec.Remaining_Fee_Transaction_ID = txnId;
+				info "paymentWebhook — Remaining Fee marked PAID on record " + resolvedRecordId + " (Payment_Status = PAID, Payment_received = Yes), transaction ID " + txnId + " stored.";
+			}
+			else
+			{
+				info "paymentWebhook — Remaining Fee marked PAID on record " + resolvedRecordId + " (Payment_Status = PAID, Payment_received = Yes). No transaction ID found in the payload, so that field was left as-is.";
+			}
+		}
+	}
+	catch (e)
+	{
+		info "paymentWebhook threw (no record was updated by this call): " + e.toString();
+	}
+	return "{\"code\": \"SUCCESS\"}";
+}

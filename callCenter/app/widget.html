@@ -105,6 +105,19 @@ img,svg{max-width:100%}
       <div class="fld"><label>Reference / Case ID</label><input id="ccRef" type="text" placeholder="Optional — e.g. a ticket's Case ID"></div>
       <div class="fld"><label>Callback Message</label><input id="ccMsg" type="text" placeholder="Optional — defaults to a standard message"></div>
     </div>
+    <!-- Ozonetel Account ID / Agent ID (2026-09-15, user request) — sent as two
+         extra parameters to getVoiceCallbackDetails so a live call can be aimed
+         at a specific CloudAgent account/agent from this screen, instead of
+         relying on the values hardcoded inside the Deluge. Pre-filled with the
+         known-good pair so the existing one-agent setup keeps working with no
+         extra typing; leave either blank and the Deluge falls back to its own
+         hardcoded default, which is also exactly what getRescueTicket's own
+         Call button does (it sends neither parameter). -->
+    <div class="fld-row" style="--row-cols:3">
+      <div class="fld"><label>Ozonetel Account ID</label><input id="ccAccountId" type="text" value="rescue_vehicle" placeholder="e.g. rescue_vehicle"></div>
+      <div class="fld"><label>Ozonetel Agent ID</label><input id="ccAgentId" type="text" value="Sagar" placeholder="e.g. Sagar — case-sensitive"></div>
+      <div class="fld"></div>
+    </div>
     <button type="button" id="ccPlaceBtn" class="btn primary" style="margin-top:16px">📲 Place Call</button>
   </div>
 
@@ -201,7 +214,12 @@ async function apiGetCallLogs(){
 }
 
 /* ---------- Ozonetel voice-callback calls ---------- */
-async function placeVoiceCallback(phoneNumber, referenceId, callbackMessage){
+// accountId/agentId added 2026-09-15 — OPTIONAL trailing arguments. Every
+// existing caller passes three arguments and is completely unaffected: both
+// values come through undefined, the payload keys are then omitted entirely
+// (not sent as empty strings), and the Deluge falls back to its own hardcoded
+// account/agent exactly as it does today.
+async function placeVoiceCallback(phoneNumber, referenceId, callbackMessage, accountId, agentId){
   const fn=resolve("invokeCustomApi");
   if(!fn) return {ok:false, message:"Can't place call — invokeCustomApi unavailable"};
   if(!phoneNumber) return {ok:false, message:"No phone number to call"};
@@ -213,6 +231,8 @@ async function placeVoiceCallback(phoneNumber, referenceId, callbackMessage){
     payload: {
       customerId: referenceId || phoneNumber,
       phoneNumber: phoneNumber,
+      ...(String(accountId||"").trim() ? { accountId: String(accountId).trim() } : {}),
+      ...(String(agentId||"").trim() ? { agentId: String(agentId).trim() } : {}),
       callbackMessage: callbackMessage || ("Agent-requested callback" + (referenceId?(" for "+referenceId):""))
     }
   };
@@ -403,11 +423,16 @@ async function onPlaceCall(){
   const phone = normalizePhone($("ccPhone").value);
   const reference = $("ccRef").value.trim();
   const message = $("ccMsg").value.trim();
+  // Blank is allowed and meaningful: an empty box means "use whatever the
+  // Deluge has hardcoded", which is the same behaviour as before these two
+  // fields existed.
+  const accountId = $("ccAccountId") ? $("ccAccountId").value.trim() : "";
+  const agentId = $("ccAgentId") ? $("ccAgentId").value.trim() : "";
   if(!phone){ toast("Enter a valid 10-digit phone number","err"); return; }
   $("ccPlaceBtn").disabled = true;
   state.current = { phone:phone, reference:reference, message:message, placing:true };
   renderCurrent();
-  const res = await placeVoiceCallback(phone, reference, message);
+  const res = await placeVoiceCallback(phone, reference, message, accountId, agentId);
   $("ccPlaceBtn").disabled = false;
   if(!res.ok){
     state.current = { phone:phone, reference:reference, message:message, error:res.message };

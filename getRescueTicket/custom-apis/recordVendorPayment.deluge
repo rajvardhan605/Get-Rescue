@@ -175,6 +175,32 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			return errMap.toString();
 		}
 
+		// PRE-FLIGHT GUARD (2026-09-15) - deliberately placed AHEAD of every
+		// Zoho Books write in this function.
+		//
+		// The same negative-Final-Payable check already existed, but at Step 5,
+		// which is AFTER the Bill has been created (Step 2) and AFTER the Vendor
+		// Credit has been created and applied (Step 4). So a vendor whose Cash
+		// Collected exceeded their Net Fee produced a real Bill and a real Vendor
+		// Credit in Zoho Books, and only THEN returned an error - leaving two
+		// orphaned financial documents behind with no payment against them. Worse,
+		// the natural reaction to that error is to retry, which created another
+		// orphaned pair every time.
+		//
+		// Computing the same figures here first makes the whole operation
+		// all-or-nothing from Books' point of view: either the numbers are sound
+		// and every document gets created, or nothing is written at all. The
+		// original Step 5 check is left in place as belt-and-braces; it should
+		// now be unreachable.
+		preflightTds = (billTotal * tdsPercentAmt / 100.0).round(2);
+		preflightPayable = (billTotal - preflightTds - cashCollectedAmt).round(2);
+		if(preflightPayable < 0)
+		{
+			info "recordVendorPayment PRE-FLIGHT REJECT - billTotal=" + billTotal + " tds=" + preflightTds + " cashCollected=" + cashCollectedAmt + " -> payable=" + preflightPayable;
+			errMap.put("message","Final Payable would be negative (Net " + billTotal + " - TDS " + preflightTds + " - Cash Collected " + cashCollectedAmt + " = " + preflightPayable + "). NOTHING was written to Zoho Books - no Bill, no Vendor Credit, no Payment. Check the Cash Collected figures on these cases and retry.");
+			return errMap.toString();
+		}
+
 		// Bills need an explicit bill_number - unlike Invoices, Zoho Books
 		// has no auto-generate toggle for Bills, since a Bill is meant to
 		// carry the VENDOR's own invoice number. There isn't one here (this

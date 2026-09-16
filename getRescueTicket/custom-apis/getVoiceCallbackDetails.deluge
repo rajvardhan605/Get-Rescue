@@ -1,0 +1,226 @@
+string getVoiceCallbackDetails(string customerId, string phoneNumber, string callbackMessage, string accountId, string agentId)
+{
+	try
+	{
+		// accountId / agentId ADDED 2026-09-15 (user request) - two OPTIONAL
+		// trailing parameters, sent by the callCenter widget's new "Ozonetel
+		// Account ID" / "Ozonetel Agent ID" boxes so a call can be aimed at a
+		// specific CloudAgent account/agent without editing this script.
+		//
+		// BOTH FALL BACK to the hardcoded constants below when null or blank.
+		// That is what keeps the existing flow intact: getRescueTicket's own
+		// "Call via System" button still calls this with only THREE parameters,
+		// so accountId/agentId arrive null there and the behaviour is byte-for-
+		// byte what it was before this change.
+		//
+		// REMEMBER: both must ALSO be registered in the Custom API's own setup
+		// screen. A parameter that exists only in this signature silently
+		// arrives null no matter what the widget sends - the trap that has
+		// already cost this project two debugging rounds (see applyTax and the
+		// four payment parameters in onDemandInvoicing.deluge). Here the
+		// consequence is mild: unregistered means "always use the hardcoded
+		// defaults", which is simply today's behaviour.
+		// ================= CONFIGURATION =================
+		// OZONETEL_API_URL - REAL endpoint, supplied by the Ozonetel team
+		// 2026-09-15 in a working curl example. Was "https://ozonetel.com",
+		// their MARKETING HOMEPAGE: every request POSTed this JSON to a web page
+		// and got a web page back, proven by the Execute log's own "info
+		// messages stopped as the size tried to exceeded 500000 characters" -
+		// a >500KB HTML document where a real API returns a few hundred bytes.
+		//
+		// Their example confirms this script's payload was already correct:
+		// userName / agentID / campaignName / customerNumber, with an "accept"
+		// and an "apiKey" header. Only the URL was ever wrong.
+		//
+		// NOTE the endpoint name - AgentManualDial. It is the MANUAL DIAL api,
+		// which in CloudAgent requires the campaign to have "Allowed Manual
+		// Dialling" enabled. See OZONETEL_CAMPAIGN below: the campaign this is
+		// currently pointed at does NOT have that box ticked in the console.
+		OZONETEL_API_URL = "https://in1-ccaas-api.ozonetel.com/ca_apis/AgentManualDial";
+		// OZONETEL_CAMPAIGN - real campaign name, user-provided 2026-09-15 from
+		// the CloudAgent console (replaces the "Your_Campaign_Name" placeholder
+		// that came straight out of Ozonetel's documentation example).
+		//
+		// FLAGGED TWICE, NOT SILENTLY ACCEPTED. Used on explicit user
+		// instruction ("use above image campaign for both inbound and outbound
+		// campaign"), but the CloudAgent console screenshots show two problems
+		// with this particular campaign for this particular API:
+		//
+		//   1. Campaign Type is "InBound" (DID 918045614580). This call is an
+		//      OUTBOUND dial, and an inbound campaign exists to RECEIVE calls
+		//      on its DID, not to originate them.
+		//   2. More specifically: the endpoint is AgentManualDial, and in the
+		//      campaign list this campaign's "Allowed Manual Dialling" checkbox
+		//      is UNTICKED. The other two campaigns (Jio_918035383367 and
+		//      Inbound_918047485013) DO have it ticked.
+		//
+		// If Ozonetel rejects this, try a campaign with Allowed Manual Dialling
+		// enabled - Inbound_918047485013 is both RUNNING and manual-dial
+		// enabled, so it is the most likely to work. That is a one-line change
+		// here, no other code is affected. Either way the rejection is now
+		// visible verbatim in this script's own execution log rather than
+		// swallowed, because the response handling further down no longer
+		// reports success on a missing ucid.
+		OZONETEL_CAMPAIGN = "zoho_08045614580";
+		// The Ozonetel ACCOUNT and AGENT this call bridges to, from the
+		// CloudAgent agent login (Account ID "rescue_vehicle" / Agent ID
+		// "sagar"). agentID used to be set to customerId - the Get-Rescue
+		// TICKET number, e.g. "RSID580002" - which is precisely what produced
+		// Ozonetel's "The specified user does not exist": it was being asked to
+		// connect the call to an agent named after a ticket.
+		// NOTE: hardcoded to the single known agent. If more agents are added,
+		// this should map the logged-in Creator user to their own Ozonetel
+		// agent id so the call bridges to whoever actually clicked Call.
+		// Capitalised "Sagar" 2026-09-15 to match the CloudAgent People > Agents
+		// screen exactly ("Agent Id: Sagar"). It was lowercase "sagar" before,
+		// copied from the agent LOGIN screen, which appears to be
+		// case-insensitive; the API may not be. Matching the console verbatim
+		// removes the variable either way.
+		OZONETEL_ACCOUNT = "rescue_vehicle";
+		OZONETEL_AGENT_ID = "Sagar";
+		OZONETEL_API_KEY = "KKb437079c7866db0ac92b8a90420a0602";
+		info "========== VOICE CALLBACK REQUEST ==========";
+
+		// ================= CONFIG GUARDS =================
+		// Fail loudly and immediately if the two values above are still
+		// placeholders, instead of POSTing to a website and reporting success.
+		// This is the single most important change in this script: the old
+		// version could ONLY appear to succeed, never actually place a call.
+		if(OZONETEL_API_URL == "REPLACE_WITH_REAL_OZONETEL_API_URL")
+		{
+			info "CONFIG ERROR: OZONETEL_API_URL is still the placeholder.";
+			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel API URL is not configured in getVoiceCallbackDetails.deluge - no call was placed.\"}";
+		}
+		if(OZONETEL_CAMPAIGN == "REPLACE_WITH_REAL_CAMPAIGN_NAME")
+		{
+			info "CONFIG ERROR: OZONETEL_CAMPAIGN is still the placeholder.";
+			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel campaign name is not configured in getVoiceCallbackDetails.deluge - no call was placed.\"}";
+		}
+
+		// ================= VALIDATION =================
+		if(customerId == null || customerId == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Customer ID is required\"}";
+		}
+		if(phoneNumber == null || phoneNumber == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Phone Number is required\"}";
+		}
+		// callbackMessage is NO LONGER rejected when blank. The old version
+		// refused the whole call if it was missing, then never used it - the
+		// payload below has no field for it. Requiring a value that is then
+		// discarded is a bug, not a safeguard. It is logged for traceability;
+		// if Ozonetel's API does offer a message/CRM-reference field, add it to
+		// the payload below and this can become required again.
+		callbackMessageText = "";
+		if(callbackMessage != null)
+		{
+			callbackMessageText = callbackMessage;
+		}
+		// Resolve the account/agent actually used for THIS call: the caller's
+		// values win when supplied, the hardcoded constants otherwise. Checked
+		// for null AND blank separately - an unregistered parameter arrives
+		// null, while an empty text box arrives as "".
+		accountToUse = OZONETEL_ACCOUNT;
+		if(accountId != null)
+		{
+			if(accountId.trim() != "")
+			{
+				accountToUse = accountId.trim();
+			}
+		}
+		agentToUse = OZONETEL_AGENT_ID;
+		if(agentId != null)
+		{
+			if(agentId.trim() != "")
+			{
+				agentToUse = agentId.trim();
+			}
+		}
+		info "ALL VALIDATIONS PASSED";
+		info "Ticket reference (customerId) = " + customerId + " | callbackMessage = " + callbackMessageText;
+		info "Using account '" + accountToUse + "' and agent '" + agentToUse + "' (caller-supplied values override the hardcoded defaults)";
+
+		// ================= BUILD PAYLOAD =================
+		// Deliberately still exactly the four keys Ozonetel's own example uses.
+		// The ticket reference is NOT added as a fifth key: no Ozonetel field
+		// name for a CRM reference has been confirmed, and sending an unknown
+		// key risks the whole request being rejected. Once Ozonetel confirms
+		// which field carries a customer/CRM reference, put customerId there so
+		// calls stay traceable back to the ticket in Ozonetel's own reporting.
+		callbackPayload = Map();
+		callbackPayload.put("userName",accountToUse);
+		callbackPayload.put("customerNumber",phoneNumber);
+		callbackPayload.put("agentID",agentToUse);
+		callbackPayload.put("campaignName",OZONETEL_CAMPAIGN);
+		jsonPayload = callbackPayload.toString();
+		info "Callback Payload: " + jsonPayload;
+
+		// ================= SEND TO API =================
+		info "Sending to Ozonetel API: " + OZONETEL_API_URL;
+		callbackResp = invokeurl
+		[
+			url :OZONETEL_API_URL
+			type :POST
+			parameters:jsonPayload
+			headers:{"accept":"application/json","apiKey":OZONETEL_API_KEY}
+		];
+		// Response logging is TRUNCATED. The old unbounded log is what blew
+		// past Deluge's own 500000-character info limit and cut the execution
+		// log off mid-run, hiding everything after it. A truncated prefix plus
+		// the true length is far more useful: an HTML page announces itself
+		// immediately, both by starting with "<" and by its size.
+		rawRespText = callbackResp.toString();
+		rawRespLength = rawRespText.length();
+		if(rawRespLength > 500)
+		{
+			rawRespText = rawRespText.subText(0,500);
+		}
+		info "Raw Response (length " + rawRespLength + ", first 500 chars): " + rawRespText;
+		if(rawRespLength > 5000)
+		{
+			info "WARNING: the response is " + rawRespLength + " characters. A real API reply is small; this size means OZONETEL_API_URL is almost certainly pointing at a web page rather than an API endpoint.";
+		}
+
+		// ================= CHECK OZONETEL RESPONSE =================
+		respStatus = callbackResp.get("status");
+		if(respStatus == "false" || respStatus == "Fail")
+		{
+			errMsg = callbackResp.get("message");
+			info "Callback request FAILED: " + errMsg;
+			return "{\"code\": \"ERROR\", \"message\": \"" + errMsg + "\", \"status\": \"FAILED\"}";
+		}
+
+		// ================= EXTRACT AND VERIFY UCID =================
+		// The old version returned SUCCESS here unconditionally. When the
+		// response had no "ucid" key at all, .get() returned null and that null
+		// was concatenated straight into the JSON as the literal text "null" -
+		// which is exactly what the Execute dialog showed: {"code":"SUCCESS",
+		// ... "ucid":"null"}. A callback with no call id was never scheduled,
+		// so the absence of a ucid is now treated as the failure it is. This is
+		// what stops "it says SUCCESS but no phone ever rings".
+		uniqueCallId = callbackResp.get("ucid");
+		ucidText = "";
+		if(uniqueCallId != null)
+		{
+			ucidText = uniqueCallId.toString().trim();
+		}
+		if(ucidText == "" || ucidText == "null")
+		{
+			info "NO UCID RETURNED - Ozonetel did not schedule a callback. Reporting this as an ERROR rather than a false success.";
+			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel returned no call ID (ucid), so no callback was scheduled. Check this Custom API's execution log for the raw response.\", \"status\": \"NO_UCID\"}";
+		}
+		info "CALLBACK SCHEDULED - ucid " + ucidText;
+
+		// ================= RETURN SUCCESS =================
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Voice callback scheduled successfully\", \"ucid\": \"" + ucidText + "\", \"phone_number\": \"" + phoneNumber + "\", \"reference\": \"" + customerId + "\"}";
+		info "========== COMPLETE ==========";
+		return successResponse;
+	}	catch (e)
+	{
+		info "Exception: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"Exception: " + e.toString() + "\", \"status\": \"ERROR\"}";
+	}
+	// Fallback return if execution somehow drops out of the try/catch.
+	return "{\"code\": \"ERROR\", \"message\": \"Unknown script execution error\"}";
+}

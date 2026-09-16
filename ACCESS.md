@@ -104,6 +104,8 @@ Whatever Zoho permission profile governs this public page needs to be able to in
 
 Standalone widget, added 2026-09-03, for a logged-in vendor's own performance stats. **Read-only** and deliberately never shows individual tickets — only aggregate counts/percentages, per an explicit hand-drawn wireframe rule ("Vendor & mechanic will not be shown case HISTORY").
 
+**Settlement statement added 2026-09-14** — the "vendor statement view in Vendor Portal" piece of the Vendor Accounting scope. Four aggregate cards (Awaiting Payment before TDS, Paid to You, TDS Deducted, Cash You Collected) read from `Settlement_Status` / `Vendor_Payment_Status` / `Vendor_Balance_Before_TDS` / `Vendor_Amount_Paid` / `TDS_Amount` / `Cash_Collected` on this vendor's own already-fetched tickets. **No new report or permission** — the existing `Agent_Ticket_Report` View grant below already covers it, since that report is fetched with `field_config:"all"`. Aggregate totals only, per the explicit 2026-09-04 decision ("aggregate totals only, **not** a full case-level statement"): no case list, no Case IDs, no per-job breakdown — do not add them without re-confirming that decision. Deliberately all-time and labelled as such on screen, ignoring the page's date filter, so money owed is never hidden by a month boundary.
+
 - **`Vendors_Report` — View.** Resolves the logged-in vendor's own identity (matched by login email), same pattern `vendorTicket` already uses.
 - **`Agent_Ticket_Report` — View.** This vendor's own tickets (`Assigned_Vendor` match) for Completed/Cancelled counts and the ETA/Issue/Feedback percentages.
 - **`Task_Rejections` — View.** This vendor's own rejected/timed-out count (matched by name, same as `vendorTicket`'s own reject-log write).

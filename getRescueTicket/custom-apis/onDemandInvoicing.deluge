@@ -1,5 +1,23 @@
-string onDemandInvoicing(string recordId, string referenceNumber, string customerName, string customerPhone, string customerEmail, string gstNumber, string serviceLabel, string totalAmount, string serviceCharges, string cgst, string sgst, string roundOff, string applyTax, string customerPhoneDigits, string expiresAt)
+string onDemandInvoicing(string recordId, string referenceNumber, string customerName, string customerPhone, string customerEmail, string gstNumber, string serviceLabel, string totalAmount, string serviceCharges, string cgst, string sgst, string roundOff, string applyTax, string customerPhoneDigits, string expiresAt, string bookingFeeAmount, string bookingFeeRef, string remainingFeeAmount, string remainingFeeRef)
 {
+	// ⚠ 4 NEW PARAMETERS ADDED 2026-09-14 (bookingFeeAmount, bookingFeeRef,
+	// remainingFeeAmount, remainingFeeRef) — for the "one final invoice per
+	// ticket, with both collected payments recorded against it" flow
+	// (explicit user decision, 2026-09-14: booking fee up front + remaining
+	// fee at closure, but ONE invoice showing all fees). REMEMBER: Zoho
+	// Creator Custom APIs require every parameter to ALSO be registered in
+	// the Custom API's own setup screen — a parameter that exists only in
+	// this signature silently arrives as null no matter what the widget
+	// sends. That exact trap already bit this file once before (see
+	// applyTax's own "belt-and-braces fallback" comment further down).
+	// Register all 4 there before testing, or payment recording will simply
+	// no-op (safely — the invoice itself is unaffected).
+	//
+	// ⚠ This comment block deliberately lives INSIDE the function body, not
+	// above the signature (2026-09-14, confirmed live): Deluge's own editor
+	// rejects anything before the declaration outright — "Expected 'VOID',
+	// 'INT','FLOAT','STRING','DATE','BOOL','MAP' or 'LIST' but found '//...'"
+	// — so line 1 of a Custom API script must always be the signature itself.
 	organization_id = "60078911104";
 	books_base_url = "https://www.zohoapis.in/books/v3";
 	// Real GST18 Tax Group id, user-confirmed 2026-08-25 directly in Zoho
@@ -312,6 +330,170 @@ invoiceURL="";
 		}
 		invoice_pdf_url = "https://books.zoho.in/invoices/" + invoice_id + "?organization_id=" + organization_id;
 
+		// MARK THE INVOICE AS SENT (2026-09-15) - REQUIRED before STEP 3 below.
+		//
+		// Zoho Books creates an invoice through POST /invoices in DRAFT status,
+		// and it refuses to record a customer payment against a draft invoice.
+		// STEP 3 therefore could not have worked on a freshly created invoice:
+		// every /customerpayments call would be rejected, paymentsRecorded would
+		// stay 0, and an invoice whose money was already collected would still
+		// show its full amount outstanding - exactly the "invoice created but
+		// balance not zero" symptom the end-to-end test is meant to catch.
+		//
+		// The /invoices/{id}/email call much further down DOES move an invoice
+		// out of draft, which is probably why this was never noticed - but it
+		// runs after the payment steps, far too late to help them.
+		//
+		// Own try/catch, non-fatal, same contract as every other secondary step
+		// here: if this fails, the invoice itself still exists and is still
+		// returned. The log line says plainly what it means for STEP 3.
+		try
+		{
+			markSentResp = invokeurl
+			[
+				url :books_base_url + "/invoices/" + invoice_id + "/status/sent?organization_id=" + organization_id
+				type :POST
+				connection:"zoho_books_connection"
+			];
+			info "onDemandInvoicing - mark invoice as sent, raw response: " + markSentResp.toString();
+		}
+		catch (sentEx)
+		{
+			info "onDemandInvoicing - could NOT mark invoice " + invoice_id + " as sent (non-fatal in itself, but the payment steps below will most likely be rejected because Zoho Books does not accept payments against a draft invoice): " + sentEx.toString();
+		}
+
+		// STEP 3 — record the payments already collected against THIS one
+		// invoice (2026-09-14, explicit user decision: booking fee is taken up
+		// front and the remaining fee at closure, but the customer should get
+		// exactly ONE invoice per ticket showing all fees). Both payments were
+		// collected through standalone Zoho Payments links that were never
+		// attached to any invoice, so without this the invoice would show the
+		// full amount as still outstanding even though it's fully paid.
+		//
+		// Each payment is recorded with its OWN try/catch and can only ever
+		// no-op: a payment-recording failure must NEVER take down the invoice
+		// itself, which by this point already exists in Books and is this
+		// function's one critical output — same deliberate "swallow, don't
+		// block" pattern the invoice-email step further down already uses.
+		//
+		// ⚠ The /customerpayments endpoint and its payload shape are NEW to
+		// this project — no prior confirmed use anywhere in this codebase.
+		// payment_mode "other" is the safest generic value (these came in via
+		// UPI/card through Zoho Payments, so neither "cash" nor "creditcard"
+		// is strictly right); if Books rejects the call, its own response is
+		// logged below via info — check the Custom API's execution log and
+		// adjust payment_mode first, that's the most likely thing to be wrong.
+		// The widget caps what it sends so the two amounts can never exceed
+		// the invoice total (a refund at closure makes the invoice smaller
+		// than the sum actually collected — see the widget's own matching
+		// comment), so over-application shouldn't be possible from here.
+		paymentsRecorded = 0;
+		paymentDateText = zoho.currentdate.toString("yyyy-MM-dd");
+		try
+		{
+			if(bookingFeeAmount != null)
+			{
+				if(bookingFeeAmount != "")
+				{
+					bfAmt = bookingFeeAmount.toString().toDecimal();
+					if(bfAmt > 0)
+					{
+						bfRefText = bookingFeeRef;
+						if(bfRefText == null)
+						{
+							bfRefText = referenceNumberResolved + "-BF";
+						}
+						if(bfRefText == "")
+						{
+							bfRefText = referenceNumberResolved + "-BF";
+						}
+						bfApplied = Map();
+						bfApplied.put("invoice_id",invoice_id);
+						bfApplied.put("amount_applied",bfAmt);
+						bfAppliedList = List();
+						bfAppliedList.add(bfApplied);
+						bfPaymentMap = Map();
+						bfPaymentMap.put("customer_id",customer_id);
+						bfPaymentMap.put("payment_mode","other");
+						bfPaymentMap.put("amount",bfAmt);
+						bfPaymentMap.put("date",paymentDateText);
+						bfPaymentMap.put("reference_number",bfRefText);
+						bfPaymentMap.put("description","Booking Fee — collected via Zoho Payments");
+						bfPaymentMap.put("invoices",bfAppliedList);
+						bfPayResp = invokeurl
+						[
+							url :books_base_url + "/customerpayments?organization_id=" + organization_id
+							type :POST
+							parameters:bfPaymentMap.toString()
+							headers:{"Content-Type":"application/json"}
+							connection:"zoho_books_connection"
+						];
+						info "onDemandInvoicing — booking fee payment raw response: " + bfPayResp.toString();
+						if(bfPayResp.get("code") == 0)
+						{
+							paymentsRecorded = paymentsRecorded + 1;
+						}
+					}
+				}
+			}
+		}
+		catch (bfPayEx)
+		{
+			info "onDemandInvoicing — booking fee payment could NOT be recorded (non-fatal; the invoice itself is created and unaffected): " + bfPayEx.toString();
+		}
+		try
+		{
+			if(remainingFeeAmount != null)
+			{
+				if(remainingFeeAmount != "")
+				{
+					rfAmt = remainingFeeAmount.toString().toDecimal();
+					if(rfAmt > 0)
+					{
+						rfRefText = remainingFeeRef;
+						if(rfRefText == null)
+						{
+							rfRefText = referenceNumberResolved + "-RF";
+						}
+						if(rfRefText == "")
+						{
+							rfRefText = referenceNumberResolved + "-RF";
+						}
+						rfApplied = Map();
+						rfApplied.put("invoice_id",invoice_id);
+						rfApplied.put("amount_applied",rfAmt);
+						rfAppliedList = List();
+						rfAppliedList.add(rfApplied);
+						rfPaymentMap = Map();
+						rfPaymentMap.put("customer_id",customer_id);
+						rfPaymentMap.put("payment_mode","other");
+						rfPaymentMap.put("amount",rfAmt);
+						rfPaymentMap.put("date",paymentDateText);
+						rfPaymentMap.put("reference_number",rfRefText);
+						rfPaymentMap.put("description","Remaining Fee — collected via Zoho Payments");
+						rfPaymentMap.put("invoices",rfAppliedList);
+						rfPayResp = invokeurl
+						[
+							url :books_base_url + "/customerpayments?organization_id=" + organization_id
+							type :POST
+							parameters:rfPaymentMap.toString()
+							headers:{"Content-Type":"application/json"}
+							connection:"zoho_books_connection"
+						];
+						info "onDemandInvoicing — remaining fee payment raw response: " + rfPayResp.toString();
+						if(rfPayResp.get("code") == 0)
+						{
+							paymentsRecorded = paymentsRecorded + 1;
+						}
+					}
+				}
+			}
+		}
+		catch (rfPayEx)
+		{
+			info "onDemandInvoicing — remaining fee payment could NOT be recorded (non-fatal; the invoice itself is created and unaffected): " + rfPayEx.toString();
+		}
+
 		// Real, CONFIRMED Zoho Payments "Payment Links" API (2026-09-10, user
 		// request: "before [the booking amount is sent] we need to generate
 		// the payment link... pass the dynamic account and other details and
@@ -456,10 +638,22 @@ invoiceURL="";
 		{
 			info "onDemandInvoicing — Zoho Payments payment link generation failed (non-fatal, falling back to invoice_pdf_url): " + paymentLinkEx.toString();
 		}
+		// bestUrl now prefers the INVOICE itself once payments have actually
+		// been recorded against it (2026-09-14) — a fully-settled final
+		// invoice handing back a "pay now" link instead of the invoice
+		// document is both useless and misleading, and this function's own
+		// `url` is what the widget writes into Zoho_Books_Invoice_URL (the
+		// field the agent clicks to OPEN THE INVOICE). Behavior for the
+		// zero-payments case is completely unchanged — still prefers the
+		// payment link exactly as before, so every pre-existing caller that
+		// relied on that keeps working identically.
 		bestUrl = invoice_pdf_url;
 		if(payment_url != "")
 		{
-			bestUrl = payment_url;
+			if(paymentsRecorded == 0)
+			{
+				bestUrl = payment_url;
+			}
 		}
 
 		// SEND EMAIL (NOT CRITICAL)
@@ -482,7 +676,14 @@ invoiceURL="";
 			// itself, which is already created and returned successfully
 		}
 
-		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"url\": \"" + bestUrl + "\", \"payment_url\": \"" + payment_url + "\"}";
+		// payments_recorded added 2026-09-14 — lets the widget (and anyone
+		// reading the console) see at a glance whether 0/1/2 of the collected
+		// payments actually made it onto the invoice, without having to open
+		// Books. 0 on a ticket that genuinely had money collected is the
+		// signal to check this Custom API's own execution log (most likely
+		// causes, in order: the 4 new parameters not registered in the Custom
+		// API setup screen, or payment_mode "other" being rejected).
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"url\": \"" + bestUrl + "\", \"payment_url\": \"" + payment_url + "\"}";
 		invoiceURL= successResponse;
 	}
 	catch (mainEx)

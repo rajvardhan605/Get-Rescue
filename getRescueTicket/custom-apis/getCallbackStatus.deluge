@@ -1,0 +1,150 @@
+string getCallbackStatus(string callbackId)
+{
+	try
+	{
+		// ================= CONFIGURATION =================
+		// OZONETEL_STATUS_API_URL - MUST BE REPLACED BEFORE THIS WORKS.
+		// This was "https://ozonetel.com", Ozonetel's marketing homepage, the
+		// same wrong value getVoiceCallbackDetails.deluge had. A GET against it
+		// returns an HTML page, and every field read below then comes back null.
+		// NOTE: this is very likely a DIFFERENT endpoint from the one that
+		// PLACES a call - CDR / call-status lookup is normally its own URL in
+		// Ozonetel's API. Do not assume the callback URL works here; ask
+		// Ozonetel for the call-detail/CDR endpoint specifically.
+		OZONETEL_STATUS_API_URL = "REPLACE_WITH_REAL_OZONETEL_STATUS_API_URL";
+		OZONETEL_API_KEY = "KKb437079c7866db0ac92b8a90420a0602";
+		info "Checking Ozonetel call details for UCID: " + callbackId;
+
+		// ================= CONFIG GUARD =================
+		// Fails immediately and clearly rather than querying a web page and
+		// then reporting a SUCCESS full of "null" values.
+		if(OZONETEL_STATUS_API_URL == "REPLACE_WITH_REAL_OZONETEL_STATUS_API_URL")
+		{
+			info "CONFIG ERROR: OZONETEL_STATUS_API_URL is still the placeholder.";
+			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel status API URL is not configured in getCallbackStatus.deluge - no status was checked.\"}";
+		}
+
+		// ================= VALIDATION =================
+		if(callbackId == null || callbackId == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"Callback ID (UCID) is required\"}";
+		}
+
+		// ================= REQUEST =================
+		queryParams = Map();
+		queryParams.put("ucid",callbackId);
+		statusResp = invokeurl
+		[
+			url :OZONETEL_STATUS_API_URL
+			type :GET
+			parameters:queryParams
+			headers:{"accept":"application/json","apiKey":OZONETEL_API_KEY}
+		];
+		// Truncated logging, same reason as getVoiceCallbackDetails.deluge: an
+		// unbounded info of an HTML response blows Deluge's own 500000-char
+		// limit and silently cuts the rest of the execution log off. The length
+		// alone identifies a web page instantly.
+		rawRespText = statusResp.toString();
+		rawRespLength = rawRespText.length();
+		if(rawRespLength > 500)
+		{
+			rawRespText = rawRespText.subText(0,500);
+		}
+		info "Raw Report Response (length " + rawRespLength + ", first 500 chars): " + rawRespText;
+		if(rawRespLength > 5000)
+		{
+			info "WARNING: the response is " + rawRespLength + " characters. A real API reply is small; this size means OZONETEL_STATUS_API_URL is almost certainly pointing at a web page rather than an API endpoint.";
+		}
+
+		// ================= EXPLICIT FAILURE FROM OZONETEL =================
+		apiStatus = statusResp.get("status");
+		if(apiStatus == "false" || apiStatus == "Fail")
+		{
+			errMsg = statusResp.get("message");
+			info "Status check FAILED: " + errMsg;
+			return "{\"code\": \"ERROR\", \"message\": \"" + errMsg + "\"}";
+		}
+
+		// ================= EXTRACT CDR FIELDS =================
+		// Every value is normalised to "" when absent. The old version
+		// concatenated raw nulls straight into the JSON, producing the literal
+		// text "null" in status/call_duration/disconnect_reason - the same bug
+		// that made getVoiceCallbackDetails report ucid "null" as a success.
+		callResultRaw = statusResp.get("Status");
+		if(callResultRaw == null)
+		{
+			callResultRaw = statusResp.get("status");
+		}
+		callResultText = "";
+		if(callResultRaw != null)
+		{
+			callResultText = callResultRaw.toString().trim();
+		}
+		if(callResultText == "null")
+		{
+			callResultText = "";
+		}
+
+		callDurationRaw = statusResp.get("Duration");
+		callDurationText = "";
+		if(callDurationRaw != null)
+		{
+			callDurationText = callDurationRaw.toString().trim();
+		}
+		if(callDurationText == "null")
+		{
+			callDurationText = "";
+		}
+
+		disconnectReasonRaw = statusResp.get("DisconnectReason");
+		disconnectReasonText = "";
+		if(disconnectReasonRaw != null)
+		{
+			disconnectReasonText = disconnectReasonRaw.toString().trim();
+		}
+		if(disconnectReasonText == "null")
+		{
+			disconnectReasonText = "";
+		}
+
+		// If NOTHING came back for this UCID, say so instead of returning a
+		// SUCCESS with three blank fields. Deliberately requires ALL three to be
+		// empty before failing: a call still in progress can legitimately have a
+		// status but no duration or disconnect reason yet, and that is a real,
+		// useful answer - not an error.
+		fieldsFound = 0;
+		if(callResultText != "")
+		{
+			fieldsFound = fieldsFound + 1;
+		}
+		if(callDurationText != "")
+		{
+			fieldsFound = fieldsFound + 1;
+		}
+		if(disconnectReasonText != "")
+		{
+			fieldsFound = fieldsFound + 1;
+		}
+		if(fieldsFound == 0)
+		{
+			info "NO CDR DATA returned for UCID " + callbackId + " - reporting ERROR rather than a SUCCESS full of blanks.";
+			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel returned no call data for UCID " + callbackId + ". Check this Custom API's execution log for the raw response.\", \"callback_id\": \"" + callbackId + "\"}";
+		}
+
+		info "Callback Result: " + callResultText + " | Reason: " + disconnectReasonText + " | Duration: " + callDurationText;
+		// Return shape deliberately UNCHANGED - getRescueTicket's own
+		// checkVoiceCallbackStatusFromTicket() and callCenter's own
+		// checkVoiceCallbackStatus() both read exactly status / call_duration /
+		// disconnect_reason from here (they also try call_result first, which
+		// this API has never returned - their "||" fallback already covers it).
+		// Changing these key names would silently break both widgets.
+		resultResponse = "{\"code\": \"SUCCESS\", \"callback_id\": \"" + callbackId + "\", \"status\": \"" + callResultText + "\", \"call_duration\": \"" + callDurationText + "\", \"disconnect_reason\": \"" + disconnectReasonText + "\"}";
+		return resultResponse;
+	}	catch (e)
+	{
+		info "Exception: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"" + e.toString() + "\"}";
+	}
+	// Fallback return if execution somehow drops out of the try/catch.
+	return "{\"code\": \"ERROR\", \"message\": \"Critical script processing failure\"}";
+}

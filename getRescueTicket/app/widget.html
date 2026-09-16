@@ -180,6 +180,22 @@ img,svg{max-width:100%}
 .accountspayable.on{display:block}
 #apBody .fld{margin-bottom:10px}
 .va-hint{font-size:12.5px;color:var(--muted,#777);margin-top:4px}
+/* Operations Approval GRID view (2026-09-14, user request: "grid/tabular view
+   for Operations Approval with bulk approval option"). Purely additive — the
+   existing accordion list keeps every one of its own classes above, untouched;
+   these only apply inside the new grid. Horizontal scroll lives on the wrapper
+   so a wide fee table never makes the whole page scroll sideways. */
+.va-gridwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.va-grid{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
+.va-grid th,.va-grid td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+.va-grid th{font-weight:800;background:var(--worktop)}
+.va-grid td.num,.va-grid th.num{text-align:right;font-variant-numeric:tabular-nums}
+.va-grid tr:last-child td{border-bottom:none}
+.va-grid input[type=number]{width:86px;padding:4px 6px}
+.va-grid tr.va-unavail td{opacity:.55}
+.va-grid tr.va-warn td{background:var(--worktop)}
+.va-gridbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
+.va-gridbar .spacer{flex:1}
 .wiz-top{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh-1);padding:16px 18px;margin-bottom:16px}
 .wiz-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .wiz-title h2{font-family:var(--f-disp);font-size:24px;font-weight:900;line-height:1}
@@ -535,8 +551,9 @@ img,svg{max-width:100%}
        use, rather than switching to a separate pane. -->
   <div class="vendoracct" id="vendorAcctView">
     <div class="sec-head"><h2>Vendor Accounting</h2><span class="sub" id="vaListSub">cases pending Operations approval</span><span class="spacer"></span>
+      <button class="btn ghost sm" id="vaViewToggle" type="button">List view</button>
       <button class="btn ghost sm" id="vendorAcctBack" type="button">Back to Dashboard</button></div>
-    <div class="hint" style="margin:0 0 10px">Completed cases (RSP Closed / Closed) that haven't been Operations-approved yet. Click a case to expand its details below it. Approving a case locks its fee fields and moves it out of this list.</div>
+    <div class="hint" style="margin:0 0 10px" id="vaListHint">Completed cases (RSP Closed / Closed) that haven't been Operations-approved yet. Click a case to expand its details below it. Approving a case locks its fee fields and moves it out of this list.</div>
     <div class="report-lists" id="vaListColumns"></div>
   </div>
 
@@ -726,6 +743,13 @@ const CONFIG = {
   // empty/erroring instead of the real existing rows).
   onDemandInvoicingForm: "On_Demand_Invoicing",
   onDemandInvoicingReport: "On_Demand_Invoicing_Report",
+  // Call_Log (2026-09-14, user-created in Zoho) — backs the Ozonetel call
+  // history shown on the Agent Closure page. Field link names taken from the
+  // live form: Create_Case (Lookup to the ticket), Phone_Number, Reference_ID,
+  // Callback_Message, UCID, Call_Status, Call_Duration, Call_Outcome,
+  // Placed_By, Call_Direction.
+  callLogForm: "Call_Log",
+  callLogReport: "Call_Log_Report",
   // Added 2026-08-07 (user request — show/hide the Accept step's technician
   // fields based on whether the vendor actually has one) — same field name
   // vendorTicket already guesses for this same multi-lookup on its own
@@ -3674,6 +3698,31 @@ const CLOSURE_FIELDS=[
   // literally. Same t:"navlink" pattern already proven for the Booking
   // Fee/Remaining Fee payment-link displays (__PaymentLinkDisplay_BF/_RF)
   // above — a real clickable link, not just an ID string.
+  // Call history (2026-09-14, user requirement: "call data to be available on
+  // close case page"). Reads the cache loadCallLogsForTicket() fills when the
+  // Closure screen opens — a computed field is synchronous, so the fetch can't
+  // happen here; openClosure() kicks it off and re-renders when it lands.
+  // Shown to AGENTS only (this is the agent app) — vendors get aggregate
+  // settlement figures in vendorPerformance and deliberately never see case
+  // history, per the wireframe rule that widget is built around.
+  { n:"__CallHistoryDisplay", l:"Call History", t:"computed", full:true,
+    compute:(r)=>{
+      const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
+      if(!logs.length) return "";
+      return logs.map(function(c){
+        const when=c.Added_Time||"";
+        const bits=[
+          String(c.Call_Direction||"Outbound"),
+          c.Phone_Number||"",
+          c.Call_Status||"",
+          c.Call_Duration ? ("duration "+c.Call_Duration) : "",
+          c.Call_Outcome||"",
+          when
+        ].filter(Boolean);
+        return "• "+bits.join(" · ");
+      }).join("\n");
+    },
+    emptyHint:"No calls recorded for this ticket." },
   { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
     when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
     hrefField:"Zoho_Books_Invoice_URL", linkLabel:"🧾 Open Invoice",
@@ -4742,12 +4791,57 @@ async function sendToAirtable(record){
 // variable that isn't necessarily mirrored back onto r itself before this
 // runs; reusing that exact value keeps the invoice amount consistent with
 // what was actually just saved, not a possibly-stale figure.
+// Gap filled 2026-09-14 (user: "Work accordingly and fill the gap") — this
+// used to require Closure_Status==="Completed" for EVERY client, which meant
+// a ticket cancelled AFTER the customer had already paid a booking fee got
+// no invoice at all: real money collected, no invoice document, nothing for
+// the customer or the books. ON DEMAND now accepts any fee-bearing closure
+// (Completed / Cancelled / Cancelled - Billable — the exact same set
+// closureCountsAsFeeBearing() already governs the closure total itself), and
+// invoices `finalTsf`, which computeClosureTSF() has already netted refunds
+// out of. That makes the zero cases self-correcting: a cancellation that was
+// fully refunded nets to 0 and is filtered out by the amount>0 check just
+// below, exactly as before; "Not Converted" can't reach here at all, since
+// saveClosure() refuses that status outright once any fee is paid.
+//
+// B2B is deliberately UNCHANGED (user decision 2026-09-14: "Not for B2B") —
+// still Completed-only, still invoicing Rescue_Charge, on its own separate
+// billing arrangement.
 function onDemandInvoiceEligibility(r, finalTsf){
-  if(String(r.Closure_Status||"").trim()!=="Completed") return null;
+  const status = String(r.Closure_Status||"").trim();
   const isOnDemand = String(r.Client||"").trim().toUpperCase()==="ON DEMAND";
-  const amount = isOnDemand ? (Number(finalTsf)||0) : (Number(r.Rescue_Charge)||0);
+  if(isOnDemand){
+    if(!closureCountsAsFeeBearing(status)) return null;
+  } else {
+    if(status!=="Completed") return null;
+  }
+  // Extra_Payable folded in 2026-09-14 (explicit user decision, "Add to
+  // invoice amount only") — this field has been agent-editable on the Agent
+  // Closure page since 2026-08-17 and is saved on every close (see
+  // saveClosure()'s own payload), but had NO reader anywhere: it reached
+  // neither Total_Service_Fee nor the invoice, so an extra charge the agent
+  // entered was simply lost. Deliberately added HERE rather than inside
+  // computeClosureTSF(): that function implements the user's own written
+  // "VALIDATIONS ON AGENT CLOSURE" #3 formula verbatim (BOOKING FEE +
+  // REMAINING FEE - REFUND), and changing it would shift Total_Service_Fee for
+  // every ticket and every existing reader of it. Putting it in this one
+  // function instead means the real Books invoice AND
+  // maybeCreateOnDemandInvoice()'s own internal tracking record (the only two
+  // things that consume `amount`) stay automatically in sync, with nothing
+  // else affected.
+  //
+  // Because the already-collected booking/remaining fees are capped to
+  // `amount` in onDemandInvoicing()'s own JS wrapper, the invoice correctly
+  // ends up with a remaining balance of exactly Extra_Payable — i.e. it shows
+  // as genuinely still owed, which is the point.
+  //
+  // ON DEMAND only — the B2B branch is deliberately untouched (user decision
+  // 2026-09-14, "No — ON DEMAND only"), so a contracted client's
+  // Rescue_Charge invoicing basis is exactly as it was.
+  const extraPayable = isOnDemand ? (Number(r.Extra_Payable)||0) : 0;
+  const amount = isOnDemand ? ((Number(finalTsf)||0) + extraPayable) : (Number(r.Rescue_Charge)||0);
   if(!(amount>0)) return null;
-  return { isOnDemand, amount };
+  return { isOnDemand, amount, extraPayable };
 }
 // Client's own display name for the invoice record — "ON DEMAND" is a
 // plain sentinel string (not a real Client_Report id, see Client_Charge's
@@ -4822,6 +4916,84 @@ async function maybeCreateOnDemandInvoice(r, finalTsf){
     const res=await fn({ app_name:CONFIG.appName, form_name:CONFIG.onDemandInvoicingForm, payload:{ data:payload } });
     console.log("[Get-Rescue] maybeCreateOnDemandInvoice: created", res);
   }catch(e){ console.warn("[Get-Rescue] maybeCreateOnDemandInvoice failed (non-blocking):", e); }
+}
+/* maybeGenerateBooksInvoiceOnClosure() — 2026-09-14, explicit user decision
+   ("Auto on closure + keep button"). Closes the gap that the real Zoho Books
+   invoice was ONLY ever created by an agent clicking "Generate Invoice"
+   (CLOSURE_FIELDS' own Generate_OnDemand_Invoice), while the governing
+   "On-Demand Workflow for Invoicing" PDF says the invoice should be created
+   when the ticket is Closed/Complete — so a ticket could (and did) close with
+   real money collected and no invoice document at all if the agent simply
+   didn't click it.
+
+   Reuses the EXISTING pieces verbatim — onDemandInvoiceEligibility() for the
+   gate and onDemandInvoicing() with the exact same 6 arguments the button
+   already passes — rather than introducing a second invoicing path that could
+   drift from the button's behavior. The button itself is deliberately KEPT and
+   completely unchanged in what it does: it is now the RETRY path for when this
+   auto-fire fails (Books down, network drop, an un-registered Custom API
+   parameter), which is precisely why "auto on closure, remove the button" was
+   not chosen.
+
+   ON DEMAND only (elig.isOnDemand), same gate as the button's own when: — B2B
+   invoicing stays out of this app entirely per the 2026-09-14 decision.
+
+   Fired best-effort from saveClosure() AFTER the closure has genuinely been
+   saved, never blocking or failing the close itself — the same deliberate
+   pattern maybeCreateOnDemandInvoice()/sendToZohoBooks()/sendToAirtable()
+   already use at that exact call site.
+
+   THREE independent duplicate-invoice guards, because a duplicate Zoho Books
+   invoice is a real financial/audit problem (the same reasoning that already
+   put two guards on the button):
+     1. r.Zoho_Books_Invoice_ID — the durable, cross-session signal, written
+        back by onDemandInvoicing() itself and re-read whenever the ticket is
+        reopened. Covers "agent reopens a closed ticket and clicks the button".
+     2. state._generatingOnDemandInvoice — the button's own EXISTING in-flight
+        flag, reused here (not a new one) so the button and this path can never
+        both be mid-call at once. Always cleared in the finally below, so a
+        failure can never leave generation permanently blocked for the session.
+     3. r._booksInvoiceGenerated — an in-memory-only marker for the one case
+        the other two miss: saveClosure() throwing AFTER this fired (which
+        skips backToDash(), leaving the agent on the closure screen to click
+        Close again) — the Invoice ID write-back lands in Zoho, not on this
+        in-memory record, so without this a second Close would invoice twice.
+        Underscore-prefixed and never in any stage's field list, so
+        buildPayload() can't send it to Zoho. */
+async function maybeGenerateBooksInvoiceOnClosure(r, finalTsf){
+  try{
+    const elig = onDemandInvoiceEligibility(r, finalTsf);
+    if(!elig || !elig.isOnDemand){
+      console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: not an eligible ON DEMAND closure — no Books invoice. Closure_Status:", r.Closure_Status, "| Client:", r.Client, "| finalTsf:", finalTsf, "| Extra_Payable:", r.Extra_Payable);
+      return;
+    }
+    if(r.Zoho_Books_Invoice_ID){
+      console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: ticket already has Zoho Books Invoice ID", r.Zoho_Books_Invoice_ID, "— skipping to avoid a duplicate invoice.");
+      return;
+    }
+    if(r._booksInvoiceGenerated){
+      console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: an invoice was already generated for this ticket earlier in this session — skipping to avoid a duplicate.");
+      return;
+    }
+    if(state._generatingOnDemandInvoice){
+      console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: an invoice generation is already in flight — skipping.");
+      return;
+    }
+    state._generatingOnDemandInvoice = true;
+    try{
+      console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: generating Zoho Books invoice for ₹"+elig.amount+" (collected ₹"+(Number(finalTsf)||0)+" + Extra Payable ₹"+elig.extraPayable+") on ticket", r.ID);
+      const url = await onDemandInvoicing(r, elig.amount, "Zoho_Books_Invoice_ID", "", true, "Zoho_Books_Invoice_URL");
+      if(url){
+        r._booksInvoiceGenerated = true;
+        r.Zoho_Books_Invoice_URL = url;
+        console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: invoice created ->", url);
+      } else {
+        console.warn("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: no invoice URL came back — the invoice was NOT created. Reopen this ticket and use the \"Generate Invoice\" button on the Closure page to retry; see the warnings logged just above for the reason.");
+      }
+    } finally {
+      state._generatingOnDemandInvoice = false;
+    }
+  }catch(e){ console.warn("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure failed (non-blocking — the ticket is still closed; retry via the \"Generate Invoice\" button):", e); }
 }
 
 /* =====================================================================
@@ -4980,6 +5152,36 @@ function vendorKmSlabFieldFor(record){
 // vendorRaw itself before calling this). Returns null (not a guess) if the
 // slab field couldn't be resolved — see vendorKmSlabFieldFor()'s own
 // comment for exactly when that happens.
+// cashCollectedForTicket() — 2026-09-14. "Cash Collected" is money the customer
+// handed to the VENDOR directly on site, so the company owes that vendor
+// correspondingly less at payout. The Vendor Accounting PDF lists its source as
+// "Case System, not editable" — i.e. DERIVED from the case, never typed in —
+// but nothing ever derived it, so it sat at ₹0 on every payout and vendors were
+// paid their full Net Fee while ALSO keeping any cash the customer gave them.
+//
+// Derived from the two fields that already record how the REMAINING fee was
+// settled — the Final Payment step's own Payment_Method_Final/Payment_received,
+// the very same pair remainingFeePaidOnline() already reads. No new field, no
+// new screen, no new agent action: exactly the "Case System" source the spec
+// asks for, built out of data the flow already captures.
+//
+// Deliberately the REMAINING fee only, never the Booking Fee: the booking fee is
+// collected at the Quote stage, BEFORE any vendor is assigned or dispatched, so
+// no vendor can have received it — and Payment_Method defaults to "Cash" on
+// every single ticket, so counting it would silently under-pay very nearly every
+// vendor. That would be a worse bug than the one being fixed.
+//
+// Deliberately "Cash" only, not UPI/Card/Net Banking: the field is Cash
+// Collected, and those methods can just as easily have landed in the COMPANY's
+// own account. The asymmetry matters — under-deducting pays a vendor slightly
+// too much (visible on the statement, recoverable next cycle), over-deducting
+// silently underpays them. Either way the ops manager sees this exact figure and
+// the resulting Balance on screen before approving anything.
+function cashCollectedForTicket(r){
+  if(String(r.Payment_Method_Final||"").trim()!=="Cash") return 0;
+  if(String(r.Payment_received||"").trim()!=="Yes") return 0;
+  return Number(r.Remaining_Fee)||0;
+}
 function computeVendorFeeForTicket(record, vendorRaw){
   if(!vendorRaw) return null;
   const svc=String(record[CONFIG.serviceTypeField]||"").toUpperCase();
@@ -4994,7 +5196,12 @@ function computeVendorFeeForTicket(record, vendorRaw){
     kmRate: vendorRaw.KM_Rate,
     slabKm: slabKm,
     extras: record.Extras,
-    cashCollected: record.Cash_Collected
+    // Derived, not read from the stored field (2026-09-14) — see
+    // cashCollectedForTicket()'s own header. The stored Cash_Collected is
+    // written by saveVendorAcctApproval() FROM this same derivation, so the two
+    // always agree; Level 2 (Accounts Payable) then reads that stored value, as
+    // it always has, with no change to its own code path.
+    cashCollected: cashCollectedForTicket(record)
   });
 }
 
@@ -5015,14 +5222,15 @@ function computeVendorFeeForTicket(record, vendorRaw){
    wording ends up different — check the Settlement_Status field's actual
    options in Zoho before relying on this in production.
 
-   Known, deliberate gap (do not treat as a bug): "Cash Collected" is
-   rendered read-only per the PDF's own "Case System, not editable" source
-   column, but nothing anywhere in this app currently WRITES that field —
-   confirmed via a full-codebase check, there's no wizard step for it. It
-   will show 0/blank until a future increment wires its real source (most
-   likely the vendor's own cash-collection record from the on-road payment
-   step). Flagged in the UI itself (see the hint text in
-   renderVendorAcctFeeBox()) rather than silently guessing a source. */
+   "Cash Collected" — CLOSED 2026-09-14 (was a known gap here: read-only per
+   the PDF's own "Case System, not editable" source column, but nothing in the
+   app ever wrote it, so it showed ₹0 on every payout and vendors were paid
+   their full Net Fee while also keeping any cash). Now genuinely derived from
+   the case by cashCollectedForTicket() — see that function's own header for
+   the derivation and for why the Booking Fee and the non-Cash payment methods
+   are deliberately excluded — displayed on this screen, deducted from the
+   Balance, and frozen onto the case by saveVendorAcctApproval() so Level 2
+   pays from the same figure this screen approved. */
 const SETTLEMENT_STATUS_PENDING = "Pending Approval";
 const SETTLEMENT_STATUS_PAYABLE = "Payable";
 const SETTLEMENT_STATUS_PAID = "Paid";
@@ -5054,6 +5262,7 @@ let VA_CASES=[], VA_OPEN_ID=null;
 async function loadVendorAcct(){
   showView("vendoracct");
   VA_OPEN_ID=null;
+  VA_SELECTED=new Set(); // never carry a tick across a reload of the case list
   $("vaListColumns").innerHTML='<div class="center-state"><div class="spin"></div></div>';
   const all = await apiGet(null);
   VA_CASES = all.filter(isPendingOpsApproval);
@@ -5094,8 +5303,197 @@ function vaCaseRowHtml(r){
     <div class="va-inline" id="vaInline_${esc(r.ID)}"></div>
   </div>`;
 }
+/* =====================================================================
+   OPERATIONS APPROVAL — GRID / BULK APPROVAL, 2026-09-14
+   =====================================================================
+   User request: "grid/tabular view for Operations Approval with bulk approval
+   option." Built as a SECOND view alongside the existing accordion, toggled by
+   the "List view"/"Grid view" button in the section header — the accordion is
+   completely untouched and still reachable in one click. That matters beyond
+   caution: the accordion is the only place a TOW case's round-trip KM can be
+   corrected and the only place per-case Comments can be typed, so it is still
+   the right tool for a case that needs attention. The grid is for the common
+   case — a batch of straightforward cases to wave through.
+
+   Reuse, not reimplementation: rows compute through vaFeeFor() and approve
+   through vendorAcctApprovalPayload(), the exact same two functions the
+   accordion uses. There is no second copy of the fee arithmetic or of the
+   saved-field list anywhere in this feature.
+
+   Deliberate scope limits, both flagged in the UI rather than hidden:
+     - Extras IS editable inline (it is the one field ops routinely sets, and
+       bulk-approving without it would force a trip through the accordion for
+       almost every case). Typing writes straight onto the in-memory record, so
+       the value survives a re-render and is what gets saved.
+     - Comments and TOW round-trip KM are NOT editable here. Comments are
+       free text nobody wants to type into a grid cell, and round-trip KM is
+       the one input that changes the payout materially — a TOW case with 0 km
+       is highlighted and called out so it gets opened properly instead of
+       being waved through at the wrong figure.
+     - A case whose fee cannot be computed (no KM slab match / no vendor rate
+       card — see vendorKmSlabFieldFor()) renders dimmed with its checkbox
+       disabled. It cannot be approved here for the same reason
+       saveVendorAcctApproval() refuses it: there is no fee to approve. */
+let VA_GRID_MODE = true, VA_SELECTED = new Set();
+function vaGridRowData(r){
+  const vendorRaw = vendorRawForTicket(r);
+  const fee = vaFeeFor(r, vendorRaw, r.Extras, null);
+  const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
+  const km = svc==="TOW" ? (Number(r.Vendor_Round_Trip_Distance)||0) : (Number(r.Vendor_Distance)||0);
+  return { r, vendorRaw, fee, svc, km,
+    baseFee: Number(vendorRaw && vendorRaw.Base_Fee)||0,
+    cash: cashCollectedForTicket(r),
+    needsKm: svc==="TOW" && !(km>0) };
+}
+function renderVendorAcctGrid(){
+  const rows = VA_CASES.map(vaGridRowData);
+  if(!rows.length){
+    $("vaListColumns").innerHTML = `<div class="rlist-empty">No cases pending Operations approval right now</div>`;
+    return;
+  }
+  const anyNeedsKm = rows.some(function(d){ return d.needsKm; });
+  const anyUnavail = rows.some(function(d){ return !d.fee; });
+  const body = rows.map(function(d){
+    const id = esc(d.r.ID);
+    const cls = !d.fee ? " class=\"va-unavail\"" : (d.needsKm ? " class=\"va-warn\"" : "");
+    const money = function(n){ return "₹"+Number(n||0).toFixed(2); };
+    return `<tr${cls} data-row="${id}">
+      <td><input type="checkbox" class="va-check" data-id="${id}"${d.fee?"":" disabled"}></td>
+      <td><b>${esc(caseLabel(d.r))}</b></td>
+      <td>${esc(vaVendorDisplayName(d.r))}</td>
+      <td>${esc(d.svc)}</td>
+      <td class="num">${d.km.toFixed(1)}${d.needsKm?' <span title="TOW case with no round-trip distance — open it in List view to set the KM before approving">⚠</span>':""}</td>
+      <td class="num">${money(d.baseFee)}</td>
+      <td class="num">${d.fee?money(d.fee.kmFee):"—"}</td>
+      <td class="num">${d.fee?money(d.fee.grossFee):"—"}</td>
+      <td><input type="number" class="va-extras" data-id="${id}" value="${esc(Number(d.r.Extras)||0)}"></td>
+      <td class="num" id="vaNet_${id}">${d.fee?money(d.fee.netFee):"—"}</td>
+      <td class="num">${money(d.cash)}</td>
+      <td class="num" id="vaBal_${id}">${d.fee?money(d.fee.balanceBeforeTds):"—"}</td>
+    </tr>`;
+  }).join("");
+  $("vaListColumns").innerHTML = `
+    <div class="va-gridwrap">
+      <table class="va-grid">
+        <thead><tr>
+          <th><input type="checkbox" id="vaSelectAll"></th>
+          <th>Case ID</th><th>Vendor</th><th>Service</th><th class="num">KM</th>
+          <th class="num">Base Fee</th><th class="num">KM Fee</th><th class="num">Gross</th>
+          <th>Extras</th><th class="num">Net Fee</th><th class="num">Cash Coll.</th><th class="num">Balance</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    ${anyNeedsKm?'<div class="va-hint" style="margin-top:10px">⚠ Highlighted rows are TOW cases with no round-trip distance recorded, so their KM Fee is calculated on 0 km. Open those in List view and set the distance before approving.</div>':""}
+    ${anyUnavail?'<div class="va-hint" style="margin-top:6px">Dimmed rows have no calculable fee (no matching KM slab for the vehicle/issue combination, or no vendor rate card) and cannot be approved — here or in List view.</div>':""}
+    <div class="va-fee-box" id="vaGridTotals" style="margin-top:14px"></div>
+    <div class="va-gridbar">
+      <button class="btn primary" id="vaBulkApproveBtn" type="button" disabled>Approve Selected</button>
+      <span class="spacer"></span>
+      <span class="va-hint" id="vaGridCount"></span>
+    </div>`;
+  document.querySelectorAll("#vaListColumns .va-check").forEach(function(cb){
+    cb.checked = VA_SELECTED.has(String(cb.dataset.id));
+    cb.onchange = function(){
+      if(cb.checked) VA_SELECTED.add(String(cb.dataset.id)); else VA_SELECTED.delete(String(cb.dataset.id));
+      recalcVendorAcctGridTotals();
+    };
+  });
+  $("vaSelectAll").onchange = function(){
+    const on = $("vaSelectAll").checked;
+    document.querySelectorAll("#vaListColumns .va-check").forEach(function(cb){
+      if(cb.disabled) return; // never bulk-select a case with no calculable fee
+      cb.checked = on;
+      if(on) VA_SELECTED.add(String(cb.dataset.id)); else VA_SELECTED.delete(String(cb.dataset.id));
+    });
+    recalcVendorAcctGridTotals();
+  };
+  // Extras writes straight onto the in-memory record so it survives a
+  // re-render and is exactly what vendorAcctApprovalPayload() will save. Only
+  // this row's two derived cells plus the totals are updated — a full
+  // re-render on every keystroke would steal focus mid-typing.
+  document.querySelectorAll("#vaListColumns .va-extras").forEach(function(inp){
+    inp.oninput = function(){
+      const rec = VA_CASES.find(function(x){ return String(x.ID)===String(inp.dataset.id); });
+      if(!rec) return;
+      rec.Extras = Number(inp.value)||0;
+      const d = vaGridRowData(rec);
+      const netCell = document.getElementById("vaNet_"+rec.ID), balCell = document.getElementById("vaBal_"+rec.ID);
+      if(netCell) netCell.textContent = d.fee ? ("₹"+d.fee.netFee.toFixed(2)) : "—";
+      if(balCell) balCell.textContent = d.fee ? ("₹"+d.fee.balanceBeforeTds.toFixed(2)) : "—";
+      recalcVendorAcctGridTotals();
+    };
+  });
+  $("vaBulkApproveBtn").onclick = bulkApproveVendorAcct;
+  recalcVendorAcctGridTotals();
+}
+function vaSelectedRows(){
+  return VA_CASES.filter(function(r){ return VA_SELECTED.has(String(r.ID)); })
+    .map(vaGridRowData).filter(function(d){ return !!d.fee; });
+}
+function recalcVendorAcctGridTotals(){
+  const totalsBox = $("vaGridTotals");
+  if(!totalsBox) return; // grid isn't on screen (empty list, or List view) — nothing to total
+  const sel = vaSelectedRows();
+  const sum = function(fn){ return sel.reduce(function(a,d){ return a+fn(d); },0); };
+  totalsBox.innerHTML = sel.length ? `
+    <div class="va-fee-row"><span>Cases selected</span><span>${sel.length}</span></div>
+    <div class="va-fee-row"><span>Total Gross Fee</span><span>₹${sum(function(d){return d.fee.grossFee;}).toFixed(2)}</span></div>
+    <div class="va-fee-row"><span>Total Extras</span><span>₹${sum(function(d){return Number(d.r.Extras)||0;}).toFixed(2)}</span></div>
+    <div class="va-fee-row"><span>Total Cash Collected</span><span>₹${sum(function(d){return d.cash;}).toFixed(2)}</span></div>
+    <div class="va-fee-row"><span>Total Net Fee</span><span>₹${sum(function(d){return d.fee.netFee;}).toFixed(2)}</span></div>
+    <div class="va-fee-row"><span>Total Balance (before TDS)</span><span>₹${sum(function(d){return d.fee.balanceBeforeTds;}).toFixed(2)}</span></div>
+  ` : `<div class="va-hint">Select at least one case to see totals</div>`;
+  const btn=$("vaBulkApproveBtn");
+  if(btn){ btn.disabled = sel.length===0; btn.textContent = sel.length ? ("Approve Selected ("+sel.length+")") : "Approve Selected"; }
+  const cnt=$("vaGridCount");
+  if(cnt) cnt.textContent = VA_CASES.length+" case"+(VA_CASES.length===1?"":"s")+" pending";
+}
+/* Approves every selected case, one apiUpdate at a time — deliberately
+   sequential, not Promise.all: these are money writes, and a serial loop means
+   a mid-way failure leaves a clean "these N succeeded, these M didn't" result
+   instead of an indeterminate mix. Same sequential shape recordVendorPayment()
+   already uses for its own per-case write-backs. Each case is approved with
+   EXACTLY the payload a single approval would have written. */
+async function bulkApproveVendorAcct(){
+  const sel = vaSelectedRows();
+  if(!sel.length){ toast("Select at least one case","err"); return; }
+  const warnKm = sel.filter(function(d){ return d.needsKm; });
+  if(warnKm.length){
+    const proceed = await confirmBox("Approve "+sel.length+" case"+(sel.length===1?"":"s")+"?",
+      warnKm.length+" selected TOW case"+(warnKm.length===1?" has":"s have")+" no round-trip distance, so their KM Fee is calculated on 0 km. Approve anyway?", "Approve");
+    if(!proceed) return;
+  }
+  const btn=$("vaBulkApproveBtn"); btn.disabled=true; btn.textContent="Approving…";
+  let done=0; const failed=[];
+  for(const d of sel){
+    try{
+      await apiUpdate(d.r.ID, vendorAcctApprovalPayload(d.r, d.fee, d.r.Extras, d.r.Ops_Approval_Comments, null));
+      done++;
+      VA_CASES = VA_CASES.filter(function(x){ return String(x.ID)!==String(d.r.ID); });
+      VA_SELECTED.delete(String(d.r.ID));
+    }catch(e){
+      console.warn("[Get-Rescue] bulkApproveVendorAcct: failed to approve "+caseLabel(d.r),e);
+      failed.push(caseLabel(d.r));
+    }
+  }
+  if(failed.length){
+    toast(done+" approved, "+failed.length+" failed: "+failed.join(", "),"err");
+  } else {
+    toast(done+" case"+(done===1?"":"s")+" approved","ok");
+  }
+  VA_OPEN_ID=null;
+  renderVendorAcctList();
+}
 function renderVendorAcctList(){
   $("vaListSub").textContent = VA_CASES.length+" case"+(VA_CASES.length===1?"":"s")+" pending Operations approval";
+  const toggle=$("vaViewToggle");
+  if(toggle) toggle.textContent = VA_GRID_MODE ? "List view" : "Grid view";
+  const hint=$("vaListHint");
+  if(hint) hint.textContent = VA_GRID_MODE
+    ? "Completed cases (RSP Closed / Closed) that haven't been Operations-approved yet. Edit Extras inline, tick the cases to approve, then Approve Selected. Switch to List view to set a TOW round-trip distance or add per-case comments."
+    : "Completed cases (RSP Closed / Closed) that haven't been Operations-approved yet. Click a case to expand its details below it. Approving a case locks its fee fields and moves it out of this list.";
+  if(VA_GRID_MODE){ renderVendorAcctGrid(); return; }
   $("vaListColumns").innerHTML = VA_CASES.length
     ? VA_CASES.map(vaCaseRowHtml).join("")
     : `<div class="rlist-empty">No cases pending Operations approval right now</div>`;
@@ -5118,13 +5516,51 @@ function closeVendorAcctInline(id){
   const box=document.getElementById("vaInline_"+id);
   if(box){ box.classList.remove("on"); box.innerHTML=""; }
 }
-function vaFeePreview(r, vendorRaw){
+// vaFeeFor() — 2026-09-14, extracted from vaFeePreview() below so the new GRID
+// view can compute a row's fee without needing the accordion's own DOM inputs
+// to exist. Deliberately the ONE fee path both views share: a second copy of
+// this arithmetic is exactly how a grid total and a detail total drift apart.
+// roundTripOverride null means "leave the stored value alone".
+function vaFeeFor(r, vendorRaw, extrasOverride, roundTripOverride){
   const record = Object.assign({}, r, {
-    Extras: Number(document.getElementById("vaExtras_"+r.ID).value)||0,
-    Vendor_Round_Trip_Distance: document.getElementById("vaRoundTripKm_"+r.ID)
-      ? (Number(document.getElementById("vaRoundTripKm_"+r.ID).value)||0) : r.Vendor_Round_Trip_Distance
+    Extras: Number(extrasOverride)||0,
+    Vendor_Round_Trip_Distance: roundTripOverride!=null
+      ? (Number(roundTripOverride)||0) : r.Vendor_Round_Trip_Distance
   });
   return computeVendorFeeForTicket(record, vendorRaw);
+}
+// vendorAcctApprovalPayload() — 2026-09-14, extracted from
+// saveVendorAcctApproval() for the same reason: bulk approval must write
+// EXACTLY the same fields, in the same shapes, as approving one case at a time.
+// Duplicating the payload would let the two drift, and a drift here is a vendor
+// being paid the wrong amount. Vendor_Round_Trip_Distance is only included when
+// a value is actually supplied (the accordion's TOW input); omitting it leaves
+// whatever is stored untouched, which is the existing behaviour for RSR cases.
+function vendorAcctApprovalPayload(r, fee, extras, comments, roundTripKm){
+  const payload = {
+    Extras: Number(extras)||0,
+    Ops_Approval_Comments: comments||"",
+    Vendor_KM_Fee: fee.kmFee,
+    Vendor_Gross_Fee: fee.grossFee,
+    Vendor_Net_Fee: fee.netFee,
+    Vendor_Balance_Before_TDS: fee.balanceBeforeTds,
+    // Cash_Collected persisted at approval 2026-09-14 — the figure this screen
+    // just showed and just deducted, frozen onto the case. Level 2 (Accounts
+    // Payable) reads r.Cash_Collected directly for both its Final Payable math
+    // and the Zoho Books vendor credit, so without this write it would keep
+    // seeing ₹0 and pay the vendor the cash a second time. Derived from the
+    // same cashCollectedForTicket() the fee box used, so the approved number
+    // and the paid number can never disagree.
+    Cash_Collected: cashCollectedForTicket(r),
+    Settlement_Status: SETTLEMENT_STATUS_PAYABLE
+  };
+  if(roundTripKm!=null) payload.Vendor_Round_Trip_Distance = Number(roundTripKm)||0;
+  return payload;
+}
+function vaFeePreview(r, vendorRaw){
+  const ex = document.getElementById("vaExtras_"+r.ID);
+  const rt = document.getElementById("vaRoundTripKm_"+r.ID);
+  return vaFeeFor(r, vendorRaw, ex ? ex.value : r.Extras, rt ? rt.value : null);
 }
 function renderVendorAcctFeeBox(r, vendorRaw){
   const fee = vaFeePreview(r, vendorRaw);
@@ -5133,14 +5569,16 @@ function renderVendorAcctFeeBox(r, vendorRaw){
     box.innerHTML = '<div class="va-hint">Fee can\'t be calculated yet — no matching KM slab field for this ticket\'s vehicle/issue combination (see console warning) or no vendor rate card on file.</div>';
     return;
   }
-  const cashCollected = Number(r.Cash_Collected)||0;
+  const cashCollected = cashCollectedForTicket(r);
   box.innerHTML = `
     <div class="va-fee-row"><span>KM Fee</span><span>₹${fee.kmFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Gross Fee (Base + KM Fee)</span><span>₹${fee.grossFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Net Fee (Gross + Extras)</span><span>₹${fee.netFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Cash Collected</span><span>₹${cashCollected.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Balance (before TDS)</span><span>₹${fee.balanceBeforeTds.toFixed(2)}</span></div>
-    <div class="va-hint">Cash Collected isn't wired to any data source yet — showing 0 until a future increment adds one. TDS is applied at Level 2 (Accounts Payable), not here.</div>
+    <div class="va-hint">${cashCollected>0
+      ? "Cash Collected is taken from this case: the Remaining Fee was recorded as paid by Cash, so the vendor already holds that money and it's deducted here."
+      : "Cash Collected is ₹0 — this case's Remaining Fee wasn't recorded as a Cash payment, so the vendor collected nothing directly. Check the Final Payment step if that looks wrong."} TDS is applied at Level 2 (Accounts Payable), not here.</div>
   `;
 }
 function openVendorAcctInline(id){
@@ -5180,17 +5618,17 @@ async function saveVendorAcctApproval(r, vendorRaw){
   const fee = vaFeePreview(r, vendorRaw);
   if(!fee){ toast("Can't approve — fee calculation failed, see console","err"); return; }
   const btn=document.getElementById("vaApproveBtn_"+r.ID); btn.disabled=true; btn.textContent="Saving…";
-  const payload = {
-    Extras: Number(document.getElementById("vaExtras_"+r.ID).value)||0,
-    Ops_Approval_Comments: document.getElementById("vaComments_"+r.ID).value||"",
-    Vendor_KM_Fee: fee.kmFee,
-    Vendor_Gross_Fee: fee.grossFee,
-    Vendor_Net_Fee: fee.netFee,
-    Vendor_Balance_Before_TDS: fee.balanceBeforeTds,
-    Settlement_Status: SETTLEMENT_STATUS_PAYABLE
-  };
+  // Payload built by the shared vendorAcctApprovalPayload() since 2026-09-14 —
+  // the exact same builder the grid's bulk approval uses, so the two can never
+  // write different fields. Field-for-field identical to what this function
+  // built inline before.
   const rtInput = document.getElementById("vaRoundTripKm_"+r.ID);
-  if(rtInput) payload.Vendor_Round_Trip_Distance = Number(rtInput.value)||0;
+  const payload = vendorAcctApprovalPayload(
+    r, fee,
+    document.getElementById("vaExtras_"+r.ID).value,
+    document.getElementById("vaComments_"+r.ID).value,
+    rtInput ? rtInput.value : null
+  );
   try{
     await apiUpdate(r.ID, payload);
     toast("Approved","ok");
@@ -5329,7 +5767,7 @@ function renderAccountsPayableList(){
     return `<div class="va-item">
       <label class="rrow" style="cursor:pointer">
         <input type="checkbox" class="ap-check" data-id="${esc(r.ID)}" style="margin-right:10px">
-        <span class="tt"><b>${esc(caseLabel(r))}</b><span>Net ₹${netFee.toFixed(2)} · TDS ₹${tdsAmount.toFixed(2)} · Cash ₹${cashCollected.toFixed(2)} · Payable ₹${finalPayable.toFixed(2)}</span></span>
+        <span class="tt"><b>${esc(caseLabel(r))}</b><span id="apRow_${esc(r.ID)}">${apRowText(netFee, tdsAmount, cashCollected, finalPayable)}</span></span>
       </label>
     </div>`;
   }).join("");
@@ -5356,17 +5794,101 @@ function renderAccountsPayableList(){
   $("apRecordBtn").onclick=recordVendorPayment;
   recalcAccountsPayableTotals();
 }
+/* allocateBatchTds() — 2026-09-14. Fixes a real, measured defect found by
+   testing the shipped money math across 84,000 combinations.
+
+   The bug: this screen used to compute TDS PER CASE and sum the results, while
+   recordVendorPayment.deluge computes it once on the WHOLE bill
+   (`tdsAmount = (billTotal * tdsPercent / 100).round(2)`). Rounding per case and
+   rounding on the total are not the same number. Measured drift on realistic
+   figures: about 2 paise over 5 cases, rising to ~14 paise over 100. The vendor
+   is paid the Deluge's figure, so Creator's own per-case TDS_Amount /
+   Final_Payable / Vendor_Amount_Paid records summed to something Zoho Books
+   never charged - exactly the kind of mismatch that surfaces at reconciliation.
+
+   The fix keeps ZOHO BOOKS AUTHORITATIVE, which is the right way round: Books
+   creates the real financial documents. This computes the SAME batch figure the
+   Deluge will compute, then splits it across the selected cases in proportion to
+   their Net Fee using largest-remainder allocation, so the per-case values sum
+   to the batch total EXACTLY, to the paise. Creator's records become a faithful
+   decomposition of what Books actually withheld, instead of an independent
+   second opinion.
+
+   Deliberately no Deluge change: recordVendorPayment.deluge is untouched, so the
+   live Zoho Books integration - the part that has never been tested against the
+   real API - carries no new risk from this fix. */
+function allocateBatchTds(netFees, tdsPercent){
+  const r2=(n)=>Math.round(n*100)/100;
+  const rate=Number(tdsPercent)||0;
+  const fees=netFees.map(function(n){ return Number(n)||0; });
+  const total=fees.reduce(function(a,b){ return a+b; },0);
+  // Identical arithmetic to recordVendorPayment.deluge's own tdsAmount line.
+  const batchTds=r2(total*rate/100);
+  if(!(total>0) || !(batchTds>0)) return { batchTds:0, perCase:fees.map(function(){ return 0; }) };
+  // Exact proportional share, floored to paise; the floors always sum to at
+  // most the batch figure, never more.
+  const exact=fees.map(function(f){ return batchTds*f/total; });
+  const out=exact.map(function(v){ return Math.floor(v*100)/100; });
+  let remainingPaise=Math.round((batchTds - out.reduce(function(a,b){ return a+b; },0))*100);
+  // Largest remainder first - the standard fair way to distribute the leftover
+  // paise, so the case with the biggest fractional claim gets the first one.
+  const order=exact.map(function(v,i){ return { i:i, frac:v-Math.floor(v*100)/100 }; })
+    .sort(function(a,b){ return b.frac-a.frac; });
+  let k=0;
+  while(remainingPaise>0){
+    const target=order[k % order.length].i;
+    out[target]=r2(out[target]+0.01);
+    remainingPaise--; k++;
+  }
+  return { batchTds:batchTds, perCase:out };
+}
 function apSelectedCasesWithFees(){
   const vendorRaw = apVendorRaw($("apVendor").value);
   const tdsPercent = Number(vendorRaw && vendorRaw.TDS_Percentage)||0;
-  return AP_CASES.filter(function(r){ return AP_SELECTED.has(String(r.ID)); }).map(function(r){
+  const selected = AP_CASES.filter(function(r){ return AP_SELECTED.has(String(r.ID)); });
+  // TDS comes from the batch allocation above, NOT from a per-case
+  // computeVendorTdsAndPayable() call - see allocateBatchTds()'s own header.
+  // Final Payable is still Net - TDS - Cash per case, so the per-case figures
+  // remain individually meaningful and, because the TDS shares sum exactly to
+  // the batch total, their sum also matches what the Deluge pays.
+  const alloc = allocateBatchTds(selected.map(function(r){ return Number(r.Vendor_Net_Fee)||0; }), tdsPercent);
+  return selected.map(function(r, i){
     const netFee=Number(r.Vendor_Net_Fee)||0, cashCollected=Number(r.Cash_Collected)||0;
-    const { tdsAmount, finalPayable } = computeVendorTdsAndPayable(netFee, tdsPercent, cashCollected);
+    const tdsAmount=alloc.perCase[i]||0;
+    const finalPayable=Math.round((netFee-tdsAmount-cashCollected)*100)/100;
     return { r, netFee, cashCollected, tdsAmount, finalPayable };
   });
 }
+// Shared row-text builder so the initial render and the per-selection refresh
+// below can never format a row differently.
+function apRowText(netFee, tdsAmount, cashCollected, finalPayable){
+  return "Net ₹"+netFee.toFixed(2)+" · TDS ₹"+tdsAmount.toFixed(2)+" · Cash ₹"+cashCollected.toFixed(2)+" · Payable ₹"+finalPayable.toFixed(2);
+}
 function recalcAccountsPayableTotals(){
   const selected = apSelectedCasesWithFees();
+  // Rows are refreshed from the SAME allocation the totals and the write-back
+  // use (2026-09-14). A case's TDS share depends on which other cases are in
+  // the batch, so a row's figure genuinely changes as the selection changes -
+  // showing a stale per-case number next to a batch-derived total is exactly
+  // the mismatch this whole fix exists to remove. Unselected rows keep showing
+  // their standalone "if paid on its own" figure, which is the only meaningful
+  // value for a case that isn't in a batch yet.
+  const vendorRawForRows = apVendorRaw($("apVendor").value);
+  const tdsPctForRows = Number(vendorRawForRows && vendorRawForRows.TDS_Percentage)||0;
+  const selectedById = {};
+  selected.forEach(function(x){ selectedById[String(x.r.ID)] = x; });
+  AP_CASES.forEach(function(r){
+    const cell = $("apRow_"+r.ID);
+    if(!cell) return;
+    const hit = selectedById[String(r.ID)];
+    if(hit){
+      cell.textContent = apRowText(hit.netFee, hit.tdsAmount, hit.cashCollected, hit.finalPayable);
+    } else {
+      const netFee=Number(r.Vendor_Net_Fee)||0, cashCollected=Number(r.Cash_Collected)||0;
+      const solo=computeVendorTdsAndPayable(netFee, tdsPctForRows, cashCollected);
+      cell.textContent = apRowText(netFee, solo.tdsAmount, cashCollected, solo.finalPayable);
+    }
+  });
   const sum=(key)=>selected.reduce(function(acc,x){ return acc+x[key]; },0);
   const totals = { netFee:sum("netFee"), tdsAmount:sum("tdsAmount"), cashCollected:sum("cashCollected"), finalPayable:sum("finalPayable") };
   $("apTotals").innerHTML = selected.length ? `
@@ -6695,6 +7217,47 @@ async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl){
    ever wanted, wire in the same logCallAttempt() pattern once Call_Log is
    confirmed to exist. Purely additive: the plain tel: click-to-dial link
    right next to this button is completely untouched. */
+/* Call_Log persistence (2026-09-14) — the "call data to be available on close
+   case page" requirement. Every write here is best-effort and fire-and-forget:
+   a logging failure must NEVER stop a call being placed, which is the actual
+   job. Same "swallow, don't block" contract as every other secondary write in
+   this file (Google Feedback, Airtable, the invoice payment records).
+
+   If these writes fail, the single most likely cause is a field link name in
+   Zoho differing from the label shown on the form - Zoho rejects an entire
+   record write when any one field name is unknown. The console warning below
+   dumps the exact payload so a mismatch is obvious rather than silent. */
+let CALL_LOGS_BY_TICKET = {};
+async function logCallAttempt(recordId, data){
+  const fn=resolve("addRecords");
+  if(!fn) return "";
+  try{
+    const res=await fn({ app_name:CONFIG.appName, form_name:CONFIG.callLogForm, payload:{ data:data } });
+    const newId=(res && (res.ID || (res.data && res.data.ID))) || "";
+    console.log("[Get-Rescue] logCallAttempt: Call_Log record created", newId||"(no id returned)");
+    return newId;
+  }catch(e){
+    console.warn("[Get-Rescue] logCallAttempt failed (non-blocking - the call itself is unaffected). Check that every field link name below exists on the Call_Log form:", JSON.stringify(data), e);
+    return "";
+  }
+}
+async function loadCallLogsForTicket(recordId){
+  if(!recordId) return [];
+  try{
+    // Same "fetch the report, filter client-side on the unwrapped lookup id"
+    // pattern every other Lookup-backed report read in this file uses (Invites,
+    // Task_Rejections, On_Demand_Invoicing) rather than guessing Zoho's own
+    // server-side Lookup criteria syntax, which has bitten this project before.
+    const all=await apiGetReport(CONFIG.callLogReport, null, 500);
+    const mine=all.filter(function(c){ return String(unwrapLookup(c.Create_Case)||"")===String(recordId); });
+    CALL_LOGS_BY_TICKET[String(recordId)]=mine;
+    return mine;
+  }catch(e){
+    console.warn("[Get-Rescue] loadCallLogsForTicket failed (non-blocking):", e);
+    CALL_LOGS_BY_TICKET[String(recordId)]=[];
+    return [];
+  }
+}
 async function placeVoiceCallbackFromTicket(phoneNumber){
   const fn=resolve("invokeCustomApi");
   if(!fn){ toast("Can't place call — invokeCustomApi unavailable","err"); return; }
@@ -6720,9 +7283,25 @@ async function placeVoiceCallbackFromTicket(phoneNumber){
       try{ data=JSON.parse(data.result); }
       catch(e){ console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: response.result wasn't valid JSON", e); toast("Unexpected response from the call API — check console","err"); return; }
     }
+    // Base Call_Log payload — shared by the failure and success paths below so
+    // a failed attempt is recorded too. A call that never connected is exactly
+    // the kind of thing an agent needs to see on the Closure page.
+    const ticketId = state.record && state.record.ID;
+    const baseLog = {
+      Create_Case: ticketId,
+      Phone_Number: digits,
+      Reference_ID: reference || "",
+      Callback_Message: config.payload.callbackMessage,
+      Placed_By: LOGIN_EMAIL || "",
+      Call_Direction: "Outbound"
+    };
     if(!data || data.code!=="SUCCESS"){
       console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: call failed — code:", data && data.code, "message:", data && data.message, "| full response:", res);
       toast((data && data.message) || "Call could not be placed","err");
+      logCallAttempt(ticketId, Object.assign({}, baseLog, {
+        UCID: "", Call_Status: "Failed", Call_Duration: "",
+        Call_Outcome: (data && data.message) || "Call could not be placed"
+      }));
       return;
     }
     const ucid = data.ucid || data.callback_id || "";
@@ -6732,15 +7311,21 @@ async function placeVoiceCallbackFromTicket(phoneNumber){
       return;
     }
     toast("Call placed to "+digits,"ok");
+    // Logged now, then updated in place once the status check returns — one
+    // row per call attempt, not two. The returned record id is handed to the
+    // status check so it can update that exact row.
+    const logId = await logCallAttempt(ticketId, Object.assign({}, baseLog, {
+      UCID: ucid, Call_Status: "Placed", Call_Duration: "", Call_Outcome: ""
+    }));
     // One automatic status check a few seconds after placing — same UX
     // pattern callCenter's own onPlaceCall() already uses (setTimeout, 4s).
-    setTimeout(function(){ checkVoiceCallbackStatusFromTicket(ucid); }, 4000);
+    setTimeout(function(){ checkVoiceCallbackStatusFromTicket(ucid, logId, ticketId); }, 4000);
   }catch(e){
     console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: invokeCustomApi failed", e);
     toast("Call request failed — check console","err");
   }
 }
-async function checkVoiceCallbackStatusFromTicket(callbackId){
+async function checkVoiceCallbackStatusFromTicket(callbackId, logId, ticketId){
   const fn=resolve("invokeCustomApi");
   if(!fn || !callbackId) return;
   const config = {
@@ -6766,6 +7351,20 @@ async function checkVoiceCallbackStatusFromTicket(callbackId){
     const duration = data.call_duration||"";
     console.log("[Get-Rescue] checkVoiceCallbackStatusFromTicket — status:", status, "| outcome:", outcome, "| duration:", duration, "| full response:", data);
     toast("Call status: "+(status||"unknown")+(outcome?(" — "+outcome):""), "ok");
+    // Update the SAME Call_Log row this call created, rather than adding a
+    // second one — the history should read as one line per call. Best-effort:
+    // a failed update leaves the row at "Placed", which is still true.
+    if(logId){
+      apiUpdateReport(CONFIG.callLogReport, logId, {
+        Call_Status: status||"", Call_Duration: duration||"", Call_Outcome: outcome||""
+      }).then(function(){
+        // Refresh the cache so the Closure page's own panel reflects this
+        // without needing the ticket reopened.
+        if(ticketId) loadCallLogsForTicket(ticketId).then(function(){ rerenderCurrentView(); });
+      }).catch(function(e){
+        console.warn("[Get-Rescue] could not update Call_Log "+logId+" with the call outcome (non-blocking):", e);
+      });
+    }
   }catch(e){
     console.warn("[Get-Rescue] checkVoiceCallbackStatusFromTicket: invokeCustomApi failed", e);
   }
@@ -6875,6 +7474,19 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
   const { serviceCharges, cgst, sgst, roundOff } = taxApplies
     ? computeGstBreakup(amount)
     : { serviceCharges: amount, cgst: 0, sgst: 0, roundOff: 0 };
+  // Which already-collected payments get recorded against this invoice — see
+  // the payload's own matching comment below for the full reasoning (ON
+  // DEMAND only, confirmed-paid only, capped so they can never exceed the
+  // invoice total). Computed here rather than inline so the capping
+  // arithmetic is readable and so both values are plain numbers by the time
+  // the payload stringifies them.
+  const bfCollected = (isOnDemand && bookingFeeConfirmedPaid(record)) ? (Number(record.Booking_Fee)||0) : 0;
+  const rfCollected = (isOnDemand && remainingFeeConfirmedPaid(record)) ? (Number(record.Remaining_Fee)||0) : 0;
+  const bookingFeeToApply = Math.max(0, Math.min(bfCollected, amount));
+  const remainingFeeToApply = Math.max(0, Math.min(rfCollected, amount - bookingFeeToApply));
+  if(bfCollected+rfCollected > amount){
+    console.warn("[Get-Rescue] onDemandInvoicing: collected payments (₹"+(bfCollected+rfCollected)+") exceed the final invoice amount (₹"+amount+") — most likely a refund at closure. Applying ₹"+bookingFeeToApply+" + ₹"+remainingFeeToApply+" only; reconcile the ₹"+((bfCollected+rfCollected)-amount)+" difference in Zoho Books directly (credit note/refund), it is deliberately NOT guessed at here.");
+  }
   const serviceLabel=[record[CONFIG.serviceTypeField]||"", lookupNamesFor(record.Vehicle_Issue, OPTIONS.issues)||""].filter(Boolean).join(" - ") || "Service Charge";
   // Real Zoho Payments payment link (2026-09-10, user request: "before [the
   // booking amount is sent] we need to generate the payment link... pass
@@ -6919,7 +7531,32 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
       roundOff: String(roundOff),
       applyTax: String(taxApplies),
       customerPhoneDigits: customerPhoneDigits,
-      expiresAt: expiresAt
+      expiresAt: expiresAt,
+      // Payments already collected, recorded against THIS one invoice
+      // (2026-09-14, explicit user decision: booking fee up front + remaining
+      // fee at closure, but ONE invoice per ticket showing all fees — see
+      // onDemandInvoicing.deluge's own STEP 3 comment). Only ever sends a fee
+      // that's CONFIRMED paid, using the exact same two signals the closure
+      // total itself is built from (bookingFeeConfirmedPaid()/
+      // remainingFeeConfirmedPaid(), see computeClosureTSF()) — so a fee that
+      // was quoted but never actually collected is never recorded as paid.
+      //
+      // ON DEMAND only, deliberately (user decision 2026-09-14: "Not for
+      // B2B") — a contracted client's invoice covers Rescue_Charge on a
+      // different billing arrangement entirely, and applying a walk-in
+      // customer's own payments to it would be wrong.
+      //
+      // Capped so the two can never exceed the invoice total: a refund at
+      // closure makes the final invoice SMALLER than the sum actually
+      // collected (computeClosureTSF nets the refund out), and Books rejects
+      // applying more than an invoice's balance. Booking fee applies first,
+      // the remaining fee takes whatever's left — any genuine excess is left
+      // for the agent to reconcile in Books rather than silently guessed at
+      // here.
+      bookingFeeAmount: String(bookingFeeToApply),
+      bookingFeeRef: bookingFeeToApply>0 ? (caseLabel(record)+"-BF") : "",
+      remainingFeeAmount: String(remainingFeeToApply),
+      remainingFeeRef: remainingFeeToApply>0 ? (caseLabel(record)+"-RF") : ""
     }
   };
   // TEMPORARY 2026-08-27 (actively debugging live: the Custom API reports
@@ -6985,19 +7622,65 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
     // Same best-effort/non-blocking write as invoiceId below — a failure
     // here doesn't affect the invoice itself or the URL already returned.
     const paymentUrl = data && data.payment_url || "";
+    // Payment-recording outcome surfaced 2026-09-14 — onDemandInvoicing.deluge
+    // has always returned payments_recorded (0/1/2, see its own STEP 3), but
+    // nothing ever read it, so a rejected /customerpayments call was completely
+    // silent: the invoice got created showing the FULL amount still due even
+    // though the money had already been collected, and neither the agent nor
+    // the console said a word. That was survivable while invoicing was a
+    // deliberate button click someone was watching; now that it ALSO fires
+    // automatically from saveClosure() the agent may never open Books at all,
+    // so this failure has to announce itself. Console + a toast, no behavior
+    // change — the invoice itself is still created and its URL still returned
+    // exactly as before, since a payment that didn't attach is a reconciliation
+    // problem, not a reason to withhold the invoice.
+    if(invoiceId){
+      const expectedPayments = (bookingFeeToApply>0?1:0) + (remainingFeeToApply>0?1:0);
+      if(expectedPayments>0){
+        const recordedPayments = Number(data && data.payments_recorded);
+        if(!isFinite(recordedPayments)){
+          console.warn("[Get-Rescue] onDemandInvoicing: the response carried no payments_recorded field — the deployed Custom API is almost certainly an older onDemandInvoicing.deluge without STEP 3. The invoice was created, but the ₹"+(bookingFeeToApply+remainingFeeToApply)+" already collected was NOT applied to it. Re-paste the current onDemandInvoicing.deluge, then reconcile this invoice in Zoho Books by hand.");
+          toast("Invoice created, but the collected payment wasn't applied — check Zoho Books","err");
+        } else if(recordedPayments < expectedPayments){
+          console.warn("[Get-Rescue] onDemandInvoicing: only "+recordedPayments+" of "+expectedPayments+" collected payment(s) were applied to the invoice — it will show a balance still due for the difference. Most likely causes, in order: the 4 payment parameters not registered in the Custom API setup screen, or Zoho Books rejecting payment_mode \"other\". Open this Custom API's own execution log — it logs the raw /customerpayments response for each attempt.");
+          toast("Invoice created, but "+(expectedPayments-recordedPayments)+" collected payment(s) weren't applied — check Zoho Books","err");
+        } else {
+          console.log("[Get-Rescue] onDemandInvoicing: all "+recordedPayments+" collected payment(s) applied to the invoice.");
+        }
+      }
+    }
+    // Split into TWO chained writes 2026-09-14 (was a single combined
+    // apiUpdate) — a correctness fix, not a style change. Zoho Creator rejects
+    // an update wholesale if ANY field name in it is unknown, and
+    // Zoho_Books_Invoice_URL is explicitly flagged in this file as a field that
+    // may not exist in Zoho yet (see Generate_OnDemand_Invoice's own comment,
+    // "needs creating in Zoho ... before this write actually persists"). Sent
+    // together, a missing URL field silently took the INVOICE ID down with it
+    // — and since 2026-09-14 that id is the durable cross-session guard that
+    // stops maybeGenerateBooksInvoiceOnClosure()'s auto-fire and this
+    // function's own button from both invoicing the same ticket. Losing it
+    // means a genuine duplicate Zoho Books invoice, so the id now goes first,
+    // entirely on its own, and can no longer be blocked by the optional field.
+    // Chained rather than fired in parallel so the two writes can't race on the
+    // same record, and so the critical one always lands first. Both stay
+    // best-effort/non-blocking exactly as before.
     if(record && record.ID){
-      const writeFields = {};
-      if(invoiceId){
-        const targetField = invoiceIdField || "Zoho_Books_Invoice_ID";
-        writeFields[targetField] = String(invoiceId);
-      }
-      if(paymentUrl && paymentUrlField){
-        writeFields[paymentUrlField] = paymentUrl;
-      }
-      if(Object.keys(writeFields).length){
-        apiUpdate(record.ID, writeFields).catch(function(e){
-          console.warn("[Get-Rescue] onDemandInvoicing: failed to write "+JSON.stringify(writeFields)+" back onto the ticket (non-blocking, invoice itself was still created):", e);
+      const targetField = invoiceIdField || "Zoho_Books_Invoice_ID";
+      const writeUrl = function(){
+        if(!(paymentUrl && paymentUrlField)) return;
+        const urlFields = {}; urlFields[paymentUrlField] = paymentUrl;
+        apiUpdate(record.ID, urlFields).catch(function(e){
+          console.warn("[Get-Rescue] onDemandInvoicing: failed to write "+JSON.stringify(urlFields)+" back onto the ticket (non-blocking — the invoice itself was created and its ID was saved; most likely this field doesn't exist in Zoho yet):", e);
         });
+      };
+      if(invoiceId){
+        const idFields = {}; idFields[targetField] = String(invoiceId);
+        apiUpdate(record.ID, idFields).then(writeUrl).catch(function(e){
+          console.warn("[Get-Rescue] onDemandInvoicing: failed to write "+JSON.stringify(idFields)+" back onto the ticket (non-blocking, invoice itself was still created) — WARNING: without this id saved, a later \"Generate Invoice\" click on this ticket could create a DUPLICATE invoice:", e);
+          writeUrl();
+        });
+      } else {
+        writeUrl();
       }
     }
     return url;
@@ -7882,6 +8565,18 @@ async function openTicket(rec){
   // here too, so it's ready the moment the agent navigates there, however
   // they got into this ticket.
   await loadRejectionHistory(state.recordId);
+  // Call history (2026-09-14) — loaded here for exactly the same reason as
+  // Rejection History right above: the Agent Closure page is a step of THIS
+  // wizard, not a separate screen, so anything that step needs has to be ready
+  // by the time the agent navigates to it, however they got into the ticket.
+  // Deliberately NOT awaited — a Call_Log read must never delay opening a
+  // ticket; the panel is empty for a moment and fills itself in via the
+  // re-render below. Fully safe if the Call_Log form doesn't exist: the fetch
+  // fails, the cache holds [], and the field shows its own "No calls recorded"
+  // hint (loadCallLogsForTicket() swallows and logs).
+  loadCallLogsForTicket(state.recordId).then(function(logs){
+    if(logs && logs.length && state.recordId) rerenderCurrentView();
+  });
   // seedAcceptanceVendorFields() is now called from renderWizard() itself
   // (2026-08-07), specifically for the acceptance/acceptanceTow steps, not
   // here — see that call's own comment for why (needs to re-run every time
@@ -10386,6 +11081,13 @@ async function saveClosure(){
     // that function's own comment on why it's passed in rather than
     // re-derived from r.Total_Service_Fee here.
     maybeCreateOnDemandInvoice(r, finalTSF).catch(function(e){ console.warn("[Get-Rescue] maybeCreateOnDemandInvoice threw:",e); });
+    // The REAL Zoho Books invoice (2026-09-14, user decision "Auto on closure
+    // + keep button") — the line above only creates the internal Creator
+    // tracking record in On_Demand_Invoicing; this is the actual customer
+    // invoice document. Same best-effort, never-blocks-the-close contract as
+    // every other call in this group; all of its duplicate guards and the
+    // retry story live in the function's own header comment.
+    maybeGenerateBooksInvoiceOnClosure(r, finalTSF).catch(function(e){ console.warn("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure threw:",e); });
     sendToZohoBooks(r).catch(function(e){ console.warn("[Get-Rescue] sendToZohoBooks threw:",e); });
     sendToAirtable(r).catch(function(e){ console.warn("[Get-Rescue] sendToAirtable threw:",e); });
     if(r.Google_Feedback_Requested===true||r.Google_Feedback_Requested==="Yes"){
@@ -10729,6 +11431,15 @@ $("opsMapEngagementFilter").onchange=renderOpsMapMarkers;
 $("opsMapServiceFilter").onchange=renderOpsMapMarkers;
 $("vendorAcctBtn").onclick=loadVendorAcct;
 $("vendorAcctBack").onclick=function(){ showView("dashboard"); loadDashboard(); };
+// Grid/List toggle (2026-09-14) — clears the selection on the way out of grid
+// mode so a stale tick can never be carried back in and bulk-approved blind,
+// and closes any open accordion row on the way out of list mode.
+$("vaViewToggle").onclick=function(){
+  VA_GRID_MODE=!VA_GRID_MODE;
+  VA_SELECTED=new Set();
+  VA_OPEN_ID=null;
+  renderVendorAcctList();
+};
 $("accountsPayableBtn").onclick=loadAccountsPayable;
 $("accountsPayableBack").onclick=function(){ showView("dashboard"); loadDashboard(); };
 $("wizClose").onclick=cancelWizard;

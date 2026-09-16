@@ -237,14 +237,77 @@ function computeStats(tickets, rejections, range){
   return { rejectedCount, completed, cancelled, etaMetPct, issuesFixedPct, feedbackHighPct };
 }
 
+/* Vendor Portal settlement statement (2026-09-14) — the last outstanding piece
+   of the Vendor Accounting scope ("vendor statement view in Vendor Portal").
+
+   AGGREGATE TOTALS ONLY. This is a hard constraint, not a simplification: the
+   2026-09-04 decision was explicit that this shows "aggregate totals only, NOT
+   a full case-level statement", preserving the hand-drawn wireframe rule this
+   entire widget exists under — "Vendor & mechanic will not be shown case
+   HISTORY" (see ACCESS.md's own vendorPerformance note). So there is
+   deliberately no case list, no Case IDs, no dates, no per-job breakdown here,
+   and none should be added later without re-confirming that decision.
+
+   Reads fields this widget ALREADY receives — Agent_Ticket_Report is fetched
+   with field_config:"all" and filtered to this vendor's own tickets in boot(),
+   so every figure below comes out of data already in memory. No new report, no
+   new API call, and no new permission: ACCESS.md's existing "Agent_Ticket_Report
+   - View" grant for this widget already covers it.
+
+   Deliberately ALL-TIME, ignoring the date filter above, and labelled as such
+   on screen. Money owed does not expire at a month boundary: showing a vendor
+   "Awaiting Payment ₹0" purely because the filter says "This Month" would be
+   actively misleading about whether they are owed anything. The performance
+   cards above stay date-filtered exactly as they always were - this section is
+   the only thing that ignores it. */
+function computeSettlement(tickets){
+  const num=(v)=>Number(v)||0;
+  const isPaid=(r)=>String(r.Vendor_Payment_Status||"").trim().toUpperCase()==="PAID";
+  const isApproved=(r)=>{
+    const s=String(r.Settlement_Status||"").trim().toUpperCase();
+    return s==="PAYABLE"||s==="PAID";
+  };
+  // Awaiting payment uses Vendor_Balance_Before_TDS — the figure Operations
+  // Approval actually writes (Net Fee minus Cash Collected). TDS is only
+  // computed later, at Level 2 payment time, so it genuinely is not known yet
+  // for an unpaid case; the card is labelled "before TDS" rather than quietly
+  // presenting a pre-TDS number as if it were the final payout.
+  const awaiting = tickets.filter(function(r){ return isApproved(r) && !isPaid(r); });
+  const paid = tickets.filter(isPaid);
+  const sum=(list,field)=>list.reduce(function(a,r){ return a+num(r[field]); },0);
+  return {
+    awaitingAmount: sum(awaiting,"Vendor_Balance_Before_TDS"),
+    awaitingCount: awaiting.length,
+    paidAmount: sum(paid,"Vendor_Amount_Paid"),
+    paidCount: paid.length,
+    tdsAmount: sum(paid,"TDS_Amount"),
+    cashCollected: sum(tickets.filter(isApproved),"Cash_Collected"),
+    anyData: awaiting.length>0 || paid.length>0
+  };
+}
+function money(n){ return "₹"+Number(n||0).toFixed(2); }
+const ICON_RUPEE='<svg viewBox="0 0 24 24" fill="none"><path d="M7 5h10M7 9h10M7 5c5 0 7 1.5 7 4s-2 4-7 4h1l7 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_OK='<svg viewBox="0 0 24 24" fill="none"><path d="m5 13 4 4L19 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_WARN='<svg viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="m10.3 4.5-8 14A1.5 1.5 0 0 0 3.6 21h16.8a1.5 1.5 0 0 0 1.3-2.5l-8-14a1.5 1.5 0 0 0-2.6 0Z" stroke="currentColor" stroke-width="2"/></svg>';
 const ICON_PCT='<svg viewBox="0 0 24 24" fill="none"><path d="M5 19 19 5M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 function pctText(v){ return v==null ? "—" : v+"%"; }
 
-function render(stats){
-  $("content").innerHTML = `
+function render(stats, settlement){
+  // settlement is optional — render() keeps working with a single argument
+  // exactly as before if it is ever called without one.
+  const s = settlement || { awaitingAmount:0, awaitingCount:0, paidAmount:0, paidCount:0, tdsAmount:0, cashCollected:0, anyData:false };
+  const settlementHtml = `
+    <div class="section-title">Settlement <span style="font-weight:400;opacity:.7;font-size:12px">— all time, not affected by the date filter</span></div>
+    <div class="grid">
+      <div class="card wait"><div class="ic">${ICON_RUPEE}</div><div class="num">${esc(money(s.awaitingAmount))}</div><div class="lbl">Awaiting Payment (before TDS) · ${esc(s.awaitingCount)} case${s.awaitingCount===1?"":"s"}</div></div>
+      <div class="card"><div class="ic">${ICON_RUPEE}</div><div class="num">${esc(money(s.paidAmount))}</div><div class="lbl">Paid to You · ${esc(s.paidCount)} case${s.paidCount===1?"":"s"}</div></div>
+      <div class="card"><div class="ic">${ICON_RUPEE}</div><div class="num">${esc(money(s.tdsAmount))}</div><div class="lbl">TDS Deducted</div></div>
+      <div class="card"><div class="ic">${ICON_RUPEE}</div><div class="num">${esc(money(s.cashCollected))}</div><div class="lbl">Cash You Collected</div></div>
+    </div>
+    ${s.anyData ? "" : '<div style="font-size:12.5px;opacity:.7;margin-top:6px">No cases have been approved for settlement yet. Figures appear here once Operations approves your completed cases.</div>'}
+  `;
+  $("content").innerHTML = settlementHtml + `
     <div class="section-title">Cases</div>
     <div class="grid">
       <div class="card warn"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.rejectedCount)}</div><div class="lbl">Rejected / Timed Out</div></div>
@@ -271,7 +334,11 @@ async function refresh(){
   // for: "Completed", "Cancelled", "Cancelled - Billable", "RSP CANCELLED").
   const mineNow = ALL_TICKETS.filter(function(r){ return inRange(r.Added_Time, range); });
   console.log("[GR-VendorPerf] refresh: range="+range.from.toDateString()+" to "+range.to.toDateString()+" | "+mineNow.length+" of "+ALL_TICKETS.length+" tickets in range | Closure_Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Closure_Status||"(blank)"; }))+" | Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Status||"(blank)"; })));
-  render(computeStats(ALL_TICKETS, ALL_REJECTIONS, range));
+  // Settlement is computed from the UNFILTERED ticket list on purpose — see
+  // computeSettlement()'s own header for why money owed must not be hidden by
+  // a date filter. The performance stats below it stay range-filtered exactly
+  // as before; nothing about that call has changed.
+  render(computeStats(ALL_TICKETS, ALL_REJECTIONS, range), computeSettlement(ALL_TICKETS));
 }
 $("filterRange").onchange = refresh;
 

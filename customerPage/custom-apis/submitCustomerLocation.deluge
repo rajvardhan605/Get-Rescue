@@ -4,15 +4,54 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 	try
 	{
 		result = Map();
-		// .trim() added 2026-09-10 — same real, confirmed-live bug already
+		// .trim() added 2026-09-10 - same real, confirmed-live bug already
 		// found and fixed in generateZohoPaymentLink.deluge the same day
 		// (a stray trailing space in recordId crashed .toLong() outright
 		// there); added here defensively too, zero risk either way.
 		rec = Create_Case[ID == recordId.trim().toLong()];
+		// READABILITY PROBE (2026-09-14) - the key insight into why this call
+		// has worked from the Execute dialog for days while failing over the
+		// public URL with "'recForWrite' has no matching records".
+		//
+		// `rec == null` below is NOT a reliable existence test. When a Deluge
+		// record query matches nothing - including when it matches nothing
+		// because the EXECUTING USER cannot see the record - it does not
+		// necessarily come back as null. The null check therefore passes, the
+		// function runs all the way down to the write, and only THERE does it
+		// fail, with a "has no matching records" error that names the write
+		// variable and so looks like a problem with the write. It never was:
+		// the fetch found nothing in the first place.
+		//
+		// That fits every symptom exactly. The Execute dialog runs as the
+		// developer, who can see every record, so it succeeds. The public URL
+		// runs as whatever user this Custom API is configured to execute as; if
+		// that user has no permission on Create_Case, the query returns nothing
+		// and the write blows up 130 lines later with a misleading message.
+		//
+		// This probe reads one harmless field immediately after the fetch, in
+		// its own try/catch. If that throws, the record is not readable HERE and
+		// now, and the caller gets told precisely that instead of a cryptic
+		// failure at write time. It changes no behaviour for a working call.
+		recReadable = true;
+		try
+		{
+			probeText = ifnull(rec.Case_ID,"").toString();
+		}
+		catch (probeEx)
+		{
+			recReadable = false;
+			info "submitCustomerLocation - record " + recordId + " matched no readable row. This is almost always a PERMISSION issue, not a data one: compare this Custom API's own 'Execute the script as' setting against paymentWebhook's, which does succeed over a public URL. Raw error: " + probeEx.toString();
+		}
 		if(rec == null)
 		{
 			result.put("code", "ERROR");
 			result.put("message", "Ticket not found");
+			returnstr = result.toString();
+		}
+		else if(recReadable == false)
+		{
+			result.put("code", "ERROR");
+			result.put("message", "Ticket " + recordId + " could not be read by this Custom API. The ticket most likely exists - check this Custom API's 'Execute the script as' user and its permission on the Create_Case form. Nothing was written.");
 			returnstr = result.toString();
 		}
 		else if(lat == null || lat == "" || lon == null || lon == "")
@@ -25,38 +64,38 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 		{
 			// Validate + normalize (2026-09-10, explicit user request:
 			// "Validate the coordinates and handle both map-selected and
-			// manually entered latitude/longitude values correctly") — lat/lon
+			// manually entered latitude/longitude values correctly") - lat/lon
 			// arrive as raw strings from either the customer's map pin (its own
 			// floating-point pan/zoom math) or a device GPS fix, both of which
 			// can carry 15-17+ decimal digits. .toDecimal()/.round(6) (both
 			// confirmed working Deluge syntax already used the same way
-			// elsewhere in this project — see recordVendorPayment.deluge's own
+			// elsewhere in this project - see recordVendorPayment.deluge's own
 			// ".toDecimal()"/".round(2)") caps that at ~11cm of real-world
 			// precision, well under the real (unconfirmed exact value) "Decimal
 			// field exceeded maximum digits" limit getRescueTicket's own
 			// roundCoord()/saveWithCoordFallback() were built to work around on
 			// these SAME Latitude/Longitude/DropLocationLat/DropLocationLong
-			// fields — this call had no protection against that error at all
+			// fields - this call had no protection against that error at all
 			// before now. Range-checked against real GPS bounds so a malformed
 			// value (or a future caller hitting this Custom API directly)
 			// never silently writes garbage into the ticket.
 			latVal = lat.toDecimal().round(6);
 			lonVal = lon.toDecimal().round(6);
 			// locationType normalization (2026-09-10, widened after a live
-			// "Unknown locationType: breakdown." failure — a stray trailing
+			// "Unknown locationType: breakdown." failure - a stray trailing
 			// period arrived from wherever this particular link/navigation was
 			// generated, outside this repo's own confirmed-clean URL-building
-			// code — see getRescueTicket/app/widget.html's buildCustomerPageUrl(),
+			// code - see getRescueTicket/app/widget.html's buildCustomerPageUrl(),
 			// checked and confirmed to build a plain "breakdown"/"drop" with no
 			// punctuation). Rather than keep chasing one hardcoded punctuation
 			// variant at a time (the previous fix only handled an exact
 			// trailing "."), this matches by SUBSTRING on a trimmed, lowercased
-			// value instead — covers "breakdown", "breakdown.", "Breakdown ",
+			// value instead - covers "breakdown", "breakdown.", "Breakdown ",
 			// "BREAKDOWN..", stray whitespace, etc. for BOTH Breakdown and Drop
 			// symmetrically, not just the one case actually seen live so far.
 			// .trim()/.toLowerCase()/.contains() are all already confirmed
 			// working elsewhere in this project (see createServiceRequest.deluge's
-			// own "issueTypeText.toLowerCase().contains("tow")") — no new/
+			// own "issueTypeText.toLowerCase().contains("tow")") - no new/
 			// unverified Deluge syntax introduced (the previous fix's brace-less
 			// "if(...) x = y;" lines were a real, confirmed-live "Improper
 			// Statement" error; every branch below is fully braced). Only
@@ -76,104 +115,113 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 				// Real root cause CONFIRMED 2026-09-10 via a Zoho Studio
 				// screenshot: Latitude/Longitude/DropLocationLat/DropLocationLong
 				// were Decimal fields with Max Digits=16, Decimal Points=15.
-				// Zoho's Decimal type works like SQL DECIMAL(precision,scale) —
+				// Zoho's Decimal type works like SQL DECIMAL(precision,scale) -
 				// the WHOLE-NUMBER part can only ever hold (Max Digits - Decimal
 				// Points) digits. Every real-world latitude/longitude has a
 				// 2-3 digit whole-number part (e.g. "28" in 28.613977, "77" in
 				// 77.209023), so at Max Digits=16/Decimal Points=15 every
 				// possible coordinate was mathematically too large for the
-				// field's configuration at the time — no rounding or retry
+				// field's configuration at the time - no rounding or retry
 				// could ever have worked around it.
 				//
 				// RESOLVED 2026-09-11 (user-confirmed): rather than keep
 				// widening the Decimal config, all 4 of these fields (plus
 				// RSP_Start_Latitude/Longitude, RSP_Drop_Latitude/Longitude,
 				// and Cancel_Location_Lat/Lon elsewhere in this app) were
-				// converted to Single Line Text instead — no digit limit at
+				// converted to Single Line Text instead - no digit limit at
 				// all, so this entire error class can no longer fire on any
 				// coordinate field in this app. The write below (a Deluge
 				// string assigned to rec.Latitude/etc.) needed no code change
-				// for this — it already wrote a string either way, which
+				// for this - it already wrote a string either way, which
 				// Deluge auto-converts on assignment to a Decimal field, and
 				// which a Text field accepts even more directly.
 				//
 				// An earlier version of this function retried the write at
-				// 6/4/2/0 decimal places, hoping fewer decimals would fit —
+				// 6/4/2/0 decimal places, hoping fewer decimals would fit -
 				// that hypothesis was DISPROVEN by the Decimal-precision math
 				// above: reducing decimal places never changes the whole-
 				// number part, so all 4 of those attempts were guaranteed to
 				// fail identically, every time. Removed as dead code even
 				// before the Text conversion made it doubly unnecessary. The
 				// returned error message (visible only in this Custom API's
-				// own execution log and the browser console —
+				// own execution log and the browser console -
 				// customerPage/app/widget.html's submitLocation() never shows
 				// this raw message to the customer, only a generic "please try
-				// again" — see its own renderError() call) now just surfaces
+				// again" - see its own renderError() call) now just surfaces
 				// whatever Zoho actually says, since the old digit-limit cause
 				// no longer applies.
 				try
 				{
 					latToWrite = latVal.toString();
 					lonToWrite = lonVal.toString();
-					// 2026-09-13 — REVERTED the previous attempt here (a bulk
+					// 2026-09-13 - REVERTED the previous attempt here (a bulk
 					// `update Create_Case set ... where ...;` statement),
 					// confirmed live in Zoho's own script editor to be an
-					// "Improper Statement" — that exact syntax is not valid in
+					// "Improper Statement" - that exact syntax is not valid in
 					// this account/version, so it's ruled out cleanly, with no
 					// live/customer-facing impact (it never got past Save).
 					// Back to the dot-notation write, independently proven
 					// working elsewhere in this project against this same
 					// Create_Case form (generateZohoPaymentLink.deluge's own
-					// `rec.Zoho_Payment_URL = ...`) — the one thing added this
+					// `rec.Zoho_Payment_URL = ...`) - the one thing added this
 					// time is a FRESH re-fetch of the record immediately before
 					// the write (recForWrite, right below), using the exact
 					// same already-proven `Create_Case[ID == ...]` pattern as
-					// the original fetch at the top of this function — a
+					// the original fetch at the top of this function - a
 					// zero-new-syntax hedge against the original runtime error
 					// ("'rec' has no matching records. Unable to update the
 					// value rec.Latitude.") being caused by the much-earlier
 					// `rec` reference having gone stale by the time this
 					// point in the function runs, rather than the write
 					// pattern itself. Not confirmed to fix the underlying
-					// issue — if this exact error recurs even with a fresh
+					// issue - if this exact error recurs even with a fresh
 					// fetch right here, that rules out staleness and points
 					// squarely at something Zoho-side (this Custom API's own
 					// "Execute the script as" permission, compared against
-					// generateZohoPaymentLink's — check that next, directly in
+					// generateZohoPaymentLink's - check that next, directly in
 					// Zoho, not in code).
-					recForWrite = Create_Case[ID == recordId.trim().toLong()];
+					// 2026-09-14 - the `recForWrite` SECOND FETCH that used to sit
+					// here is REMOVED. It was added 2026-09-13 as a hedge against
+					// `rec` having gone stale; that hypothesis is now disproven.
+					// generateZohoPaymentLink.deluge hit this exact error for the
+					// opposite reason, and its own comment records the finding:
+					// every write in this project that WORKS fetches the record
+					// once and writes onto it, and every one that failed this way
+					// fetched the same record twice. The writes below now go to
+					// `rec` - fetched at the top, and just proven readable by the
+					// probe - which is the pattern with a live fix behind it.
 					if(isDrop)
 					{
-						recForWrite.DropLocationLat = latToWrite;
-						recForWrite.DropLocationLong = lonToWrite;
+						rec.DropLocationLat = latToWrite;
+						rec.DropLocationLong = lonToWrite;
 					}
 					else
 					{
-						recForWrite.Latitude = latToWrite;
-						recForWrite.Longitude = lonToWrite;
+						rec.Latitude = latToWrite;
+						rec.Longitude = lonToWrite;
 					}
 					// Drop_Location_Received_Time / Location_Received_Time
 					// (2026-09-11, part of the wider "capture location+time at
-					// every relevant step" request) — user has now created
+					// every relevant step" request) - user has now created
 					// Drop_Location_Received_Time in Zoho (Location_Received_Time
 					// already existed, but was previously only ever stamped
 					// later, whenever the agent next happened to revisit the
-					// Locations wizard step — see getRescueTicket/app/widget.html's
+					// Locations wizard step - see getRescueTicket/app/widget.html's
 					// own "locations" stage extra(), which still runs too and is
 					// left completely unchanged as a harmless no-op once this
-					// field is already set — see that file's own matching
+					// field is already set - see that file's own matching
 					// comment). Stamping it HERE instead means it now reflects
 					// the ACTUAL moment the customer's coordinate was saved, not
 					// whenever an agent's screen happened to catch up.
 					// zoho.currenttime is Deluge's own documented "current date
 					// + time" system variable (confirmed via Zoho's own Deluge
-					// System Variables reference) — assigned directly to a
+					// System Variables reference) - assigned directly to a
 					// native Date-Time field, no string formatting. Wrapped in
 					// its OWN try/catch, separate from the lat/lon write just
 					// above: this is a genuinely new write in a genuinely new
 					// context (a Custom API record UPDATE, not the simpler
 					// form-submit-insert context most public examples show) and
-					// hasn't been independently confirmed live yet — if the
+					// hasn't been independently confirmed live yet - if the
 					// exact value/format Deluge produces here turns out not to
 					// be accepted by a Date-Time field in an update context,
 					// this must NEVER be allowed to take down the actual
@@ -184,12 +232,12 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 					// this point), not a second fresh fetch.
 					try
 					{
-						if(isDrop) { recForWrite.Drop_Location_Received_Time = zoho.currenttime; }
-						else { recForWrite.Location_Received_Time = zoho.currenttime; }
+						if(isDrop) { rec.Drop_Location_Received_Time = zoho.currenttime; }
+						else { rec.Location_Received_Time = zoho.currenttime; }
 					}
 					catch (tsEx)
 					{
-						info "submitCustomerLocation — timestamp write failed (non-blocking, the coordinate itself was still saved successfully): " + tsEx.toString();
+						info "submitCustomerLocation - timestamp write failed (non-blocking, the coordinate itself was still saved successfully): " + tsEx.toString();
 					}
 					result.put("code", "SUCCESS");
 					returnstr = result.toString();
@@ -197,15 +245,15 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 				catch (writeEx)
 				{
 					result.put("code", "ERROR");
-					// Message updated 2026-09-11 (later) — Latitude/Longitude/
+					// Message updated 2026-09-11 (later) - Latitude/Longitude/
 					// DropLocationLat/DropLocationLong were converted from Decimal
 					// to Single Line Text this same day (user-confirmed), so the
 					// digit-limit cause this message used to describe no longer
-					// applies at all — a stale explanation here would now be
+					// applies at all - a stale explanation here would now be
 					// actively misleading. If this branch fires, it's genuinely a
 					// different cause; just surface Zoho's own error text and let
 					// whoever's debugging look at the execution log directly.
-					result.put("message", "Could not save this coordinate — Zoho error: " + writeEx.toString());
+					result.put("message", "Could not save this coordinate - Zoho error: " + writeEx.toString());
 					returnstr = result.toString();
 				}
 			}
