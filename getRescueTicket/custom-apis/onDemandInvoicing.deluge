@@ -638,22 +638,114 @@ invoiceURL="";
 		{
 			info "onDemandInvoicing — Zoho Payments payment link generation failed (non-fatal, falling back to invoice_pdf_url): " + paymentLinkEx.toString();
 		}
-		// bestUrl now prefers the INVOICE itself once payments have actually
-		// been recorded against it (2026-09-14) — a fully-settled final
-		// invoice handing back a "pay now" link instead of the invoice
-		// document is both useless and misleading, and this function's own
-		// `url` is what the widget writes into Zoho_Books_Invoice_URL (the
-		// field the agent clicks to OPEN THE INVOICE). Behavior for the
-		// zero-payments case is completely unchanged — still prefers the
-		// payment link exactly as before, so every pre-existing caller that
-		// relied on that keeps working identically.
-		bestUrl = invoice_pdf_url;
-		if(payment_url != "")
+		// PUBLIC / SHAREABLE INVOICE URL (2026-09-17, explicit user decision:
+		// "do not need to login book switch to a shareable link").
+		//
+		// invoice_pdf_url below is https://books.zoho.in/invoices/<id>?... —
+		// the INTERNAL Books app screen. It only opens for someone already
+		// signed into Zoho Books with access to this organization, so an agent
+		// without a Books login hits a sign-in wall instead of the invoice.
+		//
+		// Zoho Books' own invoice object carries a customer-facing URL that
+		// needs no login. It is read here from the invoice record rather than
+		// constructed, because a share URL contains a server-generated hash
+		// that cannot be derived — an earlier attempt in this same file did
+		// guess at a "/share/paymentlink" endpoint and was removed precisely
+		// because it was never confirmed against a real documented response.
+		// So: read it, never build it.
+		//
+		// Checked in two places, cheapest first: the create response already in
+		// hand, then a fresh GET (the field is commonly absent on a DRAFT and
+		// present once the invoice has been marked sent, which happened above).
+		// Own try/catch, non-fatal: if neither yields anything, bestUrl simply
+		// stays on today's internal URL, so this can only improve the link,
+		// never break it. The full GET response is logged so the real field
+		// name is visible in the execution log if this org returns a different
+		// shape.
+		public_invoice_url = "";
+		if(invoiceRec.get("invoice_url") != null)
 		{
-			if(paymentsRecorded == 0)
+			createUrlCandidate = invoiceRec.get("invoice_url").toString().trim();
+			if(createUrlCandidate != "")
 			{
-				bestUrl = payment_url;
+				public_invoice_url = createUrlCandidate;
 			}
+		}
+		if(public_invoice_url == "")
+		{
+			try
+			{
+				getInvoiceResp = invokeurl
+				[
+					url :books_base_url + "/invoices/" + invoice_id + "?organization_id=" + organization_id
+					type :GET
+					connection:"zoho_books_connection"
+				];
+				info "onDemandInvoicing - GET invoice (looking for a public share URL), raw response: " + getInvoiceResp.toString();
+				refreshedInvoice = getInvoiceResp.get("invoice");
+				if(refreshedInvoice != null)
+				{
+					if(refreshedInvoice.get("invoice_url") != null)
+					{
+						getUrlCandidate = refreshedInvoice.get("invoice_url").toString().trim();
+						if(getUrlCandidate != "")
+						{
+							public_invoice_url = getUrlCandidate;
+						}
+					}
+				}
+			}
+			catch (shareLinkEx)
+			{
+				info "onDemandInvoicing - could NOT fetch a public invoice URL (non-fatal, falling back to the internal Books URL): " + shareLinkEx.toString();
+			}
+		}
+		if(public_invoice_url == "")
+		{
+			info "onDemandInvoicing - no public invoice_url came back from Zoho Books. The link handed to the agent will be the INTERNAL Books URL, which requires a Books login. If this keeps happening, enable the Client Portal for this organization in Zoho Books (Settings -> Portal) - the customer-facing invoice URL only exists once that is on.";
+		}
+		else
+		{
+			info "onDemandInvoicing - public invoice URL resolved: " + public_invoice_url;
+		}
+
+		// bestUrl prefers, in order: the PUBLIC invoice URL (no login needed —
+		// 2026-09-17), then the internal Books URL as a fallback. The
+		// zero-payments case is unchanged from 2026-09-14 and still wins over
+		// both: an invoice with nothing paid against it should hand back a
+		// genuinely payable link, while a settled one should open the invoice
+		// document. Every pre-existing caller therefore behaves identically;
+		// the only difference is that the invoice link now actually opens for
+		// someone without a Zoho Books account.
+		// ALWAYS THE INVOICE - changed 2026-09-18, user-reported live: clicking
+		// "Invoice Link / Open Invoice" on the Closure page opened a Zoho Payments
+		// "pay now" page for Rs.214 instead of the invoice document.
+		//
+		// This used to hand back payment_url whenever paymentsRecorded was 0. That
+		// rule dates from when this same function also produced the Booking Fee
+		// link, where a pay-now page was the right answer. Both live callers are
+		// now the CLOSURE invoice (the Generate Invoice button and the automatic
+		// closure run), and the field this URL lands in is labelled "Invoice Link"
+		// with an "Open Invoice" action - so a payment page is the wrong document
+		// whatever the balance happens to be.
+		//
+		// Note the symptom is a SECOND problem, not just a link one: a closure
+		// invoice showing a balance means the fees already collected were not
+		// applied to it, i.e. payments_recorded came back 0. That is worth
+		// chasing separately - it is reported in this function's own success
+		// response and logged for each fee below.
+		//
+		// payment_url is still generated and still returned as its own
+		// "payment_url" field in the response, so nothing that wants it has lost
+		// it; only which URL is offered as `url` has changed.
+		bestUrl = invoice_pdf_url;
+		if(public_invoice_url != "")
+		{
+			bestUrl = public_invoice_url;
+		}
+		if(paymentsRecorded == 0)
+		{
+			info "onDemandInvoicing - WARNING: payments_recorded is 0, so this invoice will show its full amount outstanding even though the booking/remaining fees may already have been collected. Check the two payment responses logged above. Most likely causes, in order: the four payment parameters (bookingFeeAmount, bookingFeeRef, remainingFeeAmount, remainingFeeRef) are not registered on this Custom API's setup screen, or the fees were not marked confirmed-paid on the ticket, or Books rejected payment_mode 'other'.";
 		}
 
 		// SEND EMAIL (NOT CRITICAL)
@@ -683,7 +775,7 @@ invoiceURL="";
 		// signal to check this Custom API's own execution log (most likely
 		// causes, in order: the 4 new parameters not registered in the Custom
 		// API setup screen, or payment_mode "other" being rejected).
-		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"url\": \"" + bestUrl + "\", \"payment_url\": \"" + payment_url + "\"}";
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
 		invoiceURL= successResponse;
 	}
 	catch (mainEx)

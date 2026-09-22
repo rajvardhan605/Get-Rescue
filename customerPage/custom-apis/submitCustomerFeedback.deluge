@@ -3,16 +3,52 @@ string submitCustomerFeedback(string recordId, string score, string feedbackText
 	try
 	{
 		result = Map();
-		rec = Create_Case[ID == recordId.toLong()];
-		// Real error hit live 2026-09-07: "Missing return statement: Provide
-		// STRING expression to return" — same Deluge quirk already fixed in
-		// getCustomerTicketInfo.deluge earlier today: its static return-path
-		// checker doesn't reliably prove every path returns when the
-		// function is written as a sequence of independent early-return
-		// guard clauses. Restructured into the exact if/else-if/else shape
-		// already proven to satisfy Zoho's compiler there — same logic,
-		// each branch keeps its own explicit return, nothing shared to
-		// prove reachability for.
+		// ================= CREATOR DATA API (OAuth) =================
+		// 2026-09-16 - converted from a direct Deluge write to an authenticated
+		// PATCH, for exactly the same reason as submitCustomerLocation.deluge.
+		//
+		// This function is invoked the same way, from the same public Customer
+		// Page, and had the identical shape: fetch Create_Case, then assign to
+		// rec.Field. submitCustomerLocation's own logging PROVED that in that
+		// context the record is READABLE but NOT WRITABLE - the user a public
+		// invocation runs as has View but not Edit on Create_Case - so the write
+		// fails with the misleading "'rec' has no matching records". Nothing
+		// about the Deluge write can fix that; it is a permission.
+		//
+		// The comment this file used to carry here blamed re-fetching the record
+		// twice, and a run of fixes were made on that theory. It was wrong: the
+		// single-fetch version failed identically once tested over the public
+		// URL. Recording that plainly so the same dead end is not re-explored.
+		//
+		// An OAuth token carries its OWN authorization instead of inheriting the
+		// caller's, which is why this works - the same principle that lets
+		// onDemandInvoicing/recordVendorPayment write to Zoho Books from a public
+		// context via a connection.
+		//
+		// Credentials user-provided 2026-09-16, scope ZohoCreator.report.ALL.
+		// Authorization header is "Bearer", matching the request the user
+		// confirmed working in Postman (NOT "Zoho-oauthtoken").
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		ZC_RECORD_URL_BASE = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report/";
+
+		info "========== submitCustomerFeedback CALLED ==========";
+		info "  recordId     = [" + ifnull(recordId,"(null)") + "]";
+		info "  score        = [" + ifnull(score,"(null)") + "]";
+		info "  feedbackText = [" + ifnull(feedbackText,"(null)") + "]";
+
+		// .trim() before .toLong(), and resolved into its own variable first -
+		// same defensive pattern as submitCustomerLocation. A stray trailing
+		// space in recordId has crashed .toLong() outright in this project before.
+		targetRecordId = recordId.trim().toLong();
+		info "  targetRecordId = " + targetRecordId;
+		rec = Create_Case[ID == targetRecordId];
+		// The if/else-if/else shape below is deliberate and must be preserved:
+		// a real "Missing return statement: Provide STRING expression to return"
+		// error was hit live 2026-09-07 writing this as a sequence of independent
+		// early-return guards. Zoho's static return-path checker does not prove
+		// every path returns in that form.
 		if(rec == null)
 		{
 			result.put("code", "ERROR");
@@ -27,27 +63,54 @@ string submitCustomerFeedback(string recordId, string score, string feedbackText
 		}
 		else
 		{
-			// Real bug fixed 2026-09-10, root cause finally confirmed: the
-			// earlier "Improper Statement" story here was a real, separate
-			// mistake (a combined "Form[criteria].Field = value;" statement
-			// isn't valid syntax in this Zoho instance), but the fix that
-			// replaced it — re-fetching as a fresh `feedbackRec` instead of
-			// reusing `rec` above — introduced the OTHER "'X' has no
-			// matching records" bug this project kept hitting: fetching the
-			// SAME record TWICE with identical criteria in one execution
-			// (once for the null-check above, then again here) fails.
-			// Every CONFIRMED-WORKING write in this project
-			// (createServiceRequest.deluge, CreateServiceTicket.deluge)
-			// only ever fetches a record ONCE. Fixed by writing directly
-			// onto `rec` (already fetched, already confirmed non-null)
-			// instead of re-fetching — no second query at all. See
-			// generateZohoPaymentLink.deluge's/submitCustomerLocation.deluge's
-			// own matching fix, found the same day, same exact symptom.
-			rec.Cx_Feedback_Score = score;
+			// STEP 1 - refresh token to access token. Only grant_type plus the
+			// three credentials: scope and redirect_uri matter on the original
+			// authorization_code exchange, not on a refresh grant.
+			tokenResp = invokeurl
+			[
+				url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+				type :POST
+			];
+			zcAccessToken = tokenResp.get("access_token");
+			if(zcAccessToken == null)
+			{
+				info "  TOKEN FAILED - no access_token came back. Raw response: " + tokenResp.toString();
+				result.put("code", "ERROR");
+				result.put("message", "Could not authorise with Zoho Creator (no access token). Nothing was written - see this Custom API's execution log.");
+				return result.toString();
+			}
+			info "  TOKEN OK - access token obtained";
+
+			// STEP 2 - PATCH both fields in ONE call. Unlike the location
+			// function's timestamp, these are both plain text/number fields with
+			// no format risk, so there is nothing to gain from splitting them.
+			fbMap = Map();
+			fbMap.put("Cx_Feedback_Score",score);
 			if(feedbackText != null)
 			{
-				rec.Cx_Feedback_Text = feedbackText;
+				fbMap.put("Cx_Feedback_Text",feedbackText);
 			}
+			fbBody = Map();
+			fbBody.put("data",fbMap);
+			info "  ABOUT TO WRITE: " + fbBody.toString() + " on record " + targetRecordId;
+			patchResp = invokeurl
+			[
+				url :ZC_RECORD_URL_BASE + targetRecordId
+				type :PATCH
+				parameters:fbBody.toString()
+				headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+			];
+			info "  PATCH response: " + patchResp.toString();
+			patchCode = patchResp.get("code");
+			if(patchCode != 3000)
+			{
+				patchMsg = patchResp.get("message");
+				info "  PATCH FAILED - code " + patchCode + " message " + patchMsg;
+				result.put("code", "ERROR");
+				result.put("message", "Could not save your feedback - Zoho Creator API said: " + patchMsg);
+				return result.toString();
+			}
+			info "  WRITE OK - feedback saved on record " + targetRecordId;
 			result.put("code", "SUCCESS");
 			return result.toString();
 		}

@@ -1,0 +1,155 @@
+string getVendorTickets(string vendorId)
+{
+	returnstring = "";
+	try
+	{
+		// getVendorTickets - 2026-09-18, user request: Agent_Ticket_Report and
+		// Task_Rejections_Report should both be read with the refresh token on the
+		// Vendor Performance page. Task_Rejections is covered by
+		// getTaskRejections.deluge; this is the ticket half.
+		//
+		// FILTERS SERVER-SIDE, which the direct read never did. vendorPerformance
+		// used to pull all 1000 tickets into the vendor's browser and keep only the
+		// ones assigned to them - so every vendor was downloading every other
+		// vendor's cases, including customer names and money fields. Filtering here
+		// fixes that as well as making the response small enough to build as JSON,
+		// which a 1000-row dump would not be.
+		//
+		// Returns only the 19 fields vendorPerformance actually reads. Assigned_Vendor
+		// is included as a bare id so the widget's own existing client-side filter
+		// still matches and needed no change.
+		//
+		// Credentials live here rather than in the widget for the reason set out in
+		// getVehicleNames.deluge: widget JavaScript is downloaded to every user's
+		// browser.
+		//
+		// THIS IS THE PRIMARY AND ONLY PATH as of 2026-09-18. vendorPerformance no
+		// longer reads Agent_Ticket_Report directly at all - that call was removed
+		// on the user's instruction once this API was working, because a Vendor
+		// portal profile is refused the report anyway and the read was a
+		// guaranteed-wasted fetch of all 1000 rows. If this API stops working, the
+		// Vendor Performance page shows no cases; there is no second route behind
+		// it any more.
+		if(vendorId == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"vendorId is required\", \"tickets\": []}";
+		}
+		if(vendorId.trim() == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"vendorId is required\", \"tickets\": []}";
+		}
+		wantedVendor = vendorId.trim();
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		ZC_REPORT_URL = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report?max_records=1000&field_config=all";
+		info "getVendorTickets - start " + zoho.currenttime + " | vendorId = " + wantedVendor;
+		tokenResp = invokeurl
+		[
+			url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+			type :POST
+		];
+		accessToken = tokenResp.get("access_token");
+		if(accessToken == null)
+		{
+			info "getVendorTickets - no access_token. Raw token response: " + tokenResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Could not get an access token from the refresh token. See this Custom API execution log.\", \"tickets\": []}";
+		}
+		readResp = invokeurl
+		[
+			url :ZC_REPORT_URL
+			type :GET
+			headers:{"Authorization":"Bearer " + accessToken}
+		];
+		respCode = readResp.get("code");
+		info "getVendorTickets - read response code = " + ifnull(respCode,"(null)");
+		if(respCode != 3000)
+		{
+			info "getVendorTickets - read FAILED. Raw response: " + readResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Reading Agent_Ticket_Report over the Data API did not return code 3000. See this Custom API execution log.\", \"tickets\": []}";
+		}
+		// Real List() before the for-each - Deluge cannot infer the type of a value
+		// returned by .get(), and a for-each over one fails to SAVE.
+		ticketsList = List();
+		if(readResp.get("data") != null)
+		{
+			ticketsList = readResp.get("data").toList();
+		}
+		info "getVendorTickets - " + ticketsList.size() + " total ticket(s) fetched, filtering to vendor " + wantedVendor;
+		fieldNames = List();
+		fieldNames.add("Case_ID");
+		fieldNames.add("Added_Time");
+		fieldNames.add("Status");
+		fieldNames.add("Closure_Status");
+		fieldNames.add("Issue_Resolved");
+		fieldNames.add("Cx_Feedback_Score");
+		fieldNames.add("Reach_Time");
+		fieldNames.add("ETA");
+		fieldNames.add("ETA_TOW");
+		fieldNames.add("Agent_ETA_Override");
+		fieldNames.add("Agent_ETA_Override_TOW");
+		fieldNames.add("Service_Acceptance");
+		fieldNames.add("Service_Acceptance_For_Tow");
+		fieldNames.add("Settlement_Status");
+		fieldNames.add("Vendor_Payment_Status");
+		fieldNames.add("Vendor_Balance_Before_TDS");
+		fieldNames.add("Vendor_Amount_Paid");
+		fieldNames.add("TDS_Amount");
+		jsonParts = "";
+		rowCount = 0;
+		for each ticketRec in ticketsList
+		{
+			// Assigned_Vendor comes back either as a bare id or as a Lookup object
+			// carrying an ID - unwrap both, same convention the widgets' own
+			// lookupId() uses.
+			vendorOnTicket = "";
+			assignedRaw = ticketRec.get("Assigned_Vendor");
+			if(assignedRaw != null)
+			{
+				try
+				{
+					if(assignedRaw.get("ID") != null)
+					{
+						vendorOnTicket = assignedRaw.get("ID").toString().trim();
+					}
+				}
+				catch (unwrapEx)
+				{
+					vendorOnTicket = "";
+				}
+				if(vendorOnTicket == "")
+				{
+					vendorOnTicket = assignedRaw.toString().trim();
+				}
+			}
+			if(vendorOnTicket == wantedVendor)
+			{
+				rowJson = "{\"ID\":\"" + ifnull(ticketRec.get("ID"),"").toString() + "\",\"Assigned_Vendor\":\"" + vendorOnTicket + "\"";
+				for each fieldName in fieldNames
+				{
+					fieldValue = "";
+					if(ticketRec.get(fieldName) != null)
+					{
+						fieldValue = ticketRec.get(fieldName).toString().trim();
+					}
+					rowJson = rowJson + ",\"" + fieldName + "\":\"" + fieldValue + "\"";
+				}
+				rowJson = rowJson + "}";
+				if(rowCount > 0)
+				{
+					jsonParts = jsonParts + ",";
+				}
+				jsonParts = jsonParts + rowJson;
+				rowCount = rowCount + 1;
+			}
+		}
+		info "getVendorTickets - returning " + rowCount + " ticket(s) for vendor " + wantedVendor;
+		returnstring = "{\"code\": \"SUCCESS\", \"count\": " + rowCount + ", \"tickets\": [" + jsonParts + "]}";
+	}
+	catch (e)
+	{
+		info "getVendorTickets threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"getVendorTickets threw an exception. See this Custom API execution log.\", \"tickets\": []}";
+	}
+	return returnstring;
+}

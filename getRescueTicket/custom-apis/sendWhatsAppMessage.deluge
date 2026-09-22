@@ -1,0 +1,132 @@
+string sendWhatsAppMessage(string phone, string templateName, string param1, string param2, string param3, string buttonParam)
+{
+	headers = Map();
+	headers.put("Content-Type","application/json");
+	headers.put("x-api-key","wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+	headers.put("Authorization","Bearer wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+	urlButtonTemplates = List();
+	urlButtonTemplates.add("confirm_booking_fee_and_total_fee");
+	urlButtonTemplates.add("balance_payment_link");
+	urlButtonTemplates.add("confirm_customer_location_details_copy");
+	urlButtonTemplates.add("tow_confirm_customer_location_details");
+	templateHasUrlButton = false;
+	if(templateName != null)
+	{
+		if(urlButtonTemplates.contains(templateName.trim()))
+		{
+			templateHasUrlButton = true;
+		}
+	}
+	buttonText = "";
+	if(buttonParam != null)
+	{
+		if(buttonParam.trim() != "")
+		{
+			buttonText = buttonParam.trim();
+		}
+	}
+	param3IsButton = false;
+	if(buttonText == "")
+	{
+		if(templateHasUrlButton)
+		{
+			if(param3 != null)
+			{
+				if(param3.trim() != "")
+				{
+					buttonText = param3.trim();
+					param3IsButton = true;
+				}
+			}
+		}
+	}
+	info "sendWhatsAppMessage -> template [" + templateName + "] hasUrlButton=" + templateHasUrlButton + " | buttonParam=[" + ifnull(buttonParam,"(null)") + "] | param3=[" + ifnull(param3,"(null)") + "] | resolved buttonText=[" + buttonText + "] | param3UsedAsButton=" + param3IsButton;
+	if(templateHasUrlButton)
+	{
+		if(buttonText == "")
+		{
+			info "sendWhatsAppMessage WARNING - template [" + templateName + "] has a URL button with a {{1}} variable but no button value arrived in either buttonParam or param3. The message will be sent, but its button will point at the bare domain. Check that the widget passed a button path.";
+		}
+	}
+	template_map = Map();
+	template_map.put("name",templateName);
+	template_map.put("language","en_US");
+	if(buttonText == "")
+	{
+		params_list = List();
+		if(param1 != null)
+		{
+			if(param1.trim() != "")
+			{
+				params_list.add(param1);
+			}
+		}
+		if(param2 != null)
+		{
+			if(param2.trim() != "")
+			{
+				params_list.add(param2);
+			}
+		}
+		if(param3 != null)
+		{
+			if(param3.trim() != "")
+			{
+				params_list.add(param3);
+			}
+		}
+		if(params_list.size() > 0)
+		{
+			template_map.put("parameters",params_list);
+		}
+	}
+	else
+	{
+		params_keyed = Map();
+		bodyIndex = 0;
+		if(param1 != null)
+		{
+			if(param1.trim() != "")
+			{
+				bodyIndex = bodyIndex + 1;
+				params_keyed.put("body_" + bodyIndex,param1);
+			}
+		}
+		if(param2 != null)
+		{
+			if(param2.trim() != "")
+			{
+				bodyIndex = bodyIndex + 1;
+				params_keyed.put("body_" + bodyIndex,param2);
+			}
+		}
+		if(param3IsButton == false)
+		{
+			if(param3 != null)
+			{
+				if(param3.trim() != "")
+				{
+					bodyIndex = bodyIndex + 1;
+					params_keyed.put("body_" + bodyIndex,param3);
+				}
+			}
+		}
+		params_keyed.put("button_0_1",buttonText);
+		template_map.put("parameters",params_keyed);
+	}
+	body_map = Map();
+	body_map.put("type","template");
+	body_map.put("to",phone);
+	body_map.put("template",template_map);
+	jsonBody = body_map.toString();
+	info "sendWhatsAppMessage -> body: " + jsonBody;
+	response = invokeurl
+	[
+		url :"https://api.whatsportal.io/v1/messages"
+		type :POST
+		parameters:jsonBody
+		headers:headers
+	];
+	info "sendWhatsAppMessage <- response: " + response.toString();
+	return response.toString();
+}

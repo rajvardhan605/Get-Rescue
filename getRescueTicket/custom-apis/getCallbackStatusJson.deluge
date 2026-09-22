@@ -1,0 +1,11 @@
+string getCallbackStatusJson(string data)
+{
+	info "========== OZONETEL CALLBACK (ENTIRE JSON MODE) ==========";
+	info "  Time        : " + zoho.currenttime;
+	info "  raw body len = " + ifnull(data,"").length();
+	info "  raw body     = " + ifnull(data,"");
+	forwarded = getCallbackStatus(data,"","");
+	info "  getCallbackStatus returned: " + forwarded;
+	info "==========================================================";
+	return forwarded;
+}

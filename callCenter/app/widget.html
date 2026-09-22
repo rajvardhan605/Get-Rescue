@@ -98,6 +98,12 @@ img,svg{max-width:100%}
     ⚠ <b>Call history isn't set up in Zoho yet.</b> Calls can still be placed and their status checked — nothing here is broken — but nothing is being saved to a history list. See this widget's README.md for the exact Call_Log form/fields to create in Zoho Studio.
   </div>
 
+  <!-- INCOMING CALL SCREEN-POP (2026-09-21) — hidden unless this page was
+       opened by Ozonetel's ScreenPop URL carrying a caller number. Renders
+       above everything else so an agent answering a call sees who it is before
+       anything else on the page. -->
+  <div id="popCard" class="card" hidden style="border:2px solid var(--ok);background:var(--ok-soft);margin-bottom:14px"></div>
+
   <div class="sec-head"><h2>Place a Call</h2></div>
   <div class="card">
     <div class="fld-row" style="--row-cols:3">
@@ -167,7 +173,10 @@ const CONFIG = {
   appName: "get-rescue",        // same Zoho app every other Get-Rescue widget targets
   workspaceName: "getrescued",  // matches the Custom API URLs' own path segment
   logFormName: "Call_Log",         // ⚠ NOT YET CREATED — see README.md
-  logReportName: "Call_Log_Report" // ⚠ NOT YET CREATED — see README.md
+  logReportName: "Call_Log_Report",
+  // Added 2026-09-21 for the inbound screen-pop's ticket lookup. Same report
+  // every other widget reads tickets from.
+  ticketReportName: "Agent_Ticket_Report"
 };
 
 /* ---------- SDK boot (this SDK has no ZOHO.CREATOR.init — same pattern as
@@ -249,8 +258,18 @@ async function placeVoiceCallback(phoneNumber, referenceId, callbackMessage, acc
     }
     const ucid = data.ucid || data.callback_id || "";
     if(!ucid){
-      console.warn("[GR-CallCenter] placeVoiceCallback: SUCCESS response had no ucid/callback_id. Full response:", res);
-      return {ok:false, message:"Call placed, but no call ID came back — status can't be checked"};
+      // Real bug fixed 2026-09-22 (user-reported live). Ozonetel's
+      // AgentManualDial answers "queued successfully" but returns NO ucid for
+      // this campaign, and this used to return ok:false — so a call Ozonetel
+      // had accepted, and which actually connected, was reported to the agent
+      // as an error AND written to Call_Log with Call_Status "FAILED". Both
+      // were wrong: the placement succeeded, only the live-status handle is
+      // missing. Now treated as a success carrying a noUcid flag, so the row
+      // logs as "Placed" and getCallbackStatus's own phone-based matching
+      // ("newest row for this number with no UCID yet") fills in the real UCID
+      // and every other detail when the end-of-call callback lands.
+      console.warn("[GR-CallCenter] placeVoiceCallback: SUCCESS response had no ucid/callback_id — the call was still placed. Full response:", res);
+      return {ok:true, ucid:"", noUcid:true, raw:data};
     }
     return {ok:true, ucid:ucid, raw:data};
   }catch(e){
@@ -308,6 +327,271 @@ function fmtWhen(v){
   if(typeof v==="object") return String(v.display_value || v.value || "");
   return String(v);
 }
+/* ============================================================================
+   INBOUND SCREEN-POP — 2026-09-21, user request: "Inbound screen-pop, please
+   build this".
+
+   HOW IT IS DRIVEN: Ozonetel's campaign has a "ScreenPop URL" field. Point it
+   at this page with the caller number appended, and Ozonetel opens it for the
+   answering agent. The page then shows who is calling and which ticket they
+   already have, before the agent says a word.
+
+   THE PARAMETER NAME IS NOT KNOWN. Ozonetel never told us which token they
+   substitute, and their own field table could not even name the Call Flow key -
+   so rather than wait on that answer, EVERY plausible name is accepted (see
+   POP_PHONE_KEYS below). Whichever one they actually send, it is read. The
+   console prints the full parameter set on every load, so the first real pop
+   also tells us the real name.
+
+   REUSE, NOT REBUILD: the ticket lookup is the same last-10-digit match
+   getCallbackStatus.deluge uses to attach a call to a ticket, and the row it
+   writes goes through this widget's own existing apiAddCallLog(). Nothing new
+   was invented for either.
+
+   SAFE WHEN NOT POPPED: the panel is hidden and none of this runs unless a
+   caller number actually arrives in the URL, so opening the Call Center
+   normally behaves exactly as it always has.
+   ============================================================================ */
+const POP_PHONE_KEYS = ["phone","Phone","callerId","callerID","CallerID","caller","Caller","mobile","Mobile","number","Number","from","From","customerNumber","CustomerNumber","ani","ANI","did","DID"];
+const POP_UCID_KEYS  = ["ucid","UCID","monitorUCID","monitorUcid","callId","callID","CallID","uuid"];
+const POP_TYPE_KEYS  = ["type","Type","callType","CallType","direction","Direction"];
+/* Reads query parameters the way customerPage's own getPageParams() does, and
+   for the same reason: a real Zoho Creator page routes its query string AFTER
+   the page's own #hash, which plain window.location.search never sees. The SDK
+   helper is preferred; the two manual parses are fallbacks so this still works
+   if Ozonetel opens the page in a shape the SDK does not report. */
+/* Reads from FOUR sources, because a Creator widget runs inside an iframe and
+   window.location is the IFRAME's own URL, not the page's — confirmed live
+   2026-09-21, when the first attempt saw exactly one parameter,
+   {"serviceOrigin":"https://creatorapp.zoho.in"}, which is the SDK's own and
+   nothing to do with the page.
+
+   In order:
+     1. the SDK's getQueryParams()   — returns page parameters Creator has been
+                                       told about; also returns serviceOrigin,
+                                       which is filtered out below as noise
+     2. window.parent.location       — the real page URL, readable when the
+                                       iframe is same-origin (it is here, both
+                                       are creatorapp.zoho.in)
+     3. document.referrer            — the page URL that embedded this widget.
+                                       Survives cross-origin, but a browser
+                                       STRIPS THE #fragment from a referrer, so
+                                       this only sees parameters placed BEFORE
+                                       the hash
+     4. this widget's own URL        — last, and almost always just serviceOrigin
+
+   Each source is parsed for both a normal query string and a query string
+   sitting after the #hash, since Creator page URLs use the latter shape. */
+function popParseUrlInto(urlText, add){
+  if(!urlText) return;
+  try{
+    const qIdx = urlText.indexOf("?");
+    if(qIdx >= 0){
+      // Everything after the first "?" can itself contain a "#", so cut there.
+      let qs = urlText.slice(qIdx + 1);
+      const hIdx = qs.indexOf("#");
+      if(hIdx >= 0) qs = qs.slice(0, hIdx);
+      new URLSearchParams(qs).forEach(function(v,k){ add(k,v); });
+    }
+    const hIdx2 = urlText.indexOf("#");
+    if(hIdx2 >= 0){
+      const frag = urlText.slice(hIdx2 + 1);
+      const fq = frag.indexOf("?");
+      if(fq >= 0) new URLSearchParams(frag.slice(fq + 1)).forEach(function(v,k){ add(k,v); });
+    }
+  }catch(e){ console.warn("[GR-CallCenter] popParseUrlInto failed for", urlText, e); }
+}
+async function popReadParams(){
+  const out = {};
+  const add = (k,v)=>{
+    if(!k || v==null || String(v)==="") return;
+    if(k==="serviceOrigin") return; // the SDK's own, never a caller number
+    if(out[k]==null) out[k]=String(v);
+  };
+  const fn = resolve("getQueryParams");
+  if(fn){
+    try{
+      const p = await fn();
+      if(p && typeof p==="object") Object.keys(p).forEach(function(k){ add(k,p[k]); });
+    }catch(e){ console.warn("[GR-CallCenter] popReadParams: getQueryParams threw", e); }
+  }
+  let parentHref = "";
+  try{
+    if(window.parent && window.parent !== window) parentHref = window.parent.location.href || "";
+  }catch(e){
+    console.log("[GR-CallCenter] popReadParams: parent URL is cross-origin and can't be read — falling back to document.referrer.");
+  }
+  popParseUrlInto(parentHref, add);
+  popParseUrlInto(document.referrer || "", add);
+  popParseUrlInto(window.location.href || "", add);
+  // Prefix deliberately matches the other screen-pop lines ("[GR-CallCenter]
+  // screen-pop:") so a console filtered on that string still shows this one —
+  // it was named differently at first and got hidden by exactly that filter.
+  console.log("[GR-CallCenter] screen-pop: sources — parent:", parentHref || "(UNREADABLE - cross-origin iframe)", "| referrer:", document.referrer || "(none)", "| own:", window.location.href);
+  return out;
+}
+function popPick(params, keys){
+  for(const k of keys){ if(params[k]!=null && String(params[k]).trim()!=="") return String(params[k]).trim(); }
+  return "";
+}
+function popLast10(v){
+  const digits=String(v||"").replace(/\D/g,"");
+  return digits.length>10 ? digits.slice(-10) : digits;
+}
+/* Finds every ticket carrying this number. Matched on the LAST TEN DIGITS
+   client-side rather than by a server-side criteria: the app stores numbers as
+   "+917210036790" while Ozonetel sends "7210036790", so an equality filter
+   would never hit — the same mismatch getCallbackStatus.deluge works around
+   with its own prefix variants. */
+/* Vehicle names — 2026-09-21, second pass. The first version printed whatever
+   was in t.Vehicle, which for a real Lookup is a bare Vehicle_Master_Report
+   record id, so the pop read "Vehicle: 448881000000221402". Same resolver
+   pattern vendorTicket's own loadVehicleNames() uses: fetch the master once,
+   build id -> name, fall back to the raw value so a vehicle whose name field is
+   named differently still shows something rather than nothing.
+   Loaded lazily and cached, so a page that never pops never fetches it. */
+let POP_VEHICLE_NAMES = null;
+const POP_VEHICLE_NAME_KEYS = ["Name","Vehicle_Name","vehicle_name","name"];
+async function popLoadVehicleNames(){
+  if(POP_VEHICLE_NAMES) return POP_VEHICLE_NAMES;
+  POP_VEHICLE_NAMES = {};
+  const fn = resolve("getRecords");
+  if(!fn) return POP_VEHICLE_NAMES;
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:"Vehicle_Master_Report", field_config:"all", max_records:1000 });
+    if(r && r.code===3000 && Array.isArray(r.data)){
+      r.data.forEach(function(v){
+        let nm="";
+        for(const k of POP_VEHICLE_NAME_KEYS){ if(v[k]){ nm=String(v[k]); break; } }
+        if(v.ID) POP_VEHICLE_NAMES[String(v.ID)] = nm;
+      });
+      console.log("[GR-CallCenter] screen-pop: loaded "+Object.keys(POP_VEHICLE_NAMES).length+" vehicle name(s).");
+    }
+  }catch(e){ console.warn("[GR-CallCenter] popLoadVehicleNames failed — vehicles will show their raw id", e); }
+  return POP_VEHICLE_NAMES;
+}
+function popVehicleName(v){
+  if(v==null || v==="") return "";
+  if(typeof v==="object") return String(v.display_value||v.zc_display_value||v.ID||"");
+  const byId = POP_VEHICLE_NAMES ? POP_VEHICLE_NAMES[String(v)] : "";
+  return byId || String(v);
+}
+// A ticket still being worked on. An agent answering a call needs the live case
+// first; a closed one from three months ago is background.
+function popIsActive(t){
+  const s = String(t.Status||"").trim().toUpperCase();
+  return s!=="CLOSED" && s!=="RSP CLOSED";
+}
+async function popFindTickets(phone10){
+  const fn = resolve("getRecords");
+  if(!fn || !phone10) return [];
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.ticketReportName, field_config:"all", max_records:1000 });
+    if(!r || r.code!==3000 || !Array.isArray(r.data)) return [];
+    const hits = r.data.filter(function(t){
+      return popLast10(t.Phone_Number1)===phone10 || popLast10(t.Phone_Number)===phone10 || popLast10(t.Alternate_Phone_Number)===phone10;
+    });
+    // ACTIVE tickets first, then newest first within each group. A repeat
+    // caller can have dozens of closed cases, and the live one was getting
+    // buried underneath them purely because its id happened to be lower.
+    hits.sort(function(a,b){
+      const aa=popIsActive(a), ab=popIsActive(b);
+      if(aa!==ab) return aa ? -1 : 1;
+      return String(b.ID||"").localeCompare(String(a.ID||""));
+    });
+    return hits;
+  }catch(e){ console.warn("[GR-CallCenter] popFindTickets failed", e); return []; }
+}
+function popTicketHtml(t){
+  const veh = popVehicleName(t.Vehicle);
+  const bits=[
+    t.Status ? ("Status: "+t.Status) : "",
+    t.Service_Type ? ("Service: "+t.Service_Type) : "",
+    veh ? ("Vehicle: "+veh) : "",
+    t.Closure_Status ? ("Closure: "+t.Closure_Status) : ""
+  ].filter(Boolean);
+  const activeMark = popIsActive(t) ? "🟢 " : "";
+  return `<div class="cc-detail-row" style="align-items:flex-start">
+    <span class="k">${activeMark}${esc(t.Case_ID||("#"+(t.ID||"")))}</span>
+    <span class="v">${esc(t.Customer_Name||"(no name)")}${bits.length?(" — "+esc(bits.join(" · "))):""}</span>
+  </div>`;
+}
+async function renderIncomingCallPop(){
+  const params = await popReadParams();
+  const keyCount = Object.keys(params).length;
+  console.log("[GR-CallCenter] screen-pop: "+keyCount+" URL parameter(s) seen:", JSON.stringify(params));
+  const rawPhone = popPick(params, POP_PHONE_KEYS);
+  if(!rawPhone){
+    if(keyCount) console.log("[GR-CallCenter] screen-pop: no caller number under any known key. If Ozonetel sends one under a different name, add it to POP_PHONE_KEYS — the parameter list above shows what actually arrived.");
+    return; // panel stays hidden; the page behaves exactly as before
+  }
+  const phone10 = popLast10(rawPhone);
+  /* Guard added 2026-09-21 after a live test where the URL still carried
+     Ozonetel's UN-SUBSTITUTED token, so phone arrived as the literal text
+     "$CallerID$". The pop happily showed "Incoming call - $CallerID$", matched
+     nothing, and wrote a Call_Log row with an empty phone number - junk data
+     that would have been created on every call if Ozonetel ever failed to
+     substitute its own placeholder.
+     Six digits is the threshold: any real Indian number clears it easily, and
+     no placeholder or stray text will. */
+  if(phone10.length < 6){
+    console.warn("[GR-CallCenter] screen-pop: the caller parameter was [" + rawPhone + "], which contains no usable phone number (" + phone10.length + " digit(s)). Nothing shown and nothing logged. If this reads like a placeholder such as $CallerID$, Ozonetel opened the URL without substituting its own token - that is a setting on their side, not something this page can work around.");
+    return;
+  }
+  const popUcid = popPick(params, POP_UCID_KEYS);
+  const popType = popPick(params, POP_TYPE_KEYS) || "Inbound";
+  const card = $("popCard");
+  card.hidden = false;
+  card.innerHTML = `<div class="sec-head" style="margin-top:0"><h2>📞 Incoming call — ${esc(rawPhone)}</h2></div><div class="hint">Looking up this number…</div>`;
+  await popLoadVehicleNames();
+  const tickets = await popFindTickets(phone10);
+  console.log("[GR-CallCenter] screen-pop: caller "+phone10+" matched "+tickets.length+" ticket(s).");
+  let body="";
+  if(tickets.length){
+    const shown = tickets.slice(0,5);
+    body = `<div class="cc-detail-grid">${shown.map(popTicketHtml).join("")}</div>`
+      + (tickets.length>shown.length ? `<div class="hint" style="margin-top:8px">${tickets.length-shown.length} older ticket(s) not shown.</div>` : "");
+  } else {
+    body = `<div class="hint">No existing ticket carries this number — this looks like a new customer.</div>`;
+  }
+  card.innerHTML = `
+    <div class="sec-head" style="margin-top:0"><h2>📞 Incoming call — ${esc(rawPhone)}</h2>
+      <span class="spacer"></span>
+      <button type="button" id="popDismissBtn" class="btn ghost sm">Dismiss</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px">${esc(popType)}${popUcid?(" · UCID "+esc(popUcid)):""} · matched on the last 10 digits (${esc(phone10)})</div>
+    ${body}
+    <div class="hint" style="margin-top:10px" id="popLogNote">Logging this call…</div>`;
+  $("popDismissBtn").onclick = function(){ card.hidden = true; };
+  /* Log the inbound call straight away, through this widget's OWN existing
+     apiAddCallLog() — the agent should see it in the history below without
+     waiting for the end of the call.
+
+     No duplicate is created. The row is written with NO UCID, and
+     getCallbackStatus.deluge's end-of-call handler matches "the newest row for
+     this number that has no UCID yet" before it considers creating one — the
+     exact path an app-placed outbound call already follows. If this write
+     fails, or the agent never had this page open, that same handler creates the
+     row itself, so the call is captured either way. */
+  if(CALL_LOG_AVAILABLE===false){
+    $("popLogNote").textContent = "Not logged — the Call_Log form isn't available (see the banner above).";
+    return;
+  }
+  try{
+    const data = { Phone_Number: phone10, Call_Direction: popType, Call_Status: "Incoming" };
+    if(popUcid) data.UCID = popUcid;
+    if(tickets.length) data.Create_Case = String(tickets[0].ID);
+    if(LOGIN_EMAIL) data.Placed_By = LOGIN_EMAIL;
+    await apiAddCallLog(data);
+    $("popLogNote").textContent = tickets.length
+      ? ("Logged against ticket "+(tickets[0].Case_ID||tickets[0].ID)+". Full call details arrive when the call ends.")
+      : "Logged (not linked to a ticket — no ticket carries this number). Full call details arrive when the call ends.";
+    await loadHistory();
+  }catch(e){
+    console.warn("[GR-CallCenter] screen-pop: could not log the inbound call (non-blocking — the end-of-call callback will create the row instead)", e);
+    $("popLogNote").textContent = "Couldn't log it from here — it will still be recorded when the call ends.";
+  }
+}
 function showDegradedBanner(){ $("degradedBanner").hidden = false; }
 function hideDegradedBanner(){ $("degradedBanner").hidden = true; }
 
@@ -332,21 +616,63 @@ function renderCurrent(){
   ];
   const rawHtml = cur.raw ? `<details style="margin-top:10px"><summary class="hint" style="cursor:pointer">Raw response</summary><pre class="cc-raw">${esc(JSON.stringify(cur.raw,null,2))}</pre></details>` : "";
   const errHtml = cur.error ? `<div class="hint" style="color:var(--stop);margin-top:8px">⚠ ${esc(cur.error)}</div>` : "";
-  card.innerHTML = `<div class="cc-detail-grid">${rows.map(([k,v])=>`<div class="cc-detail-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>${errHtml}${rawHtml}`;
+  // Informational, NOT an error (2026-09-22) — see placeVoiceCallback()'s own
+  // comment. The call is connected; only the live-status lookup is unavailable.
+  const noUcidHtml = cur.noUcid ? `<div class="hint" style="margin-top:8px">Call placed. Ozonetel returned no call ID, so live status can't be polled — the full call details will arrive automatically when the call ends.</div>` : "";
+  card.innerHTML = `<div class="cc-detail-grid">${rows.map(([k,v])=>`<div class="cc-detail-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join("")}</div>${noUcidHtml}${errHtml}${rawHtml}`;
 }
 
+/* Columns extended 2026-09-21 (user request: "show all the columns in history
+   calls"). This table showed seven columns from a time when Call_Log only held
+   those. getCallbackStatus now captures all 16 fields Ozonetel documents, and
+   eleven new Call_Log fields were created for them, so the recording links,
+   agent name, start/end times, time-to-answer, total duration, transfer target,
+   conference duration and call flow were all being stored and none of them
+   reached this screen.
+
+   Direction and Talk/Total are separated deliberately: Ozonetel's own table
+   lists CallDuration (talk-time) and Duration (total) as different numbers, and
+   they used to share one column here.
+
+   The table already sits inside overflow-x:auto, so the extra width scrolls
+   rather than breaking the page. Recording links render as short "Play" anchors
+   instead of raw URLs - a full Ozonetel recording URL is long enough to dominate
+   the row, and an agent wants to click it, not read it.
+
+   Every added column degrades to an empty cell, so a row logged before these
+   fields existed looks exactly as it did before. */
 function renderHistoryTable(rows){
+  const cell=(v)=>esc(v==null?"":String(v));
+  const link=(url,label)=> url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>` : "";
   return `<div style="overflow-x:auto"><table class="cc-table">
-    <thead><tr><th>Placed At</th><th>Phone</th><th>Reference</th><th>Status</th><th>Duration</th><th>Outcome</th><th>Placed By</th><th></th></tr></thead>
+    <thead><tr>
+      <th>Placed At</th><th>Phone</th><th>Reference</th><th>Type</th><th>Status</th>
+      <th>Agent</th><th>Start</th><th>Answered In</th><th>End</th>
+      <th>Talk</th><th>Total</th><th>Outcome</th><th>Transferred To</th>
+      <th>Conf. Dur.</th><th>Recording</th><th>Conf. Rec.</th><th>Call Flow</th>
+      <th>UCID</th><th>Placed By</th><th></th>
+    </tr></thead>
     <tbody>${rows.map(function(r){
       return `<tr>
-        <td>${esc(fmtWhen(r.Added_Time))}</td>
-        <td>${esc(r.Phone_Number||"")}</td>
-        <td>${esc(r.Reference_ID||"")}</td>
-        <td>${esc(r.Call_Status||"")}</td>
-        <td>${esc(r.Call_Duration||"")}</td>
-        <td>${esc(r.Call_Outcome||"")}</td>
-        <td>${esc(r.Placed_By||"")}</td>
+        <td>${cell(fmtWhen(r.Added_Time || r.Call_Start_Time))}</td>
+        <td>${cell(r.Phone_Number)}</td>
+        <td>${cell(r.Reference_ID)}</td>
+        <td>${cell(r.Call_Direction)}</td>
+        <td>${cell(r.Call_Status)}</td>
+        <td>${cell(r.Agent_Name)}</td>
+        <td>${cell(r.Call_Start_Time)}</td>
+        <td>${cell(r.Time_To_Answer)}</td>
+        <td>${cell(r.Call_End_Time)}</td>
+        <td>${cell(r.Call_Duration)}</td>
+        <td>${cell(r.Total_Duration)}</td>
+        <td>${cell(r.Call_Outcome)}</td>
+        <td>${cell(r.Transferred_To)}</td>
+        <td>${cell(r.Conference_Duration)}</td>
+        <td>${link(r.Audio_File_URL,"▶ Play")}</td>
+        <td>${link(r.Conference_Audio_URL,"▶ Play")}</td>
+        <td>${cell(r.Call_Flow)}</td>
+        <td>${cell(r.UCID)}</td>
+        <td>${cell(r.Placed_By)}</td>
         <td>${r.UCID ? `<button type="button" class="btn ghost sm" data-hist-refresh="${esc(r.ID)}" data-hist-ucid="${esc(r.UCID)}">↻</button>` : ""}</td>
       </tr>`;
     }).join("")}</tbody>
@@ -441,14 +767,16 @@ async function onPlaceCall(){
     logCallAttempt({ phone:phone, reference:reference, message:message, status:"FAILED", outcome:res.message, ucid:"" });
     return;
   }
-  state.current = { phone:phone, reference:reference, message:message, ucid:res.ucid, raw:res.raw, status:"Placed" };
+  state.current = { phone:phone, reference:reference, message:message, ucid:res.ucid, raw:res.raw, status:"Placed", noUcid:!!res.noUcid };
   toast("Call placed to "+phone,"ok");
   renderCurrent();
   const logId = await logCallAttempt({ phone:phone, reference:reference, message:message, status:"Placed", outcome:"", ucid:res.ucid });
   if(logId) state.current.logId = logId;
   // One automatic status check a few seconds after placing, same UX pattern
   // proven in getRescueTicket's own earlier (now-reverted) inline version.
-  setTimeout(onRefreshCurrent, 4000);
+  // Skipped entirely when Ozonetel gave us no UCID — onRefreshCurrent()'s own
+  // guard already no-ops in that case, so this just avoids a pointless call.
+  if(!res.noUcid) setTimeout(onRefreshCurrent, 4000);
 }
 async function onRefreshCurrent(){
   const cur = state.current;
@@ -480,6 +808,10 @@ async function boot(){
   if(getInit){ try{ const p = await getInit(); LOGIN_EMAIL = (p && p.loginUser) || ""; }catch(e){} }
   wireForm();
   await loadHistory();
+  // Screen-pop last: it needs CALL_LOG_AVAILABLE, which loadHistory() above
+  // sets, and it refreshes the history itself after logging. Does nothing at
+  // all unless a caller number arrived in the URL.
+  try{ await renderIncomingCallPop(); }catch(e){ console.warn("[GR-CallCenter] screen-pop failed (non-blocking — the rest of the page is unaffected)", e); }
 }
 document.addEventListener("DOMContentLoaded", boot);
 </script>

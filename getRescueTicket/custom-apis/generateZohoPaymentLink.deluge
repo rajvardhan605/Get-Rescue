@@ -13,10 +13,26 @@ string generateZohoPaymentLink(string recordId, string amount, string email, str
 	try
 	{
 		result = Map();
+		// Entry log added 2026-09-17 (live: this function returned "recordId is
+		// required" on a real button click). Prints EVERY parameter exactly as
+		// Zoho bound it, because there are only two possible causes and they
+		// need completely different fixes:
+		//   (a) EVERY value below is "(null)" -> the parameters are not
+		//       registered on this Custom API's own setup screen. A parameter
+		//       named only in the signature above arrives null no matter what
+		//       the widget sends. This project has been caught by exactly that
+		//       five times (applyTax, the four invoice params, token, param3,
+		//       buttonParam) - it is the single most likely cause.
+		//   (b) recordId alone is "(null)"/blank while the others carry real
+		//       values -> the parameter IS registered and the widget genuinely
+		//       sent nothing, i.e. record.ID was empty at click time.
+		// Same diagnostic pattern onDemandInvoicing.deluge already uses.
+		info "generateZohoPaymentLink received - recordId=[" + ifnull(recordId,"(null)") + "] | amount=[" + ifnull(amount,"(null)") + "] | email=[" + ifnull(email,"(null)") + "] | phoneDigits=[" + ifnull(phoneDigits,"(null)") + "] | referenceId=[" + ifnull(referenceId,"(null)") + "] | description=[" + ifnull(description,"(null)") + "] | expiresAt=[" + ifnull(expiresAt,"(null)") + "] | paymentUrlField=[" + ifnull(paymentUrlField,"(null)") + "]";
 		if(recordId == null || recordId.trim() == "")
 		{
 			result.put("code", "ERROR");
 			result.put("message", "recordId is required");
+			info "generateZohoPaymentLink - REFUSED: recordId arrived empty. Read the log line above: if every other parameter is also (null), the parameters are not registered on this Custom API's setup screen. If the others hold real values, the widget sent no record ID.";
 			returnstring = result.toString();
 		}
 		else if(amount == null || amount.trim() == "")
@@ -58,10 +74,37 @@ string generateZohoPaymentLink(string recordId, string amount, string email, str
 				zoho_payments_refresh_token = "1000.7b9a45adfe6300ed5fb43cf9d29eef7b.65c3a6df18bedb83f887bf1f4fbc44d6";
 				zoho_payments_account_id = "60078772586";
 				zoho_payments_base_url = "https://payments.zoho.in/api/v1";
-				// return_url fixed (explicit user decision, 2026-09-10:
-				// "return url will be the provided url") — the exact static
-				// value from the user's own original confirmed example.
-				zoho_payments_return_url = "https://creatorapp.zoho.in/getrescued/get-rescue";
+				// return_url (revised 2026-09-22, client feedback on a live
+				// REPAIR case: "the customer is not being redirected to the
+				// next page as expected").
+				//
+				// It used to be the static "https://creatorapp.zoho.in/
+				// getrescued/get-rescue" (user decision 2026-09-10, "return
+				// url will be the provided url"). That is the AGENT app's own
+				// root - a login-protected Creator URL a customer has no
+				// access to at all - so after paying, the customer landed on
+				// a sign-in wall instead of the next step of their journey.
+				//
+				// Now it points back at the public Customer Page the customer
+				// was already on, carrying this ticket's own recordId and the
+				// mode of the NEXT step, which mirrors exactly what
+				// customerPage's own advanceAfterPayment() does for the tab
+				// that stays open: Booking Fee -> breakdown location,
+				// Remaining Fee -> feedback.
+				//
+				// This matters because Pay Now opens in a NEW tab. The existing
+				// poll only ever advances the ORIGINAL tab, which the customer
+				// has usually lost by then; the return_url is what moves the
+				// tab the customer is actually looking at. Both paths are kept
+				// - whichever fires first, the customer ends up on the right
+				// screen.
+				customer_page_base = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/0gVCSNX48ASbYtRFUJ563eAbKzNFNnaVwH8fPFZCqaROx4z5T6QRyEQVTshspvvXSgyt5vuyPJSQQC0dwZGyYQKdMeySnUS6mYJr";
+				zoho_payments_return_url = customer_page_base + "?recordId=" + recordId.trim() + "&mode=location&locationType=breakdown";
+				if(paymentUrlField == "Zoho_Payment_URL_Remaining")
+				{
+					zoho_payments_return_url = customer_page_base + "?recordId=" + recordId.trim() + "&mode=feedback";
+				}
+				info "generateZohoPaymentLink - return_url for this link = " + zoho_payments_return_url;
 
 				tokenResp = invokeurl
 				[

@@ -3,7 +3,15 @@ string getCustomerTicketInfo(string recordId, string mode)
 	try
 	{
 		result = Map();
-		rec = Create_Case[ID == recordId.toLong()];
+		// .trim() added 2026-09-17 — the same stray-trailing-space crash already
+		// hit live twice in this project (generateZohoPaymentLink.deluge:
+		// "Unable to cast the '448881000000543009 ' value into a 'Long' value",
+		// and submitCustomerLocation.deluge, whose own entry log showed
+		// recordId = [448881000000482018 ] with a trailing space). This is the
+		// one remaining customerPage script that still parsed it raw, and it is
+		// the FIRST call every customer link makes - so a space here blanks the
+		// whole page rather than failing one action.
+		rec = Create_Case[ID == recordId.trim().toLong()];
 		if(rec == null)
 		{
 			result.put("code", "ERROR");

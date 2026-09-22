@@ -1,49 +1,356 @@
-string paymentWebhook(string event_type, string event_id, string data, string token)
+string paymentWebhook(string event_type, string event_id, map event_object, string token)
 {
 	try
 	{
+		// REWRITTEN AGAINST THE REAL PAYLOAD - 2026-09-18. Zoho Payments' own
+		// Developer Space delivery log was opened and the actual request body
+		// read. Everything before this was written against an assumed shape and
+		// was wrong in the simplest possible way:
+		//
+		// THE WRAPPER KEY IS event_object, NOT data. There is no key called
+		// data anywhere in Zoho Payments' webhook body, so that parameter could
+		// never have bound, whatever type it was declared as. That single
+		// mismatch is the whole reason no payment ever reached a ticket.
+		//
+		// The real body, confirmed from a live delivery:
+		//   event_id, event_type, account_id, live_mode, event_time  at top level
+		//   event_object -> payment_links -> reference_id            e.g. RSID645006-BF
+		//   event_object -> payment_links -> meta_data[]             key/value pairs,
+		//                                                            one of which is recordId
+		//   event_object -> payment_links -> payments[]              each with payment_id
+		//
+		// So payment_id is NOT a direct child of the link - it sits inside a
+		// payments ARRAY, which is why every earlier attempt to read it came
+		// back empty even when the payload was right in front of us.
+		//
+		// REGISTER event_object WITH TYPE MAP on this Custom API's setup screen,
+		// alongside event_type, event_id and token. A parameter that is only
+		// named in this signature binds null.
+		//
+		// Note from the same delivery: live_mode was true, and BOTH
+		// payment_link.paid and payment.succeeded fired for the one payment.
+		// Two deliveries updating the same ticket to the same values is
+		// harmless - the second write is identical to the first.
+		dataText = "";
+		if(event_object != null)
+		{
+			dataText = event_object.toString();
+		}
 		EXPECTED_TOKEN = "grx9K4mQ7pT2vL8sN3dW6yB1cZ5hJ0fE";
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		ZC_RECORD_URL_BASE = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report/";
 		info "=== paymentWebhook fired ===";
-		info "event_type = " + ifnull(event_type,"(null)");
-		info "event_id   = " + ifnull(event_id,"(null)");
-		info "data       = " + ifnull(data,"(null)");
+		info "  time       = " + zoho.currenttime;
+		info "  event_type = [" + ifnull(event_type,"(null)") + "]";
+		info "  event_id   = [" + ifnull(event_id,"(null)") + "]";
+		info "  token      = [" + ifnull(token,"(null)") + "]";
+		info "  data       = [" + dataText + "]";
+		// data bound (2026-09-18) - the one line that settles whether Zoho
+		// Payments' nested JSON object can reach a Creator string parameter.
+		// Written as an if/else rather than concatenating the comparison itself
+		// because Deluge CANNOT parse a parenthesised comparison inside a string
+		// concatenation. That exact line is what made this file refuse to save
+		// with "Improper Statement", and the line number Zoho reported for it
+		// pointed somewhere else entirely, which cost several rounds to find.
+		// Do not reintroduce that shape anywhere in this project.
+		dataBoundText = "false";
+		if(dataText != "")
+		{
+			dataBoundText = "true";
+		}
+		info "  data bound = " + dataBoundText;
 
-		tokenOk = true;
+		payloadText = ifnull(event_type,"") + " " + ifnull(event_id,"") + " " + dataText;
+		info "  combined payload length = " + payloadText.length();
+		info "  contains recordId=" + payloadText.contains("recordId") + " | -BF=" + payloadText.contains("-BF") + " | -RF=" + payloadText.contains("-RF") + " | reference_id=" + payloadText.contains("reference_id") + " | meta_data=" + payloadText.contains("meta_data") + " | payment_id=" + payloadText.contains("payment_id") + " | amount=" + payloadText.contains("amount");
+
+		tokenGiven = ifnull(token,"").trim();
 		if(EXPECTED_TOKEN != "")
 		{
-			tokenOk = false;
-			tokenGiven = ifnull(token,"").trim();
-			if(tokenGiven == EXPECTED_TOKEN)
+			if(tokenGiven != "")
 			{
-				tokenOk = true;
+				if(tokenGiven != EXPECTED_TOKEN)
+				{
+					info "paymentWebhook REJECTED - a token arrived but does not match the expected value. NOTHING was updated. This is a genuine mismatch, not a registration problem.";
+					return "{\"code\": \"SUCCESS\", \"result\": \"TOKEN_MISMATCH\", \"updated\": false, \"message\": \"A token arrived but it does not match the expected value. Nothing was updated. Check the token on the end of the webhook URL in Zoho Payments.\"}";
+				}
+				info "  token gate: OK (matched).";
+			}
+			else
+			{
+				info "  token gate: WARNING - no token bound to this call. Proceeding anyway because the request already passed Zoho's own publickey authentication. FIX: register a parameter named exactly 'token' on this Custom API's setup screen; until then this second auth layer is not actually being enforced.";
 			}
 		}
-		if(tokenOk == false)
-		{
-			info "paymentWebhook REJECTED — the shared token was missing or did not match. NOTHING was updated. The webhook URL configured in Zoho Payments must carry &token=" + EXPECTED_TOKEN + " on the end. If a real payment was just missed because of this, fix the URL and mark the ticket by hand.";
-			return "{\"code\": \"SUCCESS\"}";
-		}
 
-		payloadText = ifnull(event_type,"") + " " + ifnull(event_id,"") + " " + ifnull(data,"");
 		if(payloadText.trim() == "")
 		{
-			info "paymentWebhook — nothing bound to any parameter. The webhook body did not reach this script; a different receiver is needed. No record touched.";
-			return "{\"code\": \"SUCCESS\"}";
+			info "paymentWebhook - NOTHING BOUND. Not one of event_type / event_id / data carried a value, so the webhook body never reached this script. Two things to check, in order: (1) are 'event_type', 'event_id', 'data' and 'token' all registered on this Custom API's setup screen? (2) does Zoho Payments post a nested JSON object for 'data'? A Creator 'string' parameter cannot receive an object - if that is what is happening, this signature needs a different shape. No record touched.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NOTHING_BOUND\", \"updated\": false, \"message\": \"No parameter carried a value, so the webhook body never reached this script. Check that event_type, event_id, data and token are all registered on the Custom API setup screen, and that data is registered with type Map.\"}";
 		}
 
+		eventLower = ifnull(event_type,"").trim().toLowerCase();
+		treatAsPaid = false;
+		// isFailureEvent - 2026-09-18. payment.failed used to return immediately,
+		// before the recordId extraction below had even run, so a failed attempt
+		// left no trace anywhere an agent could see. It now falls through the same
+		// extraction as a successful payment and appends a line to the ticket's
+		// Payment_Failure_Log instead of writing any payment fields.
+		isFailureEvent = false;
+		if(eventLower == "")
+		{
+			treatAsPaid = true;
+			info "  event gate: WARNING - event_type did not bind. Treating this as a successful payment so a real payment is not lost, but that means a FAILED payment would also be marked PAID. FIX: register a parameter named exactly 'event_type' on this Custom API's setup screen.";
+		}
+		else if(eventLower == "payment.succeeded")
+		{
+			treatAsPaid = true;
+			info "  event gate: payment.succeeded - money received, proceeding.";
+		}
+		else if(eventLower == "payment_link.paid")
+		{
+			treatAsPaid = true;
+			info "  event gate: payment_link.paid - money received, proceeding.";
+		}
+		else if(eventLower == "payment.failed")
+		{
+			isFailureEvent = true;
+			info "  event gate: payment.failed - the customer's payment did NOT go through. This will be appended to the ticket's Payment_Failure_Log and NO payment field will be touched. Payment_Status is deliberately left exactly as it was rather than forced to PENDING: a customer who retries produces a failed event and a succeeded event, webhook delivery order is not guaranteed, and writing PENDING here could overwrite a PAID that had already landed.";
+		}
+		else if(eventLower == "payment_link.expired")
+		{
+			info "  event gate: payment_link.expired - the link timed out unused. No money moved. Nothing written.";
+		}
+		else if(eventLower == "payment_link.canceled")
+		{
+			info "  event gate: payment_link.canceled - link cancelled. No money moved. Nothing written.";
+		}
+		else if(eventLower == "payment_link.cancelled")
+		{
+			info "  event gate: payment_link.cancelled - link cancelled. No money moved. Nothing written.";
+		}
+		else if(eventLower == "refund.succeeded")
+		{
+			info "  event gate: refund.succeeded - refunds are recorded in the app at Closure (Refund_Due / Refund_Amount), by an agent, against the closure total. Writing here would fight that existing flow, so nothing is written. Reconcile refunds on the Closure page.";
+		}
+		else if(eventLower == "refund.failed")
+		{
+			info "  event gate: refund.failed - nothing written, same reasoning as refund.succeeded.";
+		}
+		else if(eventLower == "payout.initiated")
+		{
+			info "  event gate: payout.initiated - this is Zoho Payments settling collected money into YOUR bank account. It has no connection to any single ticket. Nothing written.";
+		}
+		else if(eventLower == "payout.paid")
+		{
+			info "  event gate: payout.paid - merchant settlement, not a customer payment. Nothing written.";
+		}
+		else if(eventLower == "payout.failed")
+		{
+			info "  event gate: payout.failed - merchant settlement, not a customer payment. Nothing written.";
+		}
+		else
+		{
+			info "  event gate: UNRECOGNISED event_type [" + event_type + "]. Nothing written, deliberately - marking a ticket paid on an event this script does not understand is not safe. Send this exact value over and it will be added to the list.";
+		}
+		// A failure event is allowed PAST this gate so it can reach the recordId
+		// extraction below and append to Payment_Failure_Log. Every other
+		// non-payment event still stops here exactly as before.
+		if(treatAsPaid == false)
+		{
+			if(isFailureEvent == false)
+			{
+				return "{\"code\": \"SUCCESS\", \"result\": \"EVENT_IGNORED\", \"updated\": false, \"event\": \"" + eventLower + "\", \"message\": \"This event does not mean money was received, so nothing was written. Only payment.succeeded and payment_link.paid update a ticket.\"}";
+			}
+		}
+
+		// STRUCTURAL EXTRACTION - 2026-09-18, after a Postman call returned
+		// NO_RECORD_ID even though the payload plainly contained one.
+		//
+		// Root cause: data is a Map now, and a Deluge Map's toString() is NOT
+		// JSON. It renders as
+		//     {payment={payment_id=555..., meta_data=[{key=recordId, value=448...}]}}
+		// with equals signs and NO double quotes. Every extraction below this
+		// point was written to split JSON on the double-quote character, so with
+		// none present it got one giant token that could never convert to a
+		// number - hence NO_RECORD_ID on a payload that clearly had one.
+		//
+		// The fix is to stop scraping text and read the Map structurally, which
+		// is both correct and immune to whichever notation toString() happens to
+		// use. The old string-scraping is KEPT below as a fallback, and now only
+		// runs if this structural pass found nothing - so a payload in a shape
+		// this does not expect still behaves exactly as it did before.
+		refIdText = "";
+		txnId = "";
+		resolvedRecordId = 0;
+		foundRecordId = false;
+		paymentMap = event_object;
+		if(event_object != null)
+		{
+			if(event_object.get("payment_links") != null)
+			{
+				paymentMap = event_object.get("payment_links");
+			}
+			else if(event_object.get("payments") != null)
+			{
+				paymentMap = event_object.get("payments");
+			}
+			else if(event_object.get("payment") != null)
+			{
+				paymentMap = event_object.get("payment");
+			}
+		}
+		if(paymentMap != null)
+		{
+			if(paymentMap.get("reference_id") != null)
+			{
+				refIdText = paymentMap.get("reference_id").toString();
+			}
+			if(paymentMap.get("payment_id") != null)
+			{
+				txnId = paymentMap.get("payment_id").toString();
+			}
+		}
+		// paymentsList is initialised as a real List() BEFORE anything is put in
+		// it - 2026-09-18, fixes "Variable 'payEntry' is not defined" at save.
+		// Deluge cannot infer the type of a value that came out of .get(), so a
+		// for-each over it never defines its loop variable. Assigning into a
+		// variable that is already a List gives the parser the type it needs.
+		// Same reason the meta_data loop further down builds metaEntries first.
+		if(txnId == "")
+		{
+			try
+			{
+				paymentsList = List();
+				if(paymentMap != null)
+				{
+					if(paymentMap.get("payments") != null)
+					{
+						paymentsList = paymentMap.get("payments").toList();
+					}
+				}
+				for each payEntry in paymentsList
+				{
+					if(txnId == "")
+					{
+						if(payEntry.get("payment_id") != null)
+						{
+							txnId = payEntry.get("payment_id").toString();
+						}
+					}
+				}
+			}
+			catch (payListEx)
+			{
+				info "  payments node could not be walked as a list of maps - skipping it: " + payListEx.toString();
+			}
+		}
+		if(txnId == "")
+		{
+			if(paymentMap != null)
+			{
+				if(paymentMap.get("transaction_id") != null)
+				{
+					txnId = paymentMap.get("transaction_id").toString();
+				}
+			}
+		}
+		if(txnId == "")
+		{
+			if(paymentMap != null)
+			{
+				if(paymentMap.get("payment_link_id") != null)
+				{
+					txnId = paymentMap.get("payment_link_id").toString();
+				}
+			}
+		}
+		// metaEntries starts life as a real List() for the same reason
+		// paymentsList above does - see that comment. Without it the for-each
+		// below fails to save with "Variable 'metaEntry' is not defined".
+		metaEntries = List();
+		try
+		{
+			rawMeta = null;
+			if(paymentMap != null)
+			{
+				rawMeta = paymentMap.get("meta_data");
+			}
+			if(rawMeta == null)
+			{
+				if(event_object != null)
+				{
+					rawMeta = event_object.get("meta_data");
+				}
+			}
+			if(rawMeta != null)
+			{
+				metaEntries = rawMeta.toList();
+			}
+		}
+		catch (metaListEx)
+		{
+			info "  meta_data node could not be read as a list - skipping it: " + metaListEx.toString();
+		}
+		for each metaEntry in metaEntries
+		{
+			if(foundRecordId == false)
+			{
+				metaKey = "";
+				if(metaEntry.get("key") != null)
+				{
+					metaKey = metaEntry.get("key").toString().trim();
+				}
+				if(metaKey == "recordId")
+				{
+					metaValue = "";
+					if(metaEntry.get("value") != null)
+					{
+						metaValue = metaEntry.get("value").toString().trim();
+					}
+					if(metaValue != "")
+					{
+						try
+						{
+							maybeMetaId = metaValue.toLong();
+							if(maybeMetaId > 0)
+							{
+								resolvedRecordId = maybeMetaId;
+								foundRecordId = true;
+							}
+						}
+						catch (metaEx)
+						{
+							foundRecordId = false;
+						}
+					}
+				}
+			}
+		}
+		info "  structural read - reference_id=[" + refIdText + "] | payment_id=[" + txnId + "] | recordId found=" + foundRecordId + " | recordId=" + resolvedRecordId;
+
+		// Fee type comes from reference_id when the structural read found one
+		// (that is the field the app puts the -BF / -RF suffix on), falling back
+		// to scanning the whole payload exactly as before.
+		feeSource = refIdText;
+		if(feeSource == "")
+		{
+			feeSource = payloadText;
+		}
 		isBookingFee = false;
-		if(payloadText.contains("-BF"))
+		if(feeSource.contains("-BF"))
 		{
 			isBookingFee = true;
 		}
 		isRemainingFee = false;
-		if(payloadText.contains("-RF"))
+		if(feeSource.contains("-RF"))
 		{
 			isRemainingFee = true;
 		}
 
-		resolvedRecordId = 0;
-		foundRecordId = false;
+		if(foundRecordId == false)
+		{
 		idParts = payloadText.toList("recordId");
 		if(idParts.size() > 1)
 		{
@@ -74,7 +381,10 @@ string paymentWebhook(string event_type, string event_id, string data, string to
 			}
 		}
 
-		txnId = "";
+		}
+
+		if(txnId == "")
+		{
 		txnKeys = List();
 		txnKeys.add("payment_id");
 		txnKeys.add("transaction_id");
@@ -136,12 +446,14 @@ string paymentWebhook(string event_type, string event_id, string data, string to
 			}
 		}
 
-		info "paymentWebhook — isBookingFee=" + isBookingFee + " | isRemainingFee=" + isRemainingFee + " | foundRecordId=" + foundRecordId + " | resolvedRecordId=" + resolvedRecordId + " | txnId=" + txnId;
+		}
+
+		info "paymentWebhook - isBookingFee=" + isBookingFee + " | isRemainingFee=" + isRemainingFee + " | foundRecordId=" + foundRecordId + " | resolvedRecordId=" + resolvedRecordId + " | txnId=" + txnId;
 
 		if(foundRecordId == false)
 		{
-			info "paymentWebhook — no recordId could be read out of the payload. Nothing updated. Check the data dump above for where the metadata actually sits.";
-			return "{\"code\": \"SUCCESS\"}";
+			info "paymentWebhook - no recordId could be read out of the payload. Nothing updated. Check the data dump above for where the metadata actually sits.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_RECORD_ID\", \"updated\": false, \"message\": \"The payload arrived but carried no recordId, so there is no way to tell which ticket was paid. Nothing was updated. Check that the payment link was created by this app - links made outside it carry no recordId metadata.\"}";
 		}
 
 		feeTypeCount = 0;
@@ -155,53 +467,220 @@ string paymentWebhook(string event_type, string event_id, string data, string to
 		}
 		if(feeTypeCount == 0)
 		{
-			info "paymentWebhook — payload carries neither a '-BF' nor a '-RF' marker, so this is not a Booking Fee or Remaining Fee link. Nothing updated.";
-			return "{\"code\": \"SUCCESS\"}";
+			info "paymentWebhook - payload carries neither a '-BF' nor a '-RF' marker, so this is not a Booking Fee or Remaining Fee link. Nothing updated.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_FEE_MARKER\", \"updated\": false, \"message\": \"The payload has no -BF or -RF marker, so this payment is neither a Booking Fee nor a Remaining Fee. Nothing was updated.\"}";
 		}
 		if(feeTypeCount > 1)
 		{
-			info "paymentWebhook — payload carries BOTH a '-BF' and a '-RF' marker, so which fee was actually paid is ambiguous. Nothing updated, deliberately — marking the wrong fee paid would put real money on the wrong line. Check the data dump above and mark the ticket by hand.";
-			return "{\"code\": \"SUCCESS\"}";
+			info "paymentWebhook - payload carries BOTH a '-BF' and a '-RF' marker, so which fee was actually paid is ambiguous. Nothing updated, deliberately - marking the wrong fee paid would put real money on the wrong line. Check the data dump above and mark the ticket by hand.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"AMBIGUOUS_FEE_TYPE\", \"updated\": false, \"message\": \"The payload carries BOTH a -BF and a -RF marker, so which fee was paid is ambiguous. Nothing was updated on purpose - marking the wrong fee would put real money on the wrong line. Mark the ticket by hand.\"}";
 		}
 
 		ticketRec = Create_Case[ID == resolvedRecordId];
 		if(ticketRec == null)
 		{
-			info "paymentWebhook — recordId " + resolvedRecordId + " does not match any Create_Case record. Nothing updated.";
-			return "{\"code\": \"SUCCESS\"}";
+			info "paymentWebhook - recordId " + resolvedRecordId + " does not match any Create_Case record. Nothing updated.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"TICKET_NOT_FOUND\", \"updated\": false, \"recordId\": \"" + resolvedRecordId + "\", \"message\": \"A recordId was read from the payload but no Create_Case record has that ID. Nothing was updated.\"}";
 		}
 
-		updateRec = Create_Case[ID == resolvedRecordId];
-		updateRec.Payment_Status = "PAID";
+		feeLabelEarly = "Remaining Fee";
 		if(isBookingFee)
 		{
+			feeLabelEarly = "Booking Fee";
+		}
+		fieldMap = Map();
+		if(isFailureEvent)
+		{
+			// FAILED PAYMENT - 2026-09-18, once Payment_Failure_Log was created on
+			// Create_Case. Appends one line per failed attempt and writes NOTHING
+			// else. Payment_Status is deliberately left untouched: a customer who
+			// retries produces a failed event and a succeeded event, Zoho does not
+			// guarantee delivery order, and forcing PENDING here could overwrite a
+			// PAID that had already landed.
+			//
+			// Append rather than replace, so an agent sees how many times a
+			// customer bounced rather than only the last attempt - the same
+			// append-only convention Remarks already uses in this app. ticketRec
+			// was fetched just above, so the existing text is already in hand and
+			// no extra read is needed.
+			failureLine = zoho.currenttime.toString("dd-MMM-yyyy hh:mm a") + " - " + feeLabelEarly + " payment FAILED";
 			if(txnId != "")
 			{
-				updateRec.Booking_Fee_Transaction_ID = txnId;
-				info "paymentWebhook — Booking Fee marked PAID on record " + resolvedRecordId + ", transaction ID " + txnId + " stored.";
+				failureLine = failureLine + " (payment id " + txnId + ")";
+			}
+			existingLog = ifnull(ticketRec.Payment_Failure_Log,"").toString();
+			if(existingLog.trim() == "")
+			{
+				fieldMap.put("Payment_Failure_Log",failureLine);
 			}
 			else
 			{
-				info "paymentWebhook — Booking Fee marked PAID on record " + resolvedRecordId + ". No transaction ID found in the payload, so that field was left as-is.";
+				fieldMap.put("Payment_Failure_Log",existingLog + "\n" + failureLine);
 			}
+			info "paymentWebhook - FAILED payment recorded on record " + resolvedRecordId + ": " + failureLine;
+		}
+		else
+		{
+			fieldMap.put("Payment_Status","PAID");
+			if(isBookingFee)
+			{
+				/* Payment_Method / Payment_Method_Final (2026-09-22, client feedback:
+				   "after payment is done the mode is payment not being updated").
+				   "Payment Gateway" must ALSO exist as an option on the Zoho field or
+				   Zoho rejects the WHOLE record write - every other field in this map
+				   included. modeFreeFieldMap below is the safety net: it carries the
+				   identical payload minus these two keys, and is retried automatically
+				   if the first PATCH is refused, so a missing dropdown option can
+				   never cost us Payment_Status, Payment_received or the transaction
+				   ids, which all work today. */
+				fieldMap.put("Payment_Method","Payment Gateway");
+				if(txnId != "")
+				{
+					fieldMap.put("Booking_Fee_Transaction_ID",txnId);
+				}
+			}
+			if(isRemainingFee)
+			{
+				fieldMap.put("Payment_Method_Final","Payment Gateway");
+				fieldMap.put("Payment_received","Yes");
+				if(txnId != "")
+				{
+					fieldMap.put("Remaining_Fee_Transaction_ID",txnId);
+				}
+			}
+		}
+		info "paymentWebhook - fields to write on record " + resolvedRecordId + ": " + fieldMap.toString();
+
+		patchDone = false;
+		try
+		{
+			tokenResp = invokeurl
+			[
+				url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+				type :POST
+			];
+			zcAccessToken = tokenResp.get("access_token");
+			if(zcAccessToken == null)
+			{
+				info "paymentWebhook - no access_token returned by the token endpoint. Raw response: " + tokenResp.toString();
+			}
+			else
+			{
+				patchBody = Map();
+				modeFreeFieldMap = Map();
+				modeKeyList = List();
+				modeKeyList = fieldMap.keys();
+				for each modeKey in modeKeyList
+				{
+					if(modeKey != "Payment_Method")
+					{
+						if(modeKey != "Payment_Method_Final")
+						{
+							modeFreeFieldMap.put(modeKey,fieldMap.get(modeKey));
+						}
+					}
+				}
+				patchBody.put("data",fieldMap);
+				patchResp = invokeurl
+				[
+					url :ZC_RECORD_URL_BASE + resolvedRecordId
+					type :PATCH
+					parameters:patchBody.toString()
+					headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+				];
+				info "paymentWebhook - Data API PATCH response: " + patchResp.toString();
+				if(patchResp.get("code") != 3000)
+				{
+					if(modeFreeFieldMap.size() > 0)
+					{
+						info "paymentWebhook - full write refused. Retrying WITHOUT Payment_Method/Payment_Method_Final - the most likely cause is that 'Payment Gateway' is not yet an option on that field in Zoho. Add it on the Create_Case form to capture the payment mode too; everything else is still being written by this retry.";
+						modeFreeBody = Map();
+						modeFreeBody.put("data",modeFreeFieldMap);
+						modeFreeResp = invokeurl
+						[
+							url :ZC_RECORD_URL_BASE + resolvedRecordId
+							type :PATCH
+							parameters:modeFreeBody.toString()
+							headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+						];
+						info "paymentWebhook - retry (without payment mode) response: " + modeFreeResp.toString();
+						patchResp = modeFreeResp;
+					}
+				}
+				if(patchResp.get("code") == 3000)
+				{
+					patchDone = true;
+				}
+			}
+		}
+		catch (patchEx)
+		{
+			info "paymentWebhook - Data API PATCH threw: " + patchEx.toString();
+		}
+
+		if(patchDone == false)
+		{
+			info "paymentWebhook - Data API PATCH did not succeed, falling back to the direct record write (the path this webhook used before 2026-09-16, confirmed working in this context).";
+			updateRec = Create_Case[ID == resolvedRecordId];
+			if(isFailureEvent)
+			{
+				// Failure path writes ONLY the log - never Payment_Status.
+				updateRec.Payment_Failure_Log = fieldMap.get("Payment_Failure_Log");
+			}
+			else
+			{
+				updateRec.Payment_Status = "PAID";
+				if(isBookingFee)
+				{
+					if(txnId != "")
+					{
+						updateRec.Booking_Fee_Transaction_ID = txnId;
+					}
+				}
+				if(isRemainingFee)
+				{
+					updateRec.Payment_received = "Yes";
+					if(txnId != "")
+					{
+						updateRec.Remaining_Fee_Transaction_ID = txnId;
+					}
+				}
+			}
+		}
+		if(isFailureEvent)
+		{
+			writePathFail = "direct record write";
+			if(patchDone)
+			{
+				writePathFail = "Creator Data API";
+			}
+			return "{\"code\": \"SUCCESS\", \"result\": \"FAILURE_LOGGED\", \"updated\": true, \"fee\": \"" + feeLabelEarly + "\", \"recordId\": \"" + resolvedRecordId + "\", \"transaction_id\": \"" + txnId + "\", \"written_via\": \"" + writePathFail + "\", \"message\": \"A FAILED " + feeLabelEarly + " payment attempt was appended to this ticket's Payment Failures log. No payment fields were changed.\"}";
+		}
+
+		feeLabel = "Remaining Fee";
+		if(isBookingFee)
+		{
+			feeLabel = "Booking Fee";
+		}
+		writePath = "direct record write";
+		if(patchDone)
+		{
+			writePath = "Creator Data API";
+		}
+		if(isBookingFee)
+		{
+			info "paymentWebhook - Booking Fee marked PAID on record " + resolvedRecordId + " | transaction ID: " + txnId + " | via Data API: " + patchDone;
 		}
 		if(isRemainingFee)
 		{
-			updateRec.Payment_received = "Yes";
-			if(txnId != "")
-			{
-				updateRec.Remaining_Fee_Transaction_ID = txnId;
-				info "paymentWebhook — Remaining Fee marked PAID on record " + resolvedRecordId + " (Payment_Status = PAID, Payment_received = Yes), transaction ID " + txnId + " stored.";
-			}
-			else
-			{
-				info "paymentWebhook — Remaining Fee marked PAID on record " + resolvedRecordId + " (Payment_Status = PAID, Payment_received = Yes). No transaction ID found in the payload, so that field was left as-is.";
-			}
+			info "paymentWebhook - Remaining Fee marked PAID on record " + resolvedRecordId + " (Payment_received = Yes) | transaction ID: " + txnId + " | via Data API: " + patchDone;
 		}
+		return "{\"code\": \"SUCCESS\", \"result\": \"UPDATED\", \"updated\": true, \"fee\": \"" + feeLabel + "\", \"recordId\": \"" + resolvedRecordId + "\", \"transaction_id\": \"" + txnId + "\", \"written_via\": \"" + writePath + "\", \"message\": \"" + feeLabel + " marked PAID on ticket " + resolvedRecordId + ".\"}";
 	}
 	catch (e)
 	{
 		info "paymentWebhook threw (no record was updated by this call): " + e.toString();
+		return "{\"code\": \"SUCCESS\", \"result\": \"EXCEPTION\", \"updated\": false, \"message\": \"The script threw an error and nothing was updated. See this Custom API execution log for the exception text.\"}";
 	}
-	return "{\"code\": \"SUCCESS\"}";
+	return "{\"code\": \"SUCCESS\", \"result\": \"NO_RESULT\", \"updated\": false, \"message\": \"The script finished without reaching any known outcome. This should not happen - send the execution log over.\"}";
 }

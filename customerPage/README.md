@@ -547,3 +547,41 @@ User pasted the fix above into the real `submitCustomerLocation` Custom API and 
 **Reverted** to the dot-notation write (`rec.Field = value`) — the one pattern independently proven working elsewhere in this project against this same `Create_Case` form (`generateZohoPaymentLink.deluge`). The one thing changed versus the ORIGINAL (pre-fix) code: the record is now re-fetched immediately before the write (`recForWrite = Create_Case[ID == recordId.trim().toLong()];`, right at the write site) rather than reusing the `rec` fetched much earlier at the top of the function — a zero-new-syntax hedge against the original runtime error being caused by that reference going stale, using only the exact same `Create_Case[ID == ...]` pattern already proven to compile and run. **Not confirmed to fix the underlying issue** — if the exact same `"'rec' has no matching records"` error recurs even with a fresh fetch immediately before the write, that rules out staleness and points at something Zoho-side: compare `submitCustomerLocation`'s own "Execute the script as" permission/user configuration against `generateZohoPaymentLink`'s directly in Zoho — that's the next thing to check, not another code guess.
 
 **Needs**: re-pasting this corrected version into the `submitCustomerLocation` Custom API, confirming it saves clean this time (no syntax error), then the same real-payload test as before.
+
+## 2026-09-16 — RESOLVED: customer writes to `Create_Case` now go through the Creator Data API (OAuth), not direct Deluge writes
+
+**The bug**: `submitCustomerLocation` had failed for days with `'rec' has no matching records. Unable to update the value rec.Latitude.` — but *only* over the public URL. The identical script, against the identical record, succeeded every time from the Custom API's own Execute dialog.
+
+**Three theories were explored and all three were wrong**, recorded here so none of them gets tried again:
+
+1. **Decimal digit limits** on `Latitude`/`Longitude` — real at the time, genuinely fixed by converting those fields to Single Line Text on 2026-09-11, but not the cause of this.
+2. **A stale `rec` reference** — a second fresh fetch was added right before the write. Failed identically.
+3. **Fetching the same record twice** — the second fetch was removed and the write pointed back at the single `rec`. Also failed identically. This theory came from `generateZohoPaymentLink.deluge`, which really was fixed that way — but that script is invoked through `invokeCustomApi` as a logged-in agent, a completely different execution context, so it was never evidence about public URLs.
+
+**The actual root cause**, proven by adding a read probe immediately before the write and logging both outcomes:
+
+```
+READ PROBE OK - rec.Case_ID = [RSID482018]   <- the record IS readable
+WRITE FAILED - 'rec' has no matching records  <- the write is refused
+```
+
+Read allowed, write refused, over the public URL only. The user a public Custom API invocation runs as has **View but not Edit** on `Create_Case`. Zoho reports that as "no matching records" — naming the write variable, which is why it read like a code bug for so long. **No change to the Deluge write could ever have fixed it.**
+
+**The fix**: both customer-facing writers now exchange a refresh token for an access token and `PATCH` the Creator Data API instead of assigning to record fields:
+
+```
+PATCH https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report/<record_id>
+Authorization: Bearer <access_token>
+Body: {"data": {"Latitude": "...", "Longitude": "..."}}
+```
+
+An OAuth token carries **its own** authorization rather than inheriting the caller's — the same principle that already lets `onDemandInvoicing`/`recordVendorPayment` write to Zoho Books from a public context via a connection. Success is `code: 3000`.
+
+Notes for anyone touching this:
+
+- **`Bearer`, not `Zoho-oauthtoken`** — `Bearer` is the form confirmed working in Postman against this org.
+- **Lowercase `/report/`**, and the path addresses a **report** (`Agent_Ticket_Report`), not the form.
+- In `submitCustomerLocation` the timestamp goes as a **separate second PATCH**. A Date-Time field's accepted format over this API is unconfirmed; bundling it would let a format error reject the coordinates too.
+- **Credentials must stay server-side.** They live in Deluge deliberately. The refresh token grants `ZohoCreator.report.ALL` — full read/write across Creator — so it must never be moved into widget JavaScript, where any customer could read it. Keeping the Custom API as the entry point is what makes that safe.
+
+**Use this pattern for any future record write that a direct Deluge write can't do.** The three Custom APIs in `getRescueTicket` that still write `Create_Case` directly — `paymentWebhook`, `generateZohoPaymentLink`, `createTicket` — are deliberately left alone: all three are confirmed working in their own contexts, and converting working money/ticket code carries more risk than it removes.

@@ -4,11 +4,72 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 	try
 	{
 		result = Map();
+		// ================= CREATOR DATA API (OAuth) =================
+		// 2026-09-16. The direct Deluge write (rec.Latitude = ...) is REPLACED by
+		// an authenticated PATCH to the Creator Data API, because the direct
+		// write is impossible to make work here.
+		//
+		// PROVEN by this function's own logging, running the identical script
+		// against the identical record: from the Execute dialog the read probe
+		// passes AND the write succeeds; over the public URL the read probe
+		// passes and the write fails with "'rec' has no matching records". Read
+		// allowed, write refused - i.e. the user a public invocation runs as has
+		// View but not Edit on Create_Case. No change to the Deluge write itself
+		// can fix that; it is a permission, not a syntax.
+		//
+		// The Data API carries its OWN authorization via this OAuth token rather
+		// than inheriting the caller's, which is exactly how onDemandInvoicing/
+		// recordVendorPayment already write to Zoho Books from a public context.
+		// Same principle, Creator instead of Books.
+		//
+		// Credentials user-provided 2026-09-16, scope ZohoCreator.report.ALL.
+		// client_id/client_secret are the same OAuth app already used for Zoho
+		// Payments in onDemandInvoicing.deluge; the REFRESH TOKEN is a different
+		// one, issued for the Creator scope.
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		// Report, not form - the Data API addresses records through a report.
+		// Agent_Ticket_Report is the same report the whole app already reads and
+		// updates Create_Case through (see getRescueTicket CONFIG.reportName).
+		ZC_RECORD_URL_BASE = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report/";
+		// ENTRY LOG (2026-09-16, user request) - every parameter exactly as it
+		// arrived, before anything touches it. Values are wrapped in [square
+		// brackets] on purpose: that is the only way to see leading/trailing
+		// whitespace, an empty string, or a stray punctuation character at a
+		// glance - all three have already caused real bugs in this one function
+		// (a trailing space that crashed .toLong(), and a trailing "." on
+		// locationType). "(null)" means the parameter was not bound at all,
+		// which for a Custom API usually means it is not registered in the
+		// API's own setup screen.
+		info "========== submitCustomerLocation CALLED ==========";
+		info "  recordId     = [" + ifnull(recordId,"(null)") + "]";
+		info "  locationType = [" + ifnull(locationType,"(null)") + "]";
+		info "  lat          = [" + ifnull(lat,"(null)") + "]";
+		info "  lon          = [" + ifnull(lon,"(null)") + "]";
 		// .trim() added 2026-09-10 - same real, confirmed-live bug already
 		// found and fixed in generateZohoPaymentLink.deluge the same day
 		// (a stray trailing space in recordId crashed .toLong() outright
 		// there); added here defensively too, zero risk either way.
-		rec = Create_Case[ID == recordId.trim().toLong()];
+		// 2026-09-16 - the record ID is now resolved into its OWN variable before
+		// the criteria, instead of calling .trim().toLong() inline inside it.
+		//
+		// This mirrors paymentWebhook.deluge exactly, which is the ONE script in
+		// this project CONFIRMED to write to Create_Case over a public URL (it
+		// marks Booking Fee payments PAID, user-verified live). It resolves its
+		// id first - resolvedRecordId = ...toLong(); then Create_Case[ID ==
+		// resolvedRecordId] - and succeeds. This function did the conversion
+		// inline in the criteria and has failed over a public URL every time,
+		// with both a single fetch and a double fetch, so the fetch count is
+		// ruled out and the inline expression is what is actually left.
+		//
+		// generateZohoPaymentLink.deluge uses the inline form and works, but it
+		// is invoked through invokeCustomApi as a logged-in agent, not over a
+		// public URL - a different execution context entirely, which is why it
+		// is the weaker model to copy here and paymentWebhook is the better one.
+		targetRecordId = recordId.trim().toLong();
+		info "  targetRecordId (after trim + toLong) = " + targetRecordId;
+		rec = Create_Case[ID == targetRecordId];
 		// READABILITY PROBE (2026-09-14) - the key insight into why this call
 		// has worked from the Execute dialog for days while failing over the
 		// public URL with "'recForWrite' has no matching records".
@@ -36,6 +97,7 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 		try
 		{
 			probeText = ifnull(rec.Case_ID,"").toString();
+			info "  READ PROBE OK - rec.Case_ID = [" + probeText + "] (the record IS readable in this execution context)";
 		}
 		catch (probeEx)
 		{
@@ -154,6 +216,18 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 				{
 					latToWrite = latVal.toString();
 					lonToWrite = lonVal.toString();
+					// PRE-WRITE LOG - the exact values and the exact fields about
+					// to be written. If the next thing in the log is the write
+					// failure, this line is the last known-good state and says
+					// precisely what was attempted.
+					if(isDrop)
+					{
+						info "  ABOUT TO WRITE (drop): DropLocationLat=[" + latToWrite + "] DropLocationLong=[" + lonToWrite + "] on record " + targetRecordId;
+					}
+					else
+					{
+						info "  ABOUT TO WRITE (breakdown): Latitude=[" + latToWrite + "] Longitude=[" + lonToWrite + "] on record " + targetRecordId;
+					}
 					// 2026-09-13 - REVERTED the previous attempt here (a bulk
 					// `update Create_Case set ... where ...;` statement),
 					// confirmed live in Zoho's own script editor to be an
@@ -190,15 +264,59 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 					// fetched the same record twice. The writes below now go to
 					// `rec` - fetched at the top, and just proven readable by the
 					// probe - which is the pattern with a live fix behind it.
+					// STEP 1 - exchange the refresh token for an access token.
+					// Only grant_type + the three credentials are sent: scope and
+					// redirect_uri are meaningful on the ORIGINAL authorization_code
+					// exchange that issued the refresh token, not on a refresh
+					// grant. Same call shape onDemandInvoicing.deluge already uses
+					// successfully for Zoho Payments.
+					tokenResp = invokeurl
+					[
+						url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+						type :POST
+					];
+					zcAccessToken = tokenResp.get("access_token");
+					if(zcAccessToken == null)
+					{
+						info "  TOKEN FAILED - no access_token came back. Raw response: " + tokenResp.toString();
+						result.put("code", "ERROR");
+						result.put("message", "Could not authorise with Zoho Creator (no access token). Nothing was written - see this Custom API's execution log.");
+						return result.toString();
+					}
+					info "  TOKEN OK - access token obtained";
+
+					// STEP 2 - PATCH the coordinate fields. The Data API answers
+					// with code 3000 on success, the same convention the widgets'
+					// own getRecords calls already check for.
+					coordMap = Map();
 					if(isDrop)
 					{
-						rec.DropLocationLat = latToWrite;
-						rec.DropLocationLong = lonToWrite;
+						coordMap.put("DropLocationLat",latToWrite);
+						coordMap.put("DropLocationLong",lonToWrite);
 					}
 					else
 					{
-						rec.Latitude = latToWrite;
-						rec.Longitude = lonToWrite;
+						coordMap.put("Latitude",latToWrite);
+						coordMap.put("Longitude",lonToWrite);
+					}
+					coordBody = Map();
+					coordBody.put("data",coordMap);
+					patchResp = invokeurl
+					[
+						url :ZC_RECORD_URL_BASE + targetRecordId
+						type :PATCH
+						parameters:coordBody.toString()
+						headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+					];
+					info "  PATCH response: " + patchResp.toString();
+					patchCode = patchResp.get("code");
+					if(patchCode != 3000)
+					{
+						patchMsg = patchResp.get("message");
+						info "  PATCH FAILED - code " + patchCode + " message " + patchMsg;
+						result.put("code", "ERROR");
+						result.put("message", "Could not save this coordinate - Zoho Creator API said: " + patchMsg);
+						return result.toString();
 					}
 					// Drop_Location_Received_Time / Location_Received_Time
 					// (2026-09-11, part of the wider "capture location+time at
@@ -230,20 +348,48 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 					// before this change. Reuses the same recForWrite reference
 					// as the lat/lon write just above (already confirmed live by
 					// this point), not a second fresh fetch.
+					// Sent as its OWN SECOND PATCH, deliberately not bundled with the
+					// coordinates above. A Date-Time field's accepted format over
+					// the Data API has never been confirmed in this project; if it
+					// is wrong, one combined PATCH would be rejected in full and
+					// take the coordinates down with it. Separate calls mean the
+					// critical write has already committed before this is even
+					// attempted - the same "must never block the coordinate save"
+					// contract this block has always had, now enforced structurally
+					// rather than just by a try/catch.
 					try
 					{
-						if(isDrop) { rec.Drop_Location_Received_Time = zoho.currenttime; }
-						else { rec.Location_Received_Time = zoho.currenttime; }
+						tsMap = Map();
+						if(isDrop)
+						{
+							tsMap.put("Drop_Location_Received_Time",zoho.currenttime.toString("dd-MMM-yyyy HH:mm:ss"));
+						}
+						else
+						{
+							tsMap.put("Location_Received_Time",zoho.currenttime.toString("dd-MMM-yyyy HH:mm:ss"));
+						}
+						tsBody = Map();
+						tsBody.put("data",tsMap);
+						tsResp = invokeurl
+						[
+							url :ZC_RECORD_URL_BASE + targetRecordId
+							type :PATCH
+							parameters:tsBody.toString()
+							headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+						];
+						info "  timestamp PATCH response: " + tsResp.toString();
 					}
 					catch (tsEx)
 					{
 						info "submitCustomerLocation - timestamp write failed (non-blocking, the coordinate itself was still saved successfully): " + tsEx.toString();
 					}
+					info "  WRITE OK - coordinate saved on record " + targetRecordId;
 					result.put("code", "SUCCESS");
 					returnstr = result.toString();
 				}
 				catch (writeEx)
 				{
+					info "  WRITE FAILED on record " + targetRecordId + " - Zoho said: " + writeEx.toString();
 					result.put("code", "ERROR");
 					// Message updated 2026-09-11 (later) - Latitude/Longitude/
 					// DropLocationLat/DropLocationLong were converted from Decimal

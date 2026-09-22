@@ -1043,7 +1043,17 @@ async function acceptService(){
     // Business template — same "flagged, not confirmed" pattern as every
     // other template name in this app. Fire-and-forget, same as the Reach
     // message above — a failed send never blocks the real Accept action.
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "dispatch_eta", [MY_TECH_NAME, MY_TECH_PHONE, dist?String(dist.etaMins):""]);
+    /* Template name corrected 2026-09-22 against the approved WhatsPortal
+       catalogue ("Get Rescued - WhatsApp Template API", revised 16 Sep 2026).
+       "dispatch_eta" does not exist in the workspace and was returning 404
+       template_not_found on every send - the real approved template is #8,
+       share_rescue_service_details_and_eta, the same one getRescueTicket's own
+       sendRescuerEtaMessage() already uses. Two further spec rules applied:
+       the template writes the literal word "Hrs" after {{3}}, so the ETA is
+       converted from minutes to hours (sending 45 would otherwise read
+       "45 Hrs"); and empty strings are rejected with 422 message_rejected, so
+       every missing value is sent as "-" instead. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_TECH_NAME||"-", MY_TECH_PHONE||"-", (dist&&dist.etaMins)?String(Math.round((dist.etaMins/60)*10)/10):"-"]);
     // Navigates straight to "Reach Breakdown Location" per the flow spec —
     // see goToStatus()'s own comment.
     goToStatus("RSP ON THE WAY");
@@ -1178,7 +1188,10 @@ async function markReached(){
     // as every template name in getRescueTicket. Fire-and-forget, after
     // the real save above — a failed send never blocks the Reach action
     // itself, matching this app's existing tolerance for GPS/photo steps.
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "reach_time", []);
+    /* Template name corrected 2026-09-22 - "reach_time" is not in the approved
+       catalogue; #10 is share_rescuer_reach_time_ WITH a trailing underscore
+       (the spec flags it explicitly). Still zero parameters, as approved. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescuer_reach_time_", []);
     goToStatus("WORK IN PROGRESS");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
   finally{ setDisabled("reachedBtn",false); }

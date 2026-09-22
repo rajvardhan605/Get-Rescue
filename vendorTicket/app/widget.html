@@ -418,7 +418,48 @@ function formatIndianPhone(v){
   if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
-async function sendWhatsAppTemplate(phone, templateName, params){
+/* Customer Page link helpers — 2026-09-18, ported VERBATIM from
+   getRescueTicket's own copies (user request: "in vendor app, vendor can also
+   send the remaining payment link"). Same permalink, same query-string shape,
+   same approved-prefix check, so a link a vendor sends is byte-for-byte the
+   link an agent sends for the same ticket and mode.
+   ⚠ CUSTOMER_PAGE_BASE_URL must stay in step with getRescueTicket's copy — it
+   is the real published Customer Page permalink and changes whenever that page
+   is republished. If customer links break in one app but not the other, this
+   constant drifting apart is the first thing to check. */
+const CUSTOMER_PAGE_BASE_URL = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/0gVCSNX48ASbYtRFUJ563eAbKzNFNnaVwH8fPFZCqaROx4z5T6QRyEQVTshspvvXSgyt5vuyPJSQQC0dwZGyYQKdMeySnUS6mYJr";
+// Every approved WhatsApp template's URL button is fixed to
+// https://creatorapp.zohopublic.in/{{1}} — the button variable carries only the
+// PATH after that prefix, never a whole URL.
+const WA_BUTTON_URL_PREFIX = "https://creatorapp.zohopublic.in/";
+function buildCustomerPageUrl(record, mode, extraParams){
+  if(!CUSTOMER_PAGE_BASE_URL || !record || !record.ID) return "";
+  let qs = "recordId=" + encodeURIComponent(record.ID) + "&mode=" + encodeURIComponent(mode);
+  if(extraParams){
+    Object.keys(extraParams).forEach(function(k){ qs += "&" + encodeURIComponent(k) + "=" + encodeURIComponent(extraParams[k]); });
+  }
+  return CUSTOMER_PAGE_BASE_URL + "?" + qs;
+}
+function customerPageButtonPath(record, mode, extraParams){
+  const full = buildCustomerPageUrl(record, mode, extraParams);
+  if(!full) return "";
+  if(full.indexOf(WA_BUTTON_URL_PREFIX)!==0){
+    console.warn("[GR-Vendor] customerPageButtonPath: CUSTOMER_PAGE_BASE_URL does not start with the approved WhatsApp button prefix", WA_BUTTON_URL_PREFIX, "— the template's button cannot point at this URL. Full URL was:", full);
+    return "";
+  }
+  return full.slice(WA_BUTTON_URL_PREFIX.length);
+}
+/* buttonParam added 2026-09-18 — same contract as getRescueTicket's own
+   sendWhatsAppTemplate(). When supplied, sendWhatsAppMessage.deluge switches
+   from the positional array to the keyed object form and sends it as
+   button_0_1; a positional array only ever fills BODY placeholders, so a button
+   value passed that way is silently dropped and the customer gets a button
+   pointing at the bare domain. The value also rides in param3 as a second
+   carrier, exactly as the agent app does, because buttonParam is only bound if
+   it is registered on the Custom API setup screen — and every template here
+   with a {{1}} URL button has at most two body variables, so param3 is free.
+   Existing callers that pass nothing are completely unaffected. */
+async function sendWhatsAppTemplate(phone, templateName, params, buttonParam){
   const to=formatIndianPhone(phone);
   if(!to){ console.warn("[GR-Vendor] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
   const fn=resolve("invokeCustomApi");
@@ -436,12 +477,67 @@ async function sendWhatsAppTemplate(phone, templateName, params){
     // the dispatch message (spec template 8: name + phone + ETA).
     payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"", param3: params[2]||"" }
   };
+  if(buttonParam){
+    config.payload.buttonParam = buttonParam;
+    if(!params[2]) config.payload.param3 = buttonParam;
+  }
+  console.log("[GR-Vendor] sendWhatsAppTemplate:", templateName, "->", to, "| payload:", JSON.stringify(config.payload));
   try{
     await fn(config);
     return true;
   }catch(e){
     console.warn("[GR-Vendor] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
     return false;
+  }
+}
+/* generateZohoPaymentLink() — 2026-09-18, ported from getRescueTicket's own
+   wrapper so a vendor-sent link is created by the SAME Custom API, with the
+   same "-RF" reference suffix and the same target field
+   (Zoho_Payment_URL_Remaining), as an agent-sent one. That matters beyond
+   tidiness: paymentWebhook identifies the fee type from the "-RF" in the
+   reference, so a link created any other way would never mark the ticket paid.
+   customerPhoneDigits/expiresAt are computed here for the same reason the agent
+   app computes them in JS — this project has no confirmed-safe way to do regex
+   stripping or date maths in Deluge. */
+async function generateZohoPaymentLink(record, amount, referenceId, description){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[GR-Vendor] generateZohoPaymentLink: invokeCustomApi unavailable."); return ""; }
+  if(!(Number(amount)>0)){ console.warn("[GR-Vendor] generateZohoPaymentLink: amount is not > 0 — not calling the Custom API."); return ""; }
+  const digits = String(record.Phone_Number1||record.Phone_Number||"").replace(/\D/g,"").replace(/^91(?=\d{10}$)/,"").slice(-10);
+  const d = new Date(Date.now() + 24*60*60*1000);
+  const pad2 = function(n){ return String(n).padStart(2,"0"); };
+  const expiresAt = d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+  const config = {
+    api_name: "generateZohoPaymentLink",
+    workspace_name: "getrescued",
+    http_method: "POST",
+    content_type: "application/json",
+    payload: {
+      recordId: record.ID,
+      amount: String(amount),
+      email: record.Email||"",
+      phoneDigits: digits,
+      referenceId: referenceId,
+      description: description||"Service Charge",
+      expiresAt: expiresAt,
+      paymentUrlField: "Zoho_Payment_URL_Remaining"
+    }
+  };
+  console.log("[GR-Vendor] generateZohoPaymentLink: outgoing payload:", JSON.stringify(config.payload));
+  try{
+    const res=await fn(config);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }catch(e){ console.warn("[GR-Vendor] generateZohoPaymentLink: response.result wasn't valid JSON", e); return ""; }
+    }
+    if(!data || data.code!=="SUCCESS" || !data.url){
+      console.warn("[GR-Vendor] generateZohoPaymentLink failed:", data && data.message, res);
+      return "";
+    }
+    return data.url;
+  }catch(e){
+    console.warn("[GR-Vendor] generateZohoPaymentLink threw", e);
+    return "";
   }
 }
 // Writes to THIS vendor's own Invites record for a given ticket (found via
@@ -735,13 +831,70 @@ async function loadVehicleNames(){
     });
     VEHICLE_NAMES=map;
     if(!recs.length){
-      console.warn("[GR-Vendor] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id. Check the report name.");
+      console.warn("[GR-Vendor] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— the direct read returned nothing. Most likely this portal profile lacks View on that report (Zoho answers {\"code\":2898,\"message\":\"Permission denied to view record(s).\"} and apiGetReport turns that into an empty array). Falling back to the getVehicleNames Custom API.");
+      await loadVehicleNamesViaCustomApi();
     } else if(missCount===recs.length){
       console.warn("[GR-Vendor] loadVehicleNames: none of", VEHICLE_NAME_CANDIDATES, "produced a name for ANY of", recs.length, "records — every vehicle will keep showing its raw id. This report's real name field is likely something else entirely — first record's own keys:", Object.keys(recs[0]));
     } else if(missCount>0){
       console.warn("[GR-Vendor] loadVehicleNames:", missCount, "of", recs.length, "records had no name under any of", VEHICLE_NAME_CANDIDATES, "— those specific vehicles will show their raw id.");
     }
   }catch(e){ console.warn("[GR-Vendor] loadVehicleNames failed", e); }
+}
+/* loadVehicleNamesViaCustomApi() — 2026-09-18, user request ("whenever [we]
+   show the message Permission denied to view record(s), we can use the refresh
+   token and fetch the record like earlier").
+
+   Vendor/Technician/Driver portal profiles are refused Vehicle_Master_Report
+   with code 2898, so every ticket card showed a raw Lookup id. The getVehicleNames
+   Custom API reads that report server-side with the app owner's own OAuth
+   credentials — the same refresh-token mechanism already proven in
+   submitCustomerLocation.deluge and paymentWebhook.deluge for writes this same
+   portal identity was refused.
+
+   The credentials live in the Deluge, NOT here: widget JavaScript is downloaded
+   to every user's browser, so a refresh token placed in this file would hand
+   full Creator Data API access to anyone who opens the vendor app.
+
+   Called ONLY when the direct read came back empty, so on an account where the
+   permission is granted this never runs and boot is unchanged. It is a fallback,
+   not a replacement — granting the Vendor profile View on Vehicle_Master_Report
+   remains the simpler fix and needs no Custom API at all.
+
+   Fails soft: any problem leaves VEHICLE_NAMES as it was, which means vehicles
+   keep showing their raw id exactly as they do today. Never worse. */
+async function loadVehicleNamesViaCustomApi(){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[GR-Vendor] loadVehicleNamesViaCustomApi: invokeCustomApi unavailable — vehicle names stay as raw ids."); return; }
+  try{
+    // Shape copied EXACTLY from getRescueTicket's checkOperationsManagerPermission
+    // call, the one other zero-parameter Custom API in this project and the only
+    // proven-working example of that case: http_method POST, and NO payload key
+    // at all. An earlier version of this line used GET with payload:{} and the
+    // call did nothing — a zero-parameter Custom API still expects POST here.
+    const config = { api_name:"getVehicleNames", workspace_name:"getrescued", http_method:"POST", content_type:"application/json" };
+    const res=await fn(config);
+    console.log("[GR-Vendor] loadVehicleNamesViaCustomApi: raw response:", res);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-Vendor] loadVehicleNamesViaCustomApi: response.result wasn't valid JSON", e, res); return; }
+    }
+    if(!data || data.code!=="SUCCESS" || !Array.isArray(data.vehicles)){
+      console.warn("[GR-Vendor] loadVehicleNamesViaCustomApi: Custom API did not return vehicles —", (data&&data.message)||"(no message)", res);
+      return;
+    }
+    const map={};
+    data.vehicles.forEach(function(v){ if(v && v.id) map[String(v.id)]=v.name||""; });
+    // Merge rather than replace, so anything the direct read DID manage to
+    // resolve is never lost by this fallback.
+    VEHICLE_NAMES=Object.assign({}, VEHICLE_NAMES, map);
+    console.log("[GR-Vendor] loadVehicleNamesViaCustomApi: resolved", data.vehicles.length, "vehicle name(s) via the Custom API fallback.");
+    // The dashboard may already be on screen by the time this lands — re-render
+    // so the names replace the raw ids without the vendor reloading.
+    if(typeof renderDashboard==="function" && state && state.view==="dashboard") renderDashboard();
+  }catch(e){
+    console.warn("[GR-Vendor] loadVehicleNamesViaCustomApi failed — vehicle names stay as raw ids.", e);
+  }
 }
 // Resolves the ticket's Vehicle field to a real name via VEHICLE_NAMES,
 // falling back to whatever readVal() already produces (a display object's
@@ -1349,7 +1502,17 @@ async function acceptService(){
     // template — same "flagged, not confirmed" pattern as every other
     // template name in this app. Fire-and-forget, same as the Reach
     // message above — a failed send never blocks the real Accept action.
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "dispatch_eta", [MY_VENDOR_NAME, MY_VENDOR_PHONE, dist?String(dist.etaMins):""]);
+    /* Template name corrected 2026-09-22 against the approved WhatsPortal
+       catalogue ("Get Rescued - WhatsApp Template API", revised 16 Sep 2026).
+       "dispatch_eta" does not exist in the workspace and was returning 404
+       template_not_found on every send - the real approved template is #8,
+       share_rescue_service_details_and_eta, the same one getRescueTicket's own
+       sendRescuerEtaMessage() already uses. Two further spec rules applied:
+       the template writes the literal word "Hrs" after {{3}}, so the ETA is
+       converted from minutes to hours (sending 45 would otherwise read
+       "45 Hrs"); and empty strings are rejected with 422 message_rejected, so
+       every missing value is sent as "-" instead. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_VENDOR_NAME||"-", MY_VENDOR_PHONE||"-", (dist&&dist.etaMins)?String(Math.round((dist.etaMins/60)*10)/10):"-"]);
     // Navigates straight to "Reach Breakdown Location" per the flow spec —
     // see goToStatus()'s own comment.
     goToStatus("RSP ON THE WAY");
@@ -1662,7 +1825,10 @@ async function markReachedRsr(){
     // as every template name in getRescueTicket. Fire-and-forget, after
     // the real save above — a failed send never blocks the Reach action
     // itself, matching this app's existing tolerance for GPS/photo steps.
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "reach_time", []);
+    /* Template name corrected 2026-09-22 - "reach_time" is not in the approved
+       catalogue; #10 is share_rescuer_reach_time_ WITH a trailing underscore
+       (the spec flags it explicitly). Still zero parameters, as approved. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescuer_reach_time_", []);
     goToStatus("WORK IN PROGRESS");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
   finally{ setDisabled("reachedBtn",false); }
@@ -1740,7 +1906,10 @@ async function markReachedTow(){
     // as every template name in getRescueTicket. Fire-and-forget, after
     // the real save above — a failed send never blocks the Reach action
     // itself, matching this app's existing tolerance for GPS/photo steps.
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "reach_time", []);
+    /* Template name corrected 2026-09-22 - "reach_time" is not in the approved
+       catalogue; #10 is share_rescuer_reach_time_ WITH a trailing underscore
+       (the spec flags it explicitly). Still zero parameters, as approved. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescuer_reach_time_", []);
     goToStatus("LOADING");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
   finally{ setDisabled("reachedBtn",false); }
@@ -2183,8 +2352,57 @@ function renderPaymentScreen(){
       <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
       <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
     </div>
+    ${remaining>0 && !alreadySuccess ? `<div class="card">
+      <div class="fld"><label>Send the customer a payment link</label>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Creates a Zoho Payments link for the remaining fee and WhatsApps it to the customer. When they pay, this ticket is marked paid automatically.</span>
+      </div>
+      <button class="btn" id="sendRfLinkBtn" type="button">Send Payment Link</button>
+    </div>` : ""}
     <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
   wirePhotoField("Upload_Photo_of_receipt",1);
+  /* Send Payment Link — 2026-09-18, user request: "in vendor app, vendor can
+     also send the remaining payment link". The agent app's own Send_Payment_Link1
+     had its agent-only gate removed the same day for the matching reason
+     ("Both vendor and agent take the remaining fee"); this is the other half of
+     that decision.
+
+     Deliberately REUSES the agent app's exact mechanism rather than inventing a
+     vendor-specific one: the same generateZohoPaymentLink Custom API, the same
+     "-RF" reference suffix, the same Zoho_Payment_URL_Remaining field, the same
+     balance_payment_link template, and the same Customer Page permalink. That
+     is what makes the rest of the chain work unchanged — paymentWebhook reads
+     the fee type from the "-RF" in the reference, so a link created any other
+     way would never mark the ticket paid.
+
+     Shown only when there is a balance to collect and it has not already been
+     paid, mirroring the agent button's own when: Remaining_Fee > 0. Nothing
+     else on this screen changes: the receipt photo gate, the Payment Received
+     button and confirmPaymentReceived() are all untouched, so the existing cash
+     flow behaves exactly as before. */
+  const rfLinkBtn=$("sendRfLinkBtn");
+  if(rfLinkBtn){
+    rfLinkBtn.onclick=async function(){
+      rfLinkBtn.disabled=true; rfLinkBtn.textContent="Sending…";
+      try{
+        const url=await generateZohoPaymentLink(r, remaining, (r.Case_ID||r.ID)+"-RF", "Remaining Fee");
+        if(url) r.Zoho_Payment_URL_Remaining=url;
+        const path=customerPageButtonPath(r, "remaining_payment", { bookingamount: String(remaining) });
+        if(!path){
+          toast("Couldn't build the customer page link — nothing was sent. See console.");
+          rfLinkBtn.disabled=false; rfLinkBtn.textContent="Send Payment Link";
+          return;
+        }
+        const ok=await sendWhatsAppTemplate(r.Phone_Number1||r.Phone_Number, "balance_payment_link", [], path);
+        toast(ok ? "Payment link sent to the customer" : "Link created, but the WhatsApp message failed — see console");
+        rfLinkBtn.textContent = ok ? "Payment Link Sent" : "Send Payment Link";
+        rfLinkBtn.disabled = !ok;
+      }catch(e){
+        console.warn("[GR-Vendor] send remaining-fee payment link failed", e);
+        toast("Could not send the payment link — see console");
+        rfLinkBtn.disabled=false; rfLinkBtn.textContent="Send Payment Link";
+      }
+    };
+  }
   const methodEl=$("Payment_Method_Final");
   // Restored 2026-08-04 (per user request) — brings back the "Payment
   // Gateway" QR display removed during the 2026-08-03 schema rebuild (once

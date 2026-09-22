@@ -1,0 +1,124 @@
+string getVehicleNames()
+{
+	returnstring = "";
+	try
+	{
+		// getVehicleNames - 2026-09-18. Vendor/Technician/Driver portal profiles
+		// get {"code":2898,"message":"Permission denied to view record(s)."} when
+		// their widget reads Vehicle_Master_Report directly, so every ticket card
+		// shows a raw Lookup id (448881000000474018) instead of the vehicle name.
+		// Issue names resolve fine on the same cards, which is what proves this is
+		// access to this ONE report rather than anything wrong with the resolver.
+		//
+		// This reads the report server-side with the app owner's own OAuth
+		// credentials and hands back just id + name - the same refresh-token
+		// mechanism already proven in submitCustomerLocation.deluge and
+		// paymentWebhook.deluge for writes the portal user was refused.
+		//
+		// WHY A CUSTOM API AND NOT THE WIDGET: these credentials grant full
+		// Creator Data API access to the whole application. Widget JavaScript is
+		// downloaded to every user's browser, so a refresh token placed there is
+		// readable by anyone who opens the vendor app. Server-side Deluge is the
+		// only place it can live safely.
+		//
+		// DELIBERATELY NARROW: this returns vehicle id/name pairs and nothing
+		// else. A general "read any report" helper would let any portal user read
+		// every report in the app through it, which is a bigger hole than the
+		// permission gap it was meant to work around.
+		//
+		// This is a FALLBACK, not the primary path. Granting the Vendor profile
+		// View on Vehicle_Master_Report is simpler and should be preferred; the
+		// widget only calls this when the direct read comes back empty.
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		ZC_REPORT_URL = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Vehicle_Master_Report?max_records=1000&field_config=all";
+		info "getVehicleNames - start " + zoho.currenttime;
+		tokenResp = invokeurl
+		[
+			url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+			type :POST
+		];
+		accessToken = tokenResp.get("access_token");
+		if(accessToken == null)
+		{
+			info "getVehicleNames - no access_token. Raw token response: " + tokenResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Could not get an access token from the refresh token. See this Custom API execution log for the raw response.\", \"vehicles\": []}";
+		}
+		readResp = invokeurl
+		[
+			url :ZC_REPORT_URL
+			type :GET
+			headers:{"Authorization":"Bearer " + accessToken}
+		];
+		respCode = readResp.get("code");
+		info "getVehicleNames - read response code = " + ifnull(respCode,"(null)");
+		if(respCode != 3000)
+		{
+			info "getVehicleNames - read FAILED. Raw response: " + readResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Reading Vehicle_Master_Report over the Data API did not return code 3000. See this Custom API execution log for the raw response.\", \"vehicles\": []}";
+		}
+		// vehiclesList is initialised as a real List() before anything goes into
+		// it. Deluge cannot infer the type of a value returned by .get(), and a
+		// for-each over such a value fails to SAVE with "Variable is not defined"
+		// - the exact error paymentWebhook.deluge hit on 2026-09-18.
+		vehiclesList = List();
+		if(readResp.get("data") != null)
+		{
+			vehiclesList = readResp.get("data").toList();
+		}
+		jsonParts = "";
+		rowCount = 0;
+		for each vehicleRec in vehiclesList
+		{
+			idText = "";
+			if(vehicleRec.get("ID") != null)
+			{
+				idText = vehicleRec.get("ID").toString().trim();
+			}
+			nameText = "";
+			if(vehicleRec.get("Name") != null)
+			{
+				nameText = vehicleRec.get("Name").toString().trim();
+			}
+			if(nameText == "")
+			{
+				if(vehicleRec.get("Vehicle_Name") != null)
+				{
+					nameText = vehicleRec.get("Vehicle_Name").toString().trim();
+				}
+			}
+			if(nameText == "")
+			{
+				if(vehicleRec.get("vehicle_name") != null)
+				{
+					nameText = vehicleRec.get("vehicle_name").toString().trim();
+				}
+			}
+			if(idText != "")
+			{
+				if(nameText != "")
+				{
+					if(rowCount > 0)
+					{
+						jsonParts = jsonParts + ",";
+					}
+					jsonParts = jsonParts + "{\"id\":\"" + idText + "\",\"name\":\"" + nameText + "\"}";
+					rowCount = rowCount + 1;
+				}
+			}
+		}
+		info "getVehicleNames - returning " + rowCount + " vehicle name(s).";
+		if(rowCount == 0)
+		{
+			info "getVehicleNames - the report read succeeded but produced no id/name pairs. Either the report is empty, or its name field is not Name / Vehicle_Name / vehicle_name. First row keys would show which.";
+		}
+		returnstring = "{\"code\": \"SUCCESS\", \"count\": " + rowCount + ", \"vehicles\": [" + jsonParts + "]}";
+	}
+	catch (e)
+	{
+		info "getVehicleNames threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"getVehicleNames threw an exception. See this Custom API execution log.\", \"vehicles\": []}";
+	}
+	return returnstring;
+}

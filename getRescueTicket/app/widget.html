@@ -192,6 +192,12 @@ img,svg{max-width:100%}
 .va-grid td.num,.va-grid th.num{text-align:right;font-variant-numeric:tabular-nums}
 .va-grid tr:last-child td{border-bottom:none}
 .va-grid input[type=number]{width:86px;padding:4px 6px}
+.va-grid input[type=text].va-comments{width:150px;padding:4px 6px}
+/* Sortable headers — RULE 2 of the vendor payments PDF (2026-09-17). */
+.va-grid th.va-sort{cursor:pointer;user-select:none}
+.va-grid th.va-sort:hover{color:var(--accent-ink,#7A3D0C)}
+.va-grid th.va-sort.on{color:var(--accent-ink,#7A3D0C)}
+.va-grid th.va-sort sup{font-size:9px;margin-left:2px;opacity:.75}
 .va-grid tr.va-unavail td{opacity:.55}
 .va-grid tr.va-warn td{background:var(--worktop)}
 .va-gridbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
@@ -1917,9 +1923,27 @@ const STAGES = [
           // sendWhatsAppTemplate()'s own matching change, which now omits
           // the `param3` key entirely from the payload when it isn't passed
           // in, instead of always sending `param3:""`.
-          const waParams=[String(r.Booking_Fee||0), param2];
-          console.log("[Get-Rescue] Send_Payment_Link: sending WhatsApp 'booking_fees_link' to", r.Phone_Number1, "with params (Booking_Fee, Total_Service_Fee+CustomerPageLink):", waParams);
-          return sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", waParams);
+          // Template switched 2026-09-17 to confirm_booking_fee_and_total_fee.
+          // booking_fees_link NO LONGER EXISTS in the WhatsApp workspace —
+          // confirmed by querying WhatsPortal's own /templates endpoint, which
+          // returns 14 approved templates and does not include it. Every
+          // booking-fee message was therefore failing with 404
+          // template_not_found, silently, because the old send code discarded
+          // the response.
+          //
+          // The replacement is purpose-built for exactly this message:
+          //   body_1 = TOTAL service fee   body_2 = BOOKING fee portion
+          //   button_0_1 = the Customer Page path, as a real tappable button
+          // which also retires the old "2000 - CustomerPage : <url>" composite
+          // that was being crammed into one placeholder.
+          const waButtonPath = customerPageButtonPath(r, "booking_payment", { bookingamount: String(r.Booking_Fee||0) });
+          const waParams=[String(r.Total_Service_Fee||0), String(r.Booking_Fee||0)];
+          console.log("[Get-Rescue] Send_Payment_Link: sending WhatsApp 'confirm_booking_fee_and_total_fee' to", r.Phone_Number1, "| body params (Total_Service_Fee, Booking_Fee):", waParams, "| button_0_1:", waButtonPath);
+          if(!waButtonPath){
+            toast("Couldn't build the Customer Page link — WhatsApp message not sent","err");
+            return null;
+          }
+          return sendWhatsAppTemplate(r.Phone_Number1, "confirm_booking_fee_and_total_fee", waParams, null, waButtonPath);
         }).then(function(ok){ if(ok===null) return; if(!ok) toast("Saved, but the WhatsApp payment link message failed to send — check console","err"); });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
@@ -1931,6 +1955,16 @@ const STAGES = [
     { n:"__PaymentLinkDisplay_BF", l:"Booking Fee Payment Link", t:"navlink", full:true,
       hrefField:"Zoho_Payment_URL", linkLabel:"💳 Open Payment Link",
       emptyMsg:"No payment link yet — click \"Send Payment Link & Request Location\" above to generate one." },
+    /* Payment Failures (2026-09-18) — Payment_Failure_Log, created in Zoho the
+       same day. paymentWebhook appends one line per failed attempt (see its own
+       isFailureEvent branch); before that field existed, a customer could try
+       and fail repeatedly with nothing visible to the agent anywhere.
+       Read-only and `when`-gated on the field actually having content, so it is
+       completely invisible on the overwhelming majority of tickets where nothing
+       has failed — it only appears when there is something to say. The same row
+       is repeated on the Final Payment step for the Remaining Fee. */
+    { n:"Payment_Failure_Log", l:"Payment Failures", t:"textarea", full:true, readonly:true,
+      when:(s)=>String(s.Payment_Failure_Log||"").trim()!=="" },
     { n:"Send_Link_For_The_Breakdown_Location", l:"Request Location", t:"button", when:(s)=>!(Number(s.Booking_Fee)>0), row:"rate4",
       buttonLabel:"Request Location", doneLabel:"Location Requested",
       // Real WhatsApp send wired 2026-08-07 (user request, "location"
@@ -1939,7 +1973,7 @@ const STAGES = [
       // param1 (Customer_Name) is a reasonable guess, not confirmed against
       // the actual approved template text.
       action:(r)=>{
-        sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"breakdown"})])
+        sendWhatsAppTemplate(r.Phone_Number1, "confirm_customer_location_details_copy", [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}))
           .then(function(ok){ if(!ok) toast("Saved, but the WhatsApp location-request message failed to send — check console","err"); });
       } },
     // Real change (2026-08-07, explicit user request) — labels only, "please
@@ -1954,7 +1988,14 @@ const STAGES = [
     // stage's own "Payment Method" (Payment_Method_Final, a different field
     // for the remaining/final fee). Same option list as that field's own,
     // for consistency.
-    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking"], default:"Cash", row:"rate5" },
+    // "Payment Gateway" added 2026-09-22 (client feedback: "after payment is
+    // done the mode is payment not being updated") — paymentWebhook now stamps
+    // this field on a successful online booking-fee payment, and it can only
+    // hold a value this list actually offers. Payment_Method_Final already had
+    // the same option; this brings the booking-fee field in line with it.
+    // ⚠ The matching option must also be added to the Payment_Method dropdown
+    // on the Create_Case form in Zoho, or the webhook's write is rejected.
+    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:"Cash", row:"rate5" },
     // ⚠ NEW field, added 2026-08-07 (user request: "add booking fee
     // transaction id field") — does NOT exist yet in Create_Case; needs
     // creating in Zoho Studio (Single Line Text) before this can actually
@@ -2085,7 +2126,7 @@ const STAGES = [
     { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true, repeatable:true,
       buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent",
       action:(r)=>{
-        sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"breakdown"})])
+        sendWhatsAppTemplate(r.Phone_Number1, "confirm_customer_location_details_copy", [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}))
           .then(function(ok){ toast(ok?"Location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
     // Soft-test item #7 (2026-09-10): "the direct location-sharing page link
@@ -2139,12 +2180,21 @@ const STAGES = [
     { n:"Send_Link_For_The_Drop_Location", l:"Send Drop Location Link", t:"button", full:true, when:(s)=>s.Service_Type==="TOW",
       buttonLabel:"Send Drop Location Link to Customer", doneLabel:"Location Link Sent",
       action:(r)=>{
-        sendWhatsAppTemplate(r.Phone_Number1, "location", [customerNameWithPageLink(r, "location", {locationType:"drop"})])
+        sendWhatsAppTemplate(r.Phone_Number1, "tow_confirm_customer_location_details", [], null, customerPageButtonPath(r, "location", {locationType:"drop"}))
           .then(function(ok){ toast(ok?"Drop location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
     // RE-ENABLED 2026-09-12 — see __LocationLinkDisplay_Breakdown's own
     // matching comment just above (same client request, same reversal).
-    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true,
+    // when: added 2026-09-16 - this was the ONE drop-location field on this
+    // step without a Service_Type guard, so on an RSR ticket the agent saw a
+    // "Drop Location Share Link" with no Send button, no lat/long fields and no
+    // round-trip distance beside it: a link to capture a drop pin for a job that
+    // has no drop leg. Drop Location is TOW-only (user-confirmed 2026-07-31, see
+    // Send_Link_For_The_Drop_Location's own comment just above), and every other
+    // field in this group - the Send button, DropLatLongPaste, DropLocationLat,
+    // DropLocationLong - already carries this exact guard. Same condition, so
+    // the whole drop group now appears and disappears together.
+    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true, when:(s)=>s.Service_Type==="TOW",
       hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"drop"}),
       linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
     { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
@@ -2610,19 +2660,38 @@ const STAGES = [
     // repeatable buttons (Calculate_Distance, and Send_Link_For_The_
     // Breakdown_Location as of 2026-08-10) for the same reasoning.
     // Real WhatsApp send wired 2026-08-11 (user request) — was a toast-only
-    // placeholder, no actual message ever went out. Reuses the "location"
-    // template (same one Locations' own send-link buttons use) since no
-    // dedicated ETA template exists yet — param is the computed ETA string
-    // itself (not Customer_Name, which the "location" template's other call
-    // sites pass), since that's the only thing worth telling the customer
-    // here. Swap the template name if/when a dedicated ETA template exists —
-    // "location"'s own wording almost certainly wasn't written for this.
+    // placeholder, no actual message ever went out. It then reused the
+    // "location" template because no dedicated ETA template existed, with this
+    // note: "Swap the template name if/when a dedicated ETA template exists —
+    // location's own wording almost certainly wasn't written for this."
+    //
+    // DONE 2026-09-15. The WhatsApp Template API spec confirms
+    // share_rescue_service_details_and_eta is APPROVED and purpose-built for
+    // this. "location" was telling customers to click on a time of day — see
+    // sendRescuerEtaMessage()'s own header for the full reasoning and for the
+    // minutes-to-hours conversion the template's wording forces.
     { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
-      readonly:(s)=>!acceptanceIsAgentManual(s),
+      // readonly:(s)=>!acceptanceIsAgentManual(s) removed 2026-09-22 (client
+      // feedback, live REPAIR case attended by the vendor on the app: "Other
+      // whatsapp message notifications are not being sent"). This button was
+      // the ONLY remaining Send_* button still carrying the agent-manual gate
+      // — every other one (Send_Payment_Link, both location links,
+      // Send_Payment_Link1) is ungated, which is exactly why the client saw
+      // booking-fee, location and remaining-fee messages arrive but not this
+      // one. When a vendor accepts in their own app, Acceptance_Mode is not
+      // "Agent Entering on Behalf of Vendor", so the gate made the button
+      // permanently unclickable and the customer never got the rescuer/ETA
+      // message at all. agentEditable:true does NOT cover this — it only
+      // exempts a field from the stage-level viewOnly flag (see
+      // renderFields()), never from the field's own readonly function.
+      // Same fix already applied to Send_Payment_Link1 for the same reason.
       buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
       action:(r)=>{
+        // expectedArrivalTime() is still used for the AGENT-facing toast (a
+        // clock time is what an agent wants to see confirmed); the customer's
+        // message carries the ETA in hours, per the template.
         const eta=expectedArrivalTime(r);
-        sendWhatsAppTemplate(r.Phone_Number1, "location", [eta||"shortly"])
+        sendRescuerEtaMessage(r)
           .then(function(ok){ toast(ok?(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer"):"Couldn't send the WhatsApp ETA message — check console", ok?"ok":"err"); });
       } },
     // readonly gate below (2026-08-11) applied to every remaining field in
@@ -2909,19 +2978,38 @@ const STAGES = [
     // repeatable buttons (Calculate_Distance, and Send_Link_For_The_
     // Breakdown_Location as of 2026-08-10) for the same reasoning.
     // Real WhatsApp send wired 2026-08-11 (user request) — was a toast-only
-    // placeholder, no actual message ever went out. Reuses the "location"
-    // template (same one Locations' own send-link buttons use) since no
-    // dedicated ETA template exists yet — param is the computed ETA string
-    // itself (not Customer_Name, which the "location" template's other call
-    // sites pass), since that's the only thing worth telling the customer
-    // here. Swap the template name if/when a dedicated ETA template exists —
-    // "location"'s own wording almost certainly wasn't written for this.
+    // placeholder, no actual message ever went out. It then reused the
+    // "location" template because no dedicated ETA template existed, with this
+    // note: "Swap the template name if/when a dedicated ETA template exists —
+    // location's own wording almost certainly wasn't written for this."
+    //
+    // DONE 2026-09-15. The WhatsApp Template API spec confirms
+    // share_rescue_service_details_and_eta is APPROVED and purpose-built for
+    // this. "location" was telling customers to click on a time of day — see
+    // sendRescuerEtaMessage()'s own header for the full reasoning and for the
+    // minutes-to-hours conversion the template's wording forces.
     { n:"Send_ETA_To_Customer", l:"Send ETA to Customer", t:"button", full:true, agentEditable:true, repeatable:true,
-      readonly:(s)=>!acceptanceIsAgentManual(s),
+      // readonly:(s)=>!acceptanceIsAgentManual(s) removed 2026-09-22 (client
+      // feedback, live REPAIR case attended by the vendor on the app: "Other
+      // whatsapp message notifications are not being sent"). This button was
+      // the ONLY remaining Send_* button still carrying the agent-manual gate
+      // — every other one (Send_Payment_Link, both location links,
+      // Send_Payment_Link1) is ungated, which is exactly why the client saw
+      // booking-fee, location and remaining-fee messages arrive but not this
+      // one. When a vendor accepts in their own app, Acceptance_Mode is not
+      // "Agent Entering on Behalf of Vendor", so the gate made the button
+      // permanently unclickable and the customer never got the rescuer/ETA
+      // message at all. agentEditable:true does NOT cover this — it only
+      // exempts a field from the stage-level viewOnly flag (see
+      // renderFields()), never from the field's own readonly function.
+      // Same fix already applied to Send_Payment_Link1 for the same reason.
       buttonLabel:"Send ETA to Customer", doneLabel:"ETA Sent",
       action:(r)=>{
+        // expectedArrivalTime() is still used for the AGENT-facing toast (a
+        // clock time is what an agent wants to see confirmed); the customer's
+        // message carries the ETA in hours, per the template.
         const eta=expectedArrivalTime(r);
-        sendWhatsAppTemplate(r.Phone_Number1, "location", [eta||"shortly"])
+        sendRescuerEtaMessage(r)
           .then(function(ok){ toast(ok?(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer"):"Couldn't send the WhatsApp ETA message — check console", ok?"ok":"err"); });
       } },
     { n:"Image_Upload5", l:"Arrival Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
@@ -3237,16 +3325,40 @@ const STAGES = [
     // repeatable:true so the agent can resend (wrong number, missed
     // notification, etc.) — same tradeoff as every other repeatable send
     // button in this file: a one-off toast instead of a permanent "done" lock.
-    // when: added 2026-09-11 (explicit user request, live screenshot) — this
-    // button used to show unconditionally regardless of Payment_Method_Final,
-    // including when "Payment Gateway" was selected (where the QR block
-    // above already covers that collection path) — now hidden specifically
-    // for "Payment Gateway", shown for every other method (Cash/UPI/Card/
-    // Net Banking), matching the exact behavior requested. Only this
-    // button's visibility changes — Payment_Method_Final/Payment_received/
-    // the QR block/QR_Code field are all untouched.
-    { n:"Send_Payment_Link1", l:"Send payment link", t:"button", full:true, repeatable:true, readonly:(s)=>!acceptanceIsAgentManual(s),
-      when:(s)=>s.Payment_Method_Final!=="Payment Gateway",
+    /* Gating brought into line with the Booking Fee button — 2026-09-18, two
+       explicit user decisions, after an end-to-end trace of the Remaining Fee
+       flow showed this button carried two restrictions its Booking Fee
+       counterpart (Send_Payment_Link, `quote` stage) does not.
+
+       1. readonly:(s)=>!acceptanceIsAgentManual(s) REMOVED.
+          It disabled this button on every ticket except one being run in
+          "Agent Entering on Behalf of Vendor" mode, so on a normal ticket the
+          agent could not send a remaining-fee link at all. The gate arrived on
+          2026-08-18 in a sweep that added readonly to this step's OUTCOME
+          fields (Payment_Method_Final, Payment_received, receipt photo, QR
+          reference) — this is an action, not outcome data, and was caught up
+          in it. User decision 2026-09-18: "Both vendor and agent take the
+          remaining fee", so either can now send the link. The outcome fields
+          keep their own gates, untouched.
+
+       2. when: Payment_Method_Final != "Payment Gateway" REMOVED.
+          Added 2026-09-11 by explicit request, when the gateway path was only
+          a QR placeholder. A real Zoho Payments link exists now, so Payment
+          Gateway is precisely the method that needs this button. User decision
+          2026-09-18: show it for every payment method.
+
+       REPLACED BY when: Remaining_Fee > 0 — the exact guard Send_Payment_Link
+       already uses for Booking_Fee. This is the one addition beyond the two
+       decisions above, and it only removes a button that could never have
+       worked: generateZohoPaymentLink() already refuses an amount that is not
+       greater than zero, so on a ticket with no balance the button was dead
+       weight that toasted an error when clicked.
+
+       Nothing else on this step changes — Payment_Method_Final,
+       Payment_received, QR_Code and the receipt photo all keep their existing
+       readonly rules. */
+    { n:"Send_Payment_Link1", l:"Send payment link", t:"button", full:true, repeatable:true,
+      when:(s)=>Number(s.Remaining_Fee)>0,
       buttonLabel:"Send Payment Link", doneLabel:"Payment Link Sent",
       // Real gap fixed 2026-09-07 (user decision: "split into two invoices"
       // — see onDemandInvoicing()'s own header comment and Send_Payment_Link's
@@ -3355,8 +3467,24 @@ const STAGES = [
           // so it's been sending the same shape that's already confirmed
           // broken for the identical template. Now matches
           // `Send_Payment_Link`'s own 2-param call exactly.
-          sendWhatsAppTemplate(r.Phone_Number1, "booking_fees_link", [String(r.Remaining_Fee||0), param2])
-            .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
+          // Template switched 2026-09-17 to balance_payment_link — the live
+          // workspace's own template for the REMAINING/balance fee, and the
+          // correct counterpart to confirm_booking_fee_and_total_fee on the
+          // Quote step. booking_fees_link no longer exists (see that call
+          // site's own comment).
+          //
+          // balance_payment_link has NO body variables — its wording is fixed —
+          // and one URL button variable, so the Customer Page path is the only
+          // thing sent. The remaining-fee amount is shown on the page itself,
+          // which is where the customer pays it.
+          const rfButtonPath = customerPageButtonPath(r, "remaining_payment", { bookingamount: String(r.Remaining_Fee||0) });
+          console.log("[Get-Rescue] Send_Payment_Link1: sending WhatsApp 'balance_payment_link' to", r.Phone_Number1, "| button_0_1:", rfButtonPath);
+          if(!rfButtonPath){
+            toast("Couldn't build the Customer Page link — WhatsApp message not sent","err");
+          } else {
+            sendWhatsAppTemplate(r.Phone_Number1, "balance_payment_link", [], null, rfButtonPath)
+              .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
+          }
         });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
@@ -3365,6 +3493,13 @@ const STAGES = [
     { n:"__PaymentLinkDisplay_RF", l:"Remaining Fee Payment Link", t:"navlink", full:true,
       hrefField:"Zoho_Payment_URL_Remaining", linkLabel:"💳 Open Payment Link",
       emptyMsg:"No payment link yet — click \"Send Payment Link\" above to generate one." },
+    // Payment Failures — same read-only row as the Quote stage's own copy above;
+    // see that one's comment. Repeated here so a failed REMAINING-fee attempt is
+    // visible on the step where that fee is actually collected, rather than only
+    // back on Quote. Same field, same content — one log per ticket covering both
+    // fees, each line saying which fee it was.
+    { n:"Payment_Failure_Log", l:"Payment Failures", t:"textarea", full:true, readonly:true,
+      when:(s)=>String(s.Payment_Failure_Log||"").trim()!=="" },
     // Label changed 2026-09-02 (build-plan item #8) — see Image_Upload's own
     // matching comment (Quote/Booking-Fee stage) for the full rationale.
     // Label-only, field API name (n:) untouched — no schema/data impact.
@@ -3610,12 +3745,47 @@ const CLOSURE_FIELDS=[
   // before the first call has even finished, since Zoho_Books_Invoice_ID
   // itself is only ever refreshed into state.record AFTER that first call's
   // own async write completes.
+  // `when:` SIMPLIFIED 2026-09-17 (user-reported live: an ON DEMAND ticket
+  // showed no Generate Invoice button, no Invoice ID and no Invoice Link on
+  // the Closure page at all). This used to be
+  //   const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s));
+  //   return !!(elig && elig.isOnDemand);
+  // which silently folded TWO unrelated conditions into one invisible result:
+  // "the Client is ON DEMAND" and "there is a positive amount to invoice".
+  // onDemandInvoiceEligibility() returns NULL once the amount is 0 (no
+  // booking/remaining fee confirmed paid yet and Extra Payable blank), so a
+  // genuinely ON DEMAND ticket that simply hasn't collected money yet
+  // rendered EXACTLY like a non-ON-DEMAND one — nothing on screen, and no way
+  // for the agent to tell which of the two conditions had failed. That
+  // ambiguity is what made this take two rounds to diagnose.
+  //
+  // Now visibility follows the CLIENT alone (the spec's own wording, "for
+  // tickets where the client is ON DEMAND"), and the amount check stays
+  // exactly where it already was and still belongs — inside action: below,
+  // which has re-validated eligibility on every click since this button was
+  // written. Nothing new was added there; its existing refusal branch just
+  // got a message that names the real reason instead of a generic one.
+  //
+  // Strictly additive: a ticket that showed this section before still shows
+  // it, an ON DEMAND ticket with nothing collected now shows it and explains
+  // itself on click, and a non-ON-DEMAND ticket is hidden exactly as before.
+  // The AUTOMATIC closure-time generation is deliberately NOT touched —
+  // maybeGenerateBooksInvoiceOnClosure() still goes through
+  // onDemandInvoiceEligibility() and still refuses a ₹0 invoice, which is
+  // correct: an amount of 0 means there is genuinely nothing to bill.
   { n:"Generate_OnDemand_Invoice", l:"Generate Invoice", t:"button", full:true, repeatable:true, agentEditable:true, ephemeral:true,
-    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    when:(s)=>isOnDemandClient(s),
     buttonLabel:"Generate Invoice", doneLabel:"Invoice Generated",
     action:(r)=>{
       if(r.Zoho_Books_Invoice_ID){
-        toast("Invoice already generated — Zoho Books Invoice ID "+r.Zoho_Books_Invoice_ID,"err");
+        // Message reworded 2026-09-18 (user-reported: clicking Generate Invoice
+        // on an already-invoiced ticket looked like an error). This refusal is
+        // correct and deliberate — a second Zoho Books invoice for one ticket is
+        // a real accounting problem, not a harmless retry — but the old wording
+        // stated the ID and stopped, leaving no clue what to do if the existing
+        // invoice is genuinely wrong. It now says both.
+        toast("This ticket already has invoice "+r.Zoho_Books_Invoice_ID+" — a second one would double-bill. To replace it: void that invoice in Zoho Books, clear the Zoho Books Invoice ID field on this record, then click again.","err");
+        console.log("[Get-Rescue] Generate Invoice refused — ticket", r.ID, "already carries Zoho_Books_Invoice_ID", r.Zoho_Books_Invoice_ID, "| Invoice URL:", r.Zoho_Books_Invoice_URL||"(none)", "— this is the duplicate guard, not a failure.");
         return;
       }
       if(state._generatingOnDemandInvoice){
@@ -3625,7 +3795,21 @@ const CLOSURE_FIELDS=[
       const finalTsf = computeClosureTSF(r);
       const elig = onDemandInvoiceEligibility(r, finalTsf);
       if(!elig || !elig.isOnDemand){
-        toast("Not eligible for an On Demand invoice right now","err");
+        // Says WHICH of the three eligibility conditions failed (2026-09-17)
+        // — was a single generic "Not eligible for an On Demand invoice right
+        // now" for all of them. Same guard, same refusal, same three
+        // conditions, all read from the SAME functions the eligibility check
+        // itself uses (isOnDemandClient / closureCountsAsFeeBearing /
+        // computeClosureTSF) so this message can never drift out of sync with
+        // the real rule — only the wording changed.
+        if(!isOnDemandClient(r)){
+          toast("This ticket's Client is not ON DEMAND — nothing to invoice here","err");
+        } else if(!closureCountsAsFeeBearing(String(r.Closure_Status||"").trim())){
+          toast("Set Closure Status to Completed, Cancelled or Cancelled - Billable first","err");
+        } else {
+          toast("Nothing to invoice yet — no booking/remaining fee is confirmed paid, and Extra Payable is blank","err");
+        }
+        console.log("[Get-Rescue] Generate Invoice refused — isOnDemandClient:", isOnDemandClient(r), "| Closure_Status:", r.Closure_Status, "| computeClosureTSF:", finalTsf, "| Extra_Payable:", r.Extra_Payable, "| Client (raw):", r.Client, "| Client (resolved):", clientDisplayName(r));
         return;
       }
       state._generatingOnDemandInvoice = true;
@@ -3690,7 +3874,7 @@ const CLOSURE_FIELDS=[
   // vendor-mobile displays (soft-test items #4/#7/#17) — read-only,
   // recomputed fresh on every render, nothing new stored.
   { n:"__OnDemandInvoiceIdDisplay", l:"Zoho Books Invoice ID", t:"computed", full:true,
-    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    when:(s)=>isOnDemandClient(s),
     compute:(r)=>r.Zoho_Books_Invoice_ID||"",
     emptyHint:"Not generated yet — click \"Generate Invoice\" above." },
   // Invoice Link (2026-09-11, Task Tracker PDF item 27 — "DISPLAY at end of
@@ -3705,26 +3889,67 @@ const CLOSURE_FIELDS=[
   // Shown to AGENTS only (this is the agent app) — vendors get aggregate
   // settlement figures in vendorPerformance and deliberately never see case
   // history, per the wireframe rule that widget is built around.
+  /* Call History expanded 2026-09-21 (user request: "show all the columns in
+     history calls"). Was a single bullet carrying five values — direction,
+     phone, status, duration, outcome — from a time when Call_Log only held
+     those. getCallbackStatus now captures all 16 fields Ozonetel documents
+     (agent, start/end times, time-to-answer, talk vs total duration, transfer
+     target, conference duration, both recording links and the call flow), and
+     none of them were reaching this screen.
+
+     Rendered as an indented block per call rather than one very long line —
+     fifteen values joined by "·" is unreadable, and an agent scanning a ticket
+     wants the headline first and the detail underneath.
+
+     Every line is dropped when its values are empty, so a call that only ever
+     produced the basics still renders as compactly as it did before. That
+     matters because the extended fields only populate once the new Call_Log
+     fields exist and a callback has actually landed — until then this looks
+     exactly as it always has. */
   { n:"__CallHistoryDisplay", l:"Call History", t:"computed", full:true,
     compute:(r)=>{
       const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
       if(!logs.length) return "";
+      const join=(parts)=>parts.filter(Boolean).join(" · ");
       return logs.map(function(c){
-        const when=c.Added_Time||"";
-        const bits=[
+        const lines=[];
+        // Headline — what the old single line showed, unchanged.
+        lines.push("• "+join([
           String(c.Call_Direction||"Outbound"),
           c.Phone_Number||"",
           c.Call_Status||"",
-          c.Call_Duration ? ("duration "+c.Call_Duration) : "",
-          c.Call_Outcome||"",
-          when
-        ].filter(Boolean);
-        return "• "+bits.join(" · ");
-      }).join("\n");
+          c.Added_Time||""
+        ]));
+        const agentLine=join([
+          c.Agent_Name ? ("Agent: "+c.Agent_Name) : "",
+          c.Call_Duration ? ("Talk: "+c.Call_Duration) : "",
+          c.Total_Duration ? ("Total: "+c.Total_Duration) : "",
+          c.Time_To_Answer ? ("Answered in: "+c.Time_To_Answer) : ""
+        ]);
+        if(agentLine) lines.push("    "+agentLine);
+        const timeLine=join([
+          c.Call_Start_Time ? ("Start: "+c.Call_Start_Time) : "",
+          c.Call_End_Time ? ("End: "+c.Call_End_Time) : ""
+        ]);
+        if(timeLine) lines.push("    "+timeLine);
+        const outcomeLine=join([
+          c.Call_Outcome ? ("Outcome: "+c.Call_Outcome) : "",
+          c.Transferred_To ? ("Transferred to: "+c.Transferred_To) : "",
+          c.Conference_Duration ? ("Conference: "+c.Conference_Duration) : ""
+        ]);
+        if(outcomeLine) lines.push("    "+outcomeLine);
+        // Recording links are printed in full rather than shortened — an agent
+        // needs to be able to copy one out, and a truncated URL is useless.
+        if(c.Audio_File_URL) lines.push("    Recording: "+c.Audio_File_URL);
+        if(c.Conference_Audio_URL) lines.push("    Conference recording: "+c.Conference_Audio_URL);
+        if(c.Call_Flow) lines.push("    Flow: "+c.Call_Flow);
+        if(c.UCID) lines.push("    UCID: "+c.UCID);
+        return lines.join("\n");
+      }).join("\n\n");
     },
     emptyHint:"No calls recorded for this ticket." },
   { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
-    when:(s)=>{ const elig=onDemandInvoiceEligibility(s, computeClosureTSF(s)); return !!(elig && elig.isOnDemand); },
+    when:(s)=>isOnDemandClient(s),
     hrefField:"Zoho_Books_Invoice_URL", linkLabel:"🧾 Open Invoice",
     emptyMsg:"Not available yet — click \"Generate Invoice\" above." }
 ];
@@ -4648,10 +4873,15 @@ async function runClosureDistanceCalculations(record){
    confidence level as every other WhatsApp template name in this app ("not
    confirmed against the actual approved template text") — correct both
    once the real WhatsApp Business template is approved. */
-const GOOGLE_REVIEW_LINK = ""; // ⚠ fill in the real Google Business review link once available
+// Rewritten 2026-09-17 against the live template list. "google_feedback_link"
+// does not exist in the workspace and never did — every send 404'd silently.
+// The real template is "google_feedback", it takes NO parameters, and the
+// Google review link (https://g.page/r/CdqrNPuv4uZ1EBM/review) is baked into
+// its own approved button. GOOGLE_REVIEW_LINK is therefore obsolete: it was a
+// placeholder that never had a value, and the guard on it meant this function
+// returned false without sending even once the template existed.
 function sendGoogleFeedbackRequest(record){
-  if(!GOOGLE_REVIEW_LINK){ console.warn("[Get-Rescue] sendGoogleFeedbackRequest — GOOGLE_REVIEW_LINK isn't configured yet, skipping send"); return Promise.resolve(false); }
-  return sendWhatsAppTemplate(record.Phone_Number1, "google_feedback_link", [record.Customer_Name||"Customer", GOOGLE_REVIEW_LINK]);
+  return sendWhatsAppTemplate(record.Phone_Number1, "google_feedback", []);
 }
 // sendCustomerFeedbackRequest (2026-09-02) — same mechanism as
 // sendGoogleFeedbackRequest just above, but points at this app's OWN new
@@ -4663,10 +4893,65 @@ function sendGoogleFeedbackRequest(record){
 // WhatsApp Business template, same confidence level as every other
 // template name in this app. Degrades to a no-op (skips the send, doesn't
 // block closure) if the customer page isn't configured yet.
+// DISABLED 2026-09-17 — "customer_feedback_link" does not exist in the WhatsApp
+// workspace. The live list has 14 approved templates and there is no
+// customer-feedback one among them (google_feedback is a different thing: it
+// points at Google Reviews, not this app's own feedback page). Every send has
+// been failing with 404 template_not_found, silently.
+//
+// Left as a no-op rather than deleted: the Closure page's own "Request Customer
+// Feedback" checkbox and its saved field are untouched, so nothing else in the
+// flow changes, and this becomes a one-line re-enable the moment a real
+// template exists. Whoever creates it needs ONE variable - the Customer Page
+// feedback link - or, better, a URL button matching the pattern every other
+// link-carrying template in this workspace now uses.
 function sendCustomerFeedbackRequest(record){
-  const link = buildCustomerPageUrl(record, "feedback");
-  if(!link){ console.warn("[Get-Rescue] sendCustomerFeedbackRequest — CUSTOMER_PAGE_BASE_URL isn't configured yet, skipping send"); return Promise.resolve(false); }
-  return sendWhatsAppTemplate(record.Phone_Number1, "customer_feedback_link", [record.Customer_Name||"Customer", link]);
+  console.warn("[Get-Rescue] sendCustomerFeedbackRequest — no approved WhatsApp template exists for a customer-feedback request (checked against the live template list 2026-09-17). Nothing sent. Create the template, then re-enable this function.");
+  return Promise.resolve(false);
+}
+/* sendRescuerEtaMessage() — 2026-09-15, real bug fixed against the "Get Rescued
+   WhatsApp Template API" spec (revised 15 Sept 2026).
+
+   Both "Send ETA to Customer" buttons (RSR `reach` and the TOW stage) were
+   sending the "location" template with the ETA as its single parameter. That
+   template's {{1}} is a LINK:
+
+     "please click this secure link: {{1}}. You can share your current location
+      or you can pin a location on the map."
+
+   so customers were being told to click "12:20 PM". Both call sites carried the
+   same note — "Swap the template name if/when a dedicated ETA template exists"
+   — and the catalogue confirms one does: share_rescue_service_details_and_eta,
+   APPROVED, three body variables.
+
+     {{1}} Rescuer's name        {{2}} Rescuer's contact number
+     {{3}} ETA  ("Hrs" is already written into the template)
+
+   ⚠ UNIT MISMATCH, converted rather than ignored: this app stores the ETA in
+   MINUTES (ETA / ETA_TOW, both labelled "ETA to Breakdown (mins)"), but the
+   template appends the literal word "Hrs". Sending 45 would read "45 Hrs".
+   Minutes are therefore converted to hours to one decimal. It is honest but
+   reads oddly for short ETAs ("0.8 Hrs"); if you would rather the message said
+   minutes, that means editing the template text in the WhatsPortal dashboard
+   and re-submitting it to Meta — a content change, not a code one.
+
+   Missing values become "-" rather than "": the spec is explicit that every
+   placeholder must receive a real value and that "Empty strings do not count -
+   send a real value, or a dash", with a mismatch returning 422
+   message_rejected. */
+function etaHoursText(r){
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const mins=Number(isTow ? r.ETA_TOW : r.ETA)||0;
+  if(!(mins>0)) return "";
+  return String(Math.round((mins/60)*10)/10);
+}
+function sendRescuerEtaMessage(r){
+  const rescuerName=lookupNamesFor(r.Assigned_Vendor, OPTIONS.vendors)||"-";
+  const vendorRaw=vendorRawForTicket(r);
+  const rescuerPhone=(vendorRaw && vendorRaw[CONFIG.vendorPhoneField])||"-";
+  const hrs=etaHoursText(r)||"-";
+  console.log("[Get-Rescue] sendRescuerEtaMessage: template share_rescue_service_details_and_eta | rescuer:", rescuerName, "| phone:", rescuerPhone, "| eta(hrs):", hrs);
+  return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, hrs]);
 }
 /* Customer Page (2026-09-02, new customerPage widget) — the public, no-login
    page customers land on when sent a Booking Payment / Remaining Payment /
@@ -4807,9 +5092,40 @@ async function sendToAirtable(record){
 // B2B is deliberately UNCHANGED (user decision 2026-09-14: "Not for B2B") —
 // still Completed-only, still invoicing Rescue_Charge, on its own separate
 // billing arrangement.
+/* isOnDemandClient() — 2026-09-17, real bug fixed (user-reported live: a
+   genuinely ON DEMAND ticket closed with finalTsf 2000 and logged
+   "not an eligible ON DEMAND closure ... Client: 448881000000139597", so no
+   Zoho Books invoice was ever created).
+
+   Root cause: every ON DEMAND check in this file was written against the
+   ORIGINAL assumption (see clientDisplayName()'s own comment just below, and
+   the `create` stage's 2026-07-31 comments) that "ON DEMAND" is a plain
+   sentinel STRING stored directly in the Client field. In the live account it
+   is a real Client_Report record whose Lookup ID lands in that field instead,
+   so the raw string comparison could never match — while
+   clientDisplayName(), which resolves the Lookup against the already-loaded
+   OPTIONS.clients, correctly reported "ON DEMAND" on the very same closure
+   (visible in maybeCreateOnDemandInvoice()'s own payload log, same click).
+
+   Routes through clientDisplayName() rather than replacing the comparison,
+   so BOTH shapes keep working: that function returns the sentinel verbatim
+   when the raw value really is the string, resolves the Lookup ID to its
+   label otherwise, and falls back to the raw value if OPTIONS hasn't loaded —
+   which is exactly today's behavior, so nothing regresses.
+
+   Deliberately used ONLY by the two invoicing call sites (this function and
+   onDemandInvoicing()'s own JS wrapper) — the three OTHER raw comparisons
+   still in this file (Client_Tracking_Id's readonly on the `create`/`pay`
+   stages, and the Rescue_Charge/Client_Charge nulling in renderWizard) are
+   the same root cause but changing them would alter field editability and a
+   saved money field on tickets that are working today. Flagged, not silently
+   changed. */
+function isOnDemandClient(r){
+  return String(clientDisplayName(r)||"").trim().toUpperCase()==="ON DEMAND";
+}
 function onDemandInvoiceEligibility(r, finalTsf){
   const status = String(r.Closure_Status||"").trim();
-  const isOnDemand = String(r.Client||"").trim().toUpperCase()==="ON DEMAND";
+  const isOnDemand = isOnDemandClient(r);
   if(isOnDemand){
     if(!closureCountsAsFeeBearing(status)) return null;
   } else {
@@ -5287,6 +5603,106 @@ function vaVendorDisplayName(r){
     || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vid); });
   return (vopt && vopt.v) || "(no vendor)";
 }
+/* ---------------------------------------------------------------------
+   Operations Approval column resolvers — 2026-09-17, from the "vendor
+   payments" PDF's own Operations Approval field table. Each one is a single
+   shared reader used by BOTH the grid and the accordion, so the two views can
+   never show a different value for the same column (the same reuse rule
+   vaFeeFor()/vendorAcctApprovalPayload() already follow for the money math).
+   Every one degrades to "—" rather than blank/undefined, matching this file's
+   existing "missing data shows as something, never as nothing" convention.
+   --------------------------------------------------------------------- */
+// Vendor ID — the PDF's "Display the Fleet ID from Vendor table".
+// `Fleet_ID` on Vendors_Report — USER-CONFIRMED 2026-09-17, so it leads the
+// list and is the one that actually resolves. The remaining spellings are kept
+// as cheap insurance, not guesswork: this exact account has twice turned out to
+// use a lowercase API name where the documented one was capitalised
+// (Vendors_Report.service_type, Technicians_Report.technician_name — see
+// CONFIG.optionReports' own comments), so `fleet_id` staying in the list costs
+// nothing and covers that specific, already-observed failure mode.
+//
+// NO record-ID fallback (changed 2026-09-17, once the real field name was
+// confirmed): returning the Vendors_Report record ID for a vendor with no
+// Fleet_ID set would print a 19-digit number in a column headed "Vendor ID",
+// which reads as a real fleet identifier and is not one. A blank field now
+// shows "—", which is true, and is also the signal that the vendor master row
+// needs its Fleet_ID filled in.
+const VA_FLEET_ID_FIELDS = ["Fleet_ID","Fleet_Id","FleetID","fleet_id","Vendor_Fleet_ID","Vendor_Code"];
+// Split out 2026-09-17 so Accounts Payable's own fleet-id SEARCH can read the
+// same identifier straight off a Vendors_Report record, without needing a
+// ticket to go through. One reader, one candidate list, both screens.
+function fleetIdOfVendorRaw(vraw){
+  if(!vraw) return "";
+  for(const f of VA_FLEET_ID_FIELDS){
+    const v = vraw[f];
+    if(v!=null && String(v).trim()!=="") return String(v).trim();
+  }
+  return "";
+}
+function vaVendorFleetId(r){
+  return fleetIdOfVendorRaw(vendorRawForTicket(r)) || "—";
+}
+// Date & Time — the PDF is explicit: 'Vendor "Accept", date and time'. This
+// was previously read from Added_Time (the ticket's own CREATION time), a
+// different moment entirely. Service_Acceptance / Service_Acceptance_For_Tow
+// are the real accept-time fields (FIELDS.md: "Accept Time | Date-Time"),
+// split RSR/TOW the same way every other paired field in this app is. Falls
+// back to the other branch's field before giving up, so a ticket whose
+// Service_Type was changed after acceptance still shows its real accept time.
+function vaAcceptedAtRaw(r){
+  const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
+  const primary = svc==="TOW" ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
+  return primary || r.Service_Acceptance || r.Service_Acceptance_For_Tow || "";
+}
+function vaAcceptedAtText(r){
+  const raw = vaAcceptedAtRaw(r);
+  if(!raw) return "—";
+  const d = parseAnyDateTime ? parseAnyDateTime(raw) : null;
+  return d ? d.toLocaleString() : String(raw);
+}
+function vaAcceptedAtSortKey(r){
+  const d = parseAnyDateTime ? parseAnyDateTime(vaAcceptedAtRaw(r)) : null;
+  return d ? d.getTime() : 0;
+}
+// Case Status — the PDF wants the FINAL status ("CANCEL, COMPLETED, etc"),
+// which is Closure_Status. This was previously showing r.Status, the workflow
+// stage, which on this screen is always "RSP CLOSED"/"CLOSED" by definition
+// (isPendingOpsApproval() filters on exactly those two) — i.e. a column that
+// carried no information at all. Falls back to Status only when Closure_Status
+// is genuinely blank, which is the RSP-CLOSED-but-agent-hasn't-closed-yet case.
+function vaCaseStatusText(r){
+  const cs = String(r.Closure_Status||"").trim();
+  if(cs) return cs;
+  const st = String(r.Status||"").trim();
+  return st ? st+" (not closed by agent yet)" : "—";
+}
+// Service — the PDF is explicit: "need the exact issue [not RSR or TOW]".
+// Both views were showing Service_Type, which is precisely the RSR/TOW value
+// the spec rules out. Vehicle_Issue resolved through lookupNamesFor() is the
+// exact issue, the same resolver the closure summary and the On_Demand_Invoicing
+// record already use for this field. Service_Type is kept as a fallback only
+// (better than an empty cell) for a ticket with no issue recorded.
+function vaServiceIssueText(r){
+  const issues = (typeof lookupNamesFor==="function") ? (lookupNamesFor(r.Vehicle_Issue, OPTIONS.issues)||"") : "";
+  if(issues) return issues;
+  const svc = String(r[CONFIG.serviceTypeField]||"").trim();
+  return svc || "—";
+}
+// Vehicle — "VEHICLE MAKE MODEL". Already correct in the accordion; this just
+// makes the same resolver available to the grid, which had no Vehicle column.
+function vaVehicleText(r){
+  const veh = (typeof lookupNamesFor==="function") ? (lookupNamesFor(r[CONFIG.vehicleField], OPTIONS.vehicles)||"") : "";
+  return veh || "—";
+}
+// Payment status — the PDF's "Workflow / On Approval - make settlement status
+// = PAYABLE". The WRITE has always happened (vendorAcctApprovalPayload() sets
+// Settlement_Status), but the value was never DISPLAYED anywhere on this
+// screen, so ops had no way to see the state they were changing. Read-only,
+// exactly as the spec's Editable column says.
+function vaPaymentStatusText(r){
+  const s = String(r.Settlement_Status||"").trim();
+  return s || SETTLEMENT_STATUS_PENDING;
+}
 // Accordion item: the row button plus its own (initially empty/closed)
 // inline detail container right below it — same "one open at a time"
 // convention as the dashboard's own report-bucket lists (EXPANDED_BUCKETS),
@@ -5335,18 +5751,114 @@ function vaCaseRowHtml(r){
        disabled. It cannot be approved here for the same reason
        saveVendorAcctApproval() refuses it: there is no fee to approve. */
 let VA_GRID_MODE = true, VA_SELECTED = new Set();
+/* VA_SORT — RULE 2 of the PDF, "ALLOW SORTING USING MULTIPLE HEADERS"
+   (2026-09-17; the grid previously had no sorting at all). An ORDERED list of
+   {key,dir}, most significant first, so it is genuinely multi-header and not
+   just one sort column at a time: click a header to sort by it alone, click
+   again to reverse, a third time to clear; SHIFT-click to ADD a header as a
+   further tie-breaker after the ones already chosen. Each header renders its
+   own position number once more than one is active, so the precedence is
+   visible rather than something the user has to remember.
+   Sorting is applied to the rendered ROWS only — VA_CASES itself is never
+   reordered, so selection (VA_SELECTED, keyed by record ID), bulk approval and
+   every totals calculation are completely unaffected by it. */
+let VA_SORT = [];
+function vaToggleSort(key, additive){
+  const i = VA_SORT.findIndex(function(s){ return s.key===key; });
+  if(additive){
+    if(i<0) VA_SORT.push({ key:key, dir:1 });
+    else if(VA_SORT[i].dir===1) VA_SORT[i].dir=-1;
+    else VA_SORT.splice(i,1);
+  } else if(i===0 && VA_SORT.length===1){
+    if(VA_SORT[0].dir===1) VA_SORT=[{ key:key, dir:-1 }]; else VA_SORT=[];
+  } else {
+    VA_SORT=[{ key:key, dir:1 }];
+  }
+  renderVendorAcctGrid();
+}
+function vaSortRows(rows){
+  if(!VA_SORT.length) return rows;
+  return rows.slice().sort(function(a,b){
+    for(const s of VA_SORT){
+      const av=a.sort[s.key], bv=b.sort[s.key];
+      let c;
+      if(typeof av==="number" && typeof bv==="number") c = av-bv;
+      else c = String(av==null?"":av).localeCompare(String(bv==null?"":bv), undefined, { numeric:true, sensitivity:"base" });
+      if(c) return c*s.dir;
+    }
+    return 0;
+  });
+}
 function vaGridRowData(r){
   const vendorRaw = vendorRawForTicket(r);
   const fee = vaFeeFor(r, vendorRaw, r.Extras, null);
   const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
-  const km = svc==="TOW" ? (Number(r.Vendor_Round_Trip_Distance)||0) : (Number(r.Vendor_Distance)||0);
-  return { r, vendorRaw, fee, svc, km,
+  // RSR and TOW distances are now kept as SEPARATE values (2026-09-17) — the
+  // PDF lists "Travel Kms - RSR" and "Vendor Round trip kms" as two distinct
+  // columns with two distinct meanings (one-way start→breakdown vs. the full
+  // calculated round trip), and the grid used to collapse them into a single
+  // "KM" cell chosen by Service_Type. `km` is kept as well, unchanged, because
+  // needsKm and the fee math both already read it.
+  const rsrKm = Number(r.Vendor_Distance)||0;
+  const towKm = Number(r.Vendor_Round_Trip_Distance)||0;
+  const km = svc==="TOW" ? towKm : rsrKm;
+  const d = { r, vendorRaw, fee, svc, km, rsrKm, towKm,
+    vendorName: vaVendorDisplayName(r),
+    fleetId: vaVendorFleetId(r),
+    caseId: caseLabel(r),
+    acceptedAt: vaAcceptedAtText(r),
+    caseStatus: vaCaseStatusText(r),
+    issue: vaServiceIssueText(r),
+    vehicle: vaVehicleText(r),
+    settlement: vaPaymentStatusText(r),
     baseFee: Number(vendorRaw && vendorRaw.Base_Fee)||0,
     cash: cashCollectedForTicket(r),
     needsKm: svc==="TOW" && !(km>0) };
+  // Pre-computed comparable values for vaSortRows() — numbers stay numbers so
+  // they sort numerically rather than as "₹1,200" strings. A row with no
+  // calculable fee sorts as 0 on every money column instead of throwing.
+  d.sort = {
+    vendor:d.vendorName, fleetId:d.fleetId, caseId:d.caseId,
+    acceptedAt:vaAcceptedAtSortKey(r), caseStatus:d.caseStatus,
+    issue:d.issue, vehicle:d.vehicle, settlement:d.settlement,
+    baseFee:d.baseFee, rsrKm:d.rsrKm, towKm:d.towKm,
+    kmFee:d.fee?d.fee.kmFee:0, grossFee:d.fee?d.fee.grossFee:0,
+    extras:Number(r.Extras)||0, netFee:d.fee?d.fee.netFee:0,
+    cash:d.cash, balance:d.fee?d.fee.balanceBeforeTds:0
+  };
+  return d;
 }
+/* Column set rebuilt 2026-09-17 to match the "vendor payments" PDF's own
+   Operations Approval table, in its own order. Added: Vendor ID (Fleet ID),
+   Date & Time (vendor Accept), Case Status (final), Vehicle, a SEPARATE Travel
+   Kms - RSR and Vendor Round trip kms pair, Comments (editable, as the spec's
+   Editable column requires) and Payment status. Changed: Service now shows the
+   exact issue instead of RSR/TOW, per the spec's explicit "need the exact issue
+   [not RSR or TOW]". Every existing column is untouched, and the whole table
+   already lives inside .va-gridwrap's overflow-x:auto, so the extra width
+   scrolls horizontally instead of breaking the page. */
+const VA_COLUMNS = [
+  { key:"vendor",     label:"Vendor Name" },
+  { key:"fleetId",    label:"Vendor ID" },
+  { key:"caseId",     label:"Case ID" },
+  { key:"acceptedAt", label:"Date &amp; Time" },
+  { key:"caseStatus", label:"Case Status" },
+  { key:"issue",      label:"Service" },
+  { key:"vehicle",    label:"Vehicle" },
+  { key:"baseFee",    label:"Base Fee",      num:true },
+  { key:"rsrKm",      label:"Travel Kms (RSR)", num:true },
+  { key:"towKm",      label:"Round-trip Kms", num:true },
+  { key:"kmFee",      label:"Kms Fee",       num:true },
+  { key:"grossFee",   label:"Gross Fee",     num:true },
+  { key:"extras",     label:"Extras" },
+  { key:"netFee",     label:"Net Fee",       num:true },
+  { key:"cash",       label:"Cash Collected", num:true },
+  { key:"balance",    label:"Balance",       num:true },
+  { key:"comments",   label:"Comments" },
+  { key:"settlement", label:"Payment Status" }
+];
 function renderVendorAcctGrid(){
-  const rows = VA_CASES.map(vaGridRowData);
+  const rows = vaSortRows(VA_CASES.map(vaGridRowData));
   if(!rows.length){
     $("vaListColumns").innerHTML = `<div class="rlist-empty">No cases pending Operations approval right now</div>`;
     return;
@@ -5357,33 +5869,50 @@ function renderVendorAcctGrid(){
     const id = esc(d.r.ID);
     const cls = !d.fee ? " class=\"va-unavail\"" : (d.needsKm ? " class=\"va-warn\"" : "");
     const money = function(n){ return "₹"+Number(n||0).toFixed(2); };
+    // The RSR/TOW km cells show a value only for the branch that case actually
+    // belongs to — runClosureDistanceCalculations() deliberately forces the
+    // other one null (see its own comments), so printing "0.0" in both would
+    // read as a real measured zero rather than "not applicable here".
+    const rsrCell = d.svc==="TOW" ? "—" : d.rsrKm.toFixed(1);
+    const towCell = d.svc==="TOW"
+      ? (d.towKm.toFixed(1)+(d.needsKm?' <span title="TOW case with no round-trip distance — its KM Fee is calculated on 0 km. Open it in List view to set the distance before approving.">⚠</span>':""))
+      : "—";
     return `<tr${cls} data-row="${id}">
       <td><input type="checkbox" class="va-check" data-id="${id}"${d.fee?"":" disabled"}></td>
-      <td><b>${esc(caseLabel(d.r))}</b></td>
-      <td>${esc(vaVendorDisplayName(d.r))}</td>
-      <td>${esc(d.svc)}</td>
-      <td class="num">${d.km.toFixed(1)}${d.needsKm?' <span title="TOW case with no round-trip distance — open it in List view to set the KM before approving">⚠</span>':""}</td>
+      <td>${esc(d.vendorName)}</td>
+      <td>${esc(d.fleetId)}</td>
+      <td><b>${esc(d.caseId)}</b></td>
+      <td>${esc(d.acceptedAt)}</td>
+      <td>${esc(d.caseStatus)}</td>
+      <td>${esc(d.issue)}</td>
+      <td>${esc(d.vehicle)}</td>
       <td class="num">${money(d.baseFee)}</td>
+      <td class="num">${rsrCell}</td>
+      <td class="num">${towCell}</td>
       <td class="num">${d.fee?money(d.fee.kmFee):"—"}</td>
       <td class="num">${d.fee?money(d.fee.grossFee):"—"}</td>
       <td><input type="number" class="va-extras" data-id="${id}" value="${esc(Number(d.r.Extras)||0)}"></td>
       <td class="num" id="vaNet_${id}">${d.fee?money(d.fee.netFee):"—"}</td>
       <td class="num">${money(d.cash)}</td>
       <td class="num" id="vaBal_${id}">${d.fee?money(d.fee.balanceBeforeTds):"—"}</td>
+      <td><input type="text" class="va-comments" data-id="${id}" value="${esc(d.r.Ops_Approval_Comments||"")}" placeholder="—"></td>
+      <td>${esc(d.settlement)}</td>
     </tr>`;
+  }).join("");
+  const head = VA_COLUMNS.map(function(c){
+    const i = VA_SORT.findIndex(function(s){ return s.key===c.key; });
+    const arrow = i<0 ? "" : (VA_SORT[i].dir===1 ? " ▲" : " ▼");
+    const rank = (i>=0 && VA_SORT.length>1) ? `<sup>${i+1}</sup>` : "";
+    return `<th class="va-sort${c.num?" num":""}${i>=0?" on":""}" data-sort="${c.key}" title="Click to sort. Shift-click to add this as a further tie-breaker.">${c.label}${arrow}${rank}</th>`;
   }).join("");
   $("vaListColumns").innerHTML = `
     <div class="va-gridwrap">
       <table class="va-grid">
-        <thead><tr>
-          <th><input type="checkbox" id="vaSelectAll"></th>
-          <th>Case ID</th><th>Vendor</th><th>Service</th><th class="num">KM</th>
-          <th class="num">Base Fee</th><th class="num">KM Fee</th><th class="num">Gross</th>
-          <th>Extras</th><th class="num">Net Fee</th><th class="num">Cash Coll.</th><th class="num">Balance</th>
-        </tr></thead>
+        <thead><tr><th><input type="checkbox" id="vaSelectAll"></th>${head}</tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
+    <div class="va-hint" style="margin-top:8px">Click a column header to sort, again to reverse, a third time to clear. <b>Shift-click</b> another header to sort by it within the first — the small number on each header shows the order being applied.${VA_SORT.length?' <a href="#" id="vaClearSort">Clear sorting</a>':""}</div>
     ${anyNeedsKm?'<div class="va-hint" style="margin-top:10px">⚠ Highlighted rows are TOW cases with no round-trip distance recorded, so their KM Fee is calculated on 0 km. Open those in List view and set the distance before approving.</div>':""}
     ${anyUnavail?'<div class="va-hint" style="margin-top:6px">Dimmed rows have no calculable fee (no matching KM slab for the vehicle/issue combination, or no vendor rate card) and cannot be approved — here or in List view.</div>':""}
     <div class="va-fee-box" id="vaGridTotals" style="margin-top:14px"></div>
@@ -5424,6 +5953,26 @@ function renderVendorAcctGrid(){
       recalcVendorAcctGridTotals();
     };
   });
+  // Comments inline (2026-09-17) — the PDF lists Comments as Editable in the
+  // Operations Approval view, and it was previously reachable only through the
+  // accordion. Exact same mechanism as Extras just above: writes straight onto
+  // the in-memory record, so it survives a re-render and is precisely what
+  // vendorAcctApprovalPayload() picks up on approval (bulkApproveVendorAcct()
+  // already passes d.r.Ops_Approval_Comments through, unchanged). No re-render
+  // per keystroke — Comments feeds no calculation, so nothing needs recomputing.
+  document.querySelectorAll("#vaListColumns .va-comments").forEach(function(inp){
+    inp.oninput = function(){
+      const rec = VA_CASES.find(function(x){ return String(x.ID)===String(inp.dataset.id); });
+      if(rec) rec.Ops_Approval_Comments = inp.value;
+    };
+  });
+  // RULE 2 — sorting by multiple headers. Shift-click adds a tie-breaker; a
+  // plain click restarts from that one column. See VA_SORT's own comment.
+  document.querySelectorAll("#vaListColumns th.va-sort").forEach(function(th){
+    th.onclick = function(ev){ vaToggleSort(th.dataset.sort, !!ev.shiftKey); };
+  });
+  const clearSort = $("vaClearSort");
+  if(clearSort) clearSort.onclick = function(e){ e.preventDefault(); VA_SORT=[]; renderVendorAcctGrid(); };
   $("vaBulkApproveBtn").onclick = bulkApproveVendorAcct;
   recalcVendorAcctGridTotals();
 }
@@ -5587,19 +6136,27 @@ function openVendorAcctInline(id){
   if(!r || !box) return;
   const vendorRaw = vendorRawForTicket(r);
   const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
-  const veh = lookupNamesFor ? (lookupNamesFor(r[CONFIG.vehicleField], OPTIONS.vehicles)||"") : "";
-  const dateText = esc((function(){ const d=parseAnyDateTime ? parseAnyDateTime(r.Added_Time) : null; return d ? d.toLocaleString() : (r.Added_Time||"—"); })());
   const baseFee = Number(vendorRaw && vendorRaw.Base_Fee)||0;
   const roundTripField = svc==="TOW"
     ? `<div class="fld"><label>Vendor Round-trip KM (editable)</label><input type="number" id="vaRoundTripKm_${esc(r.ID)}" value="${esc(r.Vendor_Round_Trip_Distance||0)}"></div>`
     : `<div class="crow-ro"><span class="k">Travel Kms (RSR)</span><span class="v">${esc(r.Vendor_Distance||0)} km</span></div>`;
+  // Rows realigned to the "vendor payments" PDF 2026-09-17 — same three source
+  // corrections the grid just got, applied here so the two views can't disagree:
+  //   Date & Time  was Added_Time (ticket CREATION) -> vendor Accept time
+  //   Case Status  was r.Status ("RSP CLOSED"/"CLOSED", constant on this
+  //                screen by definition) -> Closure_Status, the FINAL status
+  //   Service      was Service_Type ("RSR"/"TOW") -> the exact Vehicle_Issue,
+  //                which is what the spec explicitly asks for
+  // Vendor ID and Payment Status are new rows; every other row is unchanged.
   box.innerHTML = `
     <div class="crow-ro"><span class="k">Vendor</span><span class="v">${esc(vaVendorDisplayName(r))}</span></div>
+    <div class="crow-ro"><span class="k">Vendor ID</span><span class="v">${esc(vaVendorFleetId(r))}</span></div>
     <div class="crow-ro"><span class="k">Case ID</span><span class="v">${esc(caseLabel(r))}</span></div>
-    <div class="crow-ro"><span class="k">Date &amp; Time</span><span class="v">${dateText}</span></div>
-    <div class="crow-ro"><span class="k">Case Status</span><span class="v">${esc(r.Status||"")}</span></div>
-    <div class="crow-ro"><span class="k">Service</span><span class="v">${esc(svc)}</span></div>
-    <div class="crow-ro"><span class="k">Vehicle</span><span class="v">${esc(veh)}</span></div>
+    <div class="crow-ro"><span class="k">Date &amp; Time (Accept)</span><span class="v">${esc(vaAcceptedAtText(r))}</span></div>
+    <div class="crow-ro"><span class="k">Case Status</span><span class="v">${esc(vaCaseStatusText(r))}</span></div>
+    <div class="crow-ro"><span class="k">Service</span><span class="v">${esc(vaServiceIssueText(r))}</span></div>
+    <div class="crow-ro"><span class="k">Vehicle</span><span class="v">${esc(vaVehicleText(r))}</span></div>
+    <div class="crow-ro"><span class="k">Payment Status</span><span class="v">${esc(vaPaymentStatusText(r))}</span></div>
     <div class="crow-ro"><span class="k">Base Fee</span><span class="v">₹${baseFee.toFixed(2)}</span></div>
     ${roundTripField}
     <div class="fld"><label>Extras</label><input type="number" id="vaExtras_${esc(r.ID)}" value="${esc(r.Extras||0)}"></div>
@@ -5711,6 +6268,19 @@ function isReadyForVendorPayment(r){
   if(settlement!==SETTLEMENT_STATUS_PAYABLE) return false;
   return String(r.Vendor_Payment_Status||"").trim().toUpperCase()!=="PAID";
 }
+/* Payment Status filter (PDF search item 5, 2026-09-17). Reads Settlement_Status
+   — the field this whole flow actually advances — and treats a case whose
+   Vendor_Payment_Status is already "Paid" as Paid too, which covers every case
+   settled BEFORE recordVendorPayment() started advancing Settlement_Status (see
+   its own write-back comment). An empty selection means "no filter" rather than
+   "nothing", so clearing the box can never silently return zero rows. */
+function apPaymentStatusMatches(r, wantedList){
+  if(!wantedList || !wantedList.length) return true;
+  const settlement=String(r.Settlement_Status||"").trim() || SETTLEMENT_STATUS_PENDING;
+  const paidAlready=String(r.Vendor_Payment_Status||"").trim().toUpperCase()==="PAID";
+  const effective = paidAlready ? SETTLEMENT_STATUS_PAID : settlement;
+  return wantedList.indexOf(effective)>=0;
+}
 // Small date-boundary helpers — not previously present in this file (only
 // existed in vendorPerformance/agentPerformance); needed here for the
 // Accounts Payable date-range filter. Same implementation as those widgets.
@@ -5721,28 +6291,103 @@ let AP_CASES=[], AP_SELECTED=new Set();
 async function loadAccountsPayable(){
   showView("accountspayable");
   AP_CASES=[]; AP_SELECTED=new Set();
-  const vendorOptions = (OPTIONS.vendors||[]).map(function(v){ return `<option value="${esc(v.id)}">${esc(v.v)}</option>`; }).join("");
+  /* Search controls rebuilt 2026-09-17 to the PDF's own "SEARCH VENDOR BY"
+     list, which asks for five inputs. Items 3 and 4 (From/To) already existed
+     and are untouched. The two that were missing:
+
+       1+2. "VENDOR fleet id - ALLOW TO type and search for fleet id" and
+            "Display vendor name on selecting vendor ID". Was a plain
+            name-only <select>, with no way to search by fleet id at all. Now a
+            typeahead backed by a <datalist> (every vendor listed as
+            "<fleet id> — <name>"), resolving on either the fleet id OR the
+            name so nobody's existing habit of picking by name is broken, and
+            echoing the matched vendor's name underneath exactly as item 2
+            asks. The resolved Vendors_Report id still lands in a field with
+            id "apVendor" — the SAME id the old <select> had — so
+            apVendorRaw(), searchAccountsPayable() and recordVendorPayment()
+            all keep reading it with no change at all.
+
+       5.   "Payment Status (select from drop down, allow multi-select)".
+            Was absent: the list was hardwired to isReadyForVendorPayment().
+            Defaults to Payable ONLY, which reproduces today's behaviour
+            exactly — the filter can now be widened, but does nothing
+            different until someone widens it. */
+  const vendorOptions = (OPTIONS.vendors||[]).map(function(v){
+    const fid = fleetIdOfVendorRaw(v.raw);
+    return `<option value="${esc(fid ? (fid+" — "+v.v) : v.v)}"></option>`;
+  }).join("");
   $("apBody").innerHTML = `
-    <div class="fld"><label>Vendor</label><select id="apVendor"><option value="">— Select a vendor —</option>${vendorOptions}</select></div>
+    <div class="fld"><label>Vendor Fleet ID</label>
+      <input type="text" id="apFleetInput" list="apFleetList" placeholder="Type a fleet ID or vendor name" autocomplete="off">
+      <datalist id="apFleetList">${vendorOptions}</datalist>
+      <span class="hint" id="apVendorName">No vendor selected</span>
+      <input type="hidden" id="apVendor" value="">
+    </div>
     <div class="fld"><label>From</label><input type="date" id="apFrom"></div>
     <div class="fld"><label>To</label><input type="date" id="apTo"></div>
+    <div class="fld"><label>Payment Status (multi-select)</label>
+      <select id="apPayStatus" multiple size="3">
+        <option value="${esc(SETTLEMENT_STATUS_PAYABLE)}" selected>${esc(SETTLEMENT_STATUS_PAYABLE)} — approved, awaiting payment</option>
+        <option value="${esc(SETTLEMENT_STATUS_PAID)}">${esc(SETTLEMENT_STATUS_PAID)} — payment completed</option>
+        <option value="${esc(SETTLEMENT_STATUS_PENDING)}">${esc(SETTLEMENT_STATUS_PENDING)} — not yet approved by Operations</option>
+      </select>
+      <span class="hint">Ctrl/Cmd-click to select more than one. Only <b>${esc(SETTLEMENT_STATUS_PAYABLE)}</b> cases can be paid — rows in any other state are shown for reference with their checkbox disabled.</span>
+    </div>
     <button class="btn primary" id="apSearchBtn" type="button">Search</button>
     <div id="apResults" style="margin-top:16px"></div>
   `;
   const today=new Date(), monthStart=new Date(today.getFullYear(),today.getMonth(),1);
   $("apFrom").value=ymd(monthStart); $("apTo").value=ymd(today);
+  $("apFleetInput").oninput=apResolveVendorFromInput;
   $("apSearchBtn").onclick=searchAccountsPayable;
+}
+/* Resolves whatever was typed into the fleet-id box to a real Vendors_Report
+   record, and echoes its name back (PDF item 2). Matches on fleet id first,
+   then the "<fleet id> — <name>" datalist label the browser fills in on pick,
+   then the plain vendor name — so typing a bare fleet id, picking from the
+   dropdown, or typing a name all land on the same vendor. */
+function apResolveVendorFromInput(){
+  const typed = String($("apFleetInput").value||"").trim();
+  const nameBox = $("apVendorName");
+  if(!typed){ $("apVendor").value=""; nameBox.textContent="No vendor selected"; return; }
+  const low = typed.toLowerCase();
+  const beforeDash = low.split("—")[0].trim();
+  const match = (OPTIONS.vendors||[]).find(function(v){
+    const fid = String(fleetIdOfVendorRaw(v.raw)||"").toLowerCase();
+    if(fid && (fid===low || fid===beforeDash)) return true;
+    return String(v.v||"").toLowerCase()===low;
+  }) || (OPTIONS.vendors||[]).find(function(v){
+    const fid = String(fleetIdOfVendorRaw(v.raw)||"").toLowerCase();
+    return (fid && fid.indexOf(beforeDash||low)===0) || String(v.v||"").toLowerCase().indexOf(low)===0;
+  });
+  if(match){
+    $("apVendor").value = match.id;
+    nameBox.textContent = "Vendor: "+match.v+" (Fleet ID "+(fleetIdOfVendorRaw(match.raw)||"—")+")";
+  } else {
+    $("apVendor").value = "";
+    nameBox.textContent = "No vendor matches \""+typed+"\"";
+  }
 }
 async function searchAccountsPayable(){
   const vendorId=$("apVendor").value;
   if(!vendorId){ toast("Pick a vendor first","err"); return; }
   const fromD=startOfDay(new Date($("apFrom").value)), toD=endOfDay(new Date($("apTo").value));
   $("apResults").innerHTML='<div class="center-state"><div class="spin"></div></div>';
+  // Payment Status multi-select (PDF search item 5, 2026-09-17). With the
+  // default selection (Payable only) apPaymentStatusMatches() accepts exactly
+  // what isReadyForVendorPayment() accepted, so the unchanged default search
+  // returns the unchanged result set.
+  const wanted = Array.prototype.slice.call($("apPayStatus").selectedOptions||[]).map(function(o){ return o.value; });
   const all = await apiGet(null);
   AP_CASES = all.filter(function(r){
     if(String(unwrapLookup(r.Assigned_Vendor))!==String(vendorId)) return false;
-    if(!isReadyForVendorPayment(r)) return false;
-    const d=parseAnyDateTime ? parseAnyDateTime(r.Added_Time) : null;
+    if(!apPaymentStatusMatches(r, wanted)) return false;
+    // Date basis (2026-09-17): the vendor ACCEPT time, matching the "Date &
+    // Time" column this screen now displays — filtering on one date while
+    // showing another is how a case "disappears" for no visible reason. Falls
+    // back to Added_Time when a case has no accept time recorded, so nothing
+    // that used to match can drop out of the results.
+    const d=parseAnyDateTime ? (parseAnyDateTime(vaAcceptedAtRaw(r)) || parseAnyDateTime(r.Added_Time)) : null;
     if(!d) return false;
     return d.getTime()>=fromD.getTime() && d.getTime()<=toD.getTime();
   });
@@ -5761,24 +6406,86 @@ function renderAccountsPayableList(){
     $("apResults").innerHTML = `<div class="rlist-empty">No payable cases found for this vendor and date range</div>`;
     return;
   }
+  /* Results rebuilt as a full table 2026-09-17. The PDF's Accounts Payable
+     table says, literally, "Display Following fields that were displayed in
+     the operations view: and then display additional fields described below" —
+     19 columns. This screen was showing FOUR figures on a one-line label
+     (Net / TDS / Cash / Payable) and nothing else: no vendor, no case status,
+     no service, no vehicle, no base fee, no kms, no gross, no extras, no
+     balance, no TDS rate, no amount paid, no comments.
+
+     Every descriptive column resolves through the SAME va* helpers the
+     Operations Approval screen uses, so a case reads identically on both
+     screens by construction.
+
+     The money columns deliberately read the FROZEN, approved values stored on
+     the case (Vendor_KM_Fee / Vendor_Gross_Fee / Vendor_Net_Fee /
+     Vendor_Balance_Before_TDS / Cash_Collected) rather than recomputing live
+     from the rate card. Operations approved a specific set of figures; Accounts
+     must pay exactly those, not whatever a rate-card edit since then would now
+     produce. Only TDS, Final Payable and Amount Paid are derived here, which is
+     correct — they are this screen's own outputs and depend on the batch
+     selection. */
   const rows = AP_CASES.map(function(r){
+    const d = vaGridRowData(r);
     const netFee=Number(r.Vendor_Net_Fee)||0, cashCollected=Number(r.Cash_Collected)||0;
     const { tdsAmount, finalPayable } = computeVendorTdsAndPayable(netFee, tdsPercent, cashCollected);
-    return `<div class="va-item">
-      <label class="rrow" style="cursor:pointer">
-        <input type="checkbox" class="ap-check" data-id="${esc(r.ID)}" style="margin-right:10px">
-        <span class="tt"><b>${esc(caseLabel(r))}</b><span id="apRow_${esc(r.ID)}">${apRowText(netFee, tdsAmount, cashCollected, finalPayable)}</span></span>
-      </label>
-    </div>`;
+    const id = esc(r.ID);
+    const money = function(n){ return "₹"+Number(n||0).toFixed(2); };
+    const payable = isReadyForVendorPayment(r);
+    const rsrCell = d.svc==="TOW" ? "—" : d.rsrKm.toFixed(1);
+    const towCell = d.svc==="TOW" ? d.towKm.toFixed(1) : "—";
+    return `<tr data-row="${id}"${payable?"":' class="va-unavail"'}>
+      <td><input type="checkbox" class="ap-check" data-id="${id}"${payable?"":" disabled"}></td>
+      <td>${esc(d.vendorName)}</td>
+      <td>${esc(d.fleetId)}</td>
+      <td><b>${esc(d.caseId)}</b></td>
+      <td>${esc(d.acceptedAt)}</td>
+      <td>${esc(d.caseStatus)}</td>
+      <td>${esc(d.issue)}</td>
+      <td>${esc(d.vehicle)}</td>
+      <td class="num">${money(d.baseFee)}</td>
+      <td class="num">${rsrCell}</td>
+      <td class="num">${towCell}</td>
+      <td class="num">${money(r.Vendor_KM_Fee)}</td>
+      <td class="num">${money(r.Vendor_Gross_Fee)}</td>
+      <td><input type="number" class="ap-extras" data-id="${id}" value="${esc(Number(r.Extras)||0)}"${payable?"":" disabled"}></td>
+      <td class="num" id="apNet_${id}">${money(netFee)}</td>
+      <td class="num">${tdsPercent.toFixed(2)}%</td>
+      <td class="num" id="apTds_${id}">${money(tdsAmount)}</td>
+      <td class="num">${money(cashCollected)}</td>
+      <td class="num" id="apBal_${id}">${money(r.Vendor_Balance_Before_TDS)}</td>
+      <td class="num" id="apPayable_${id}">${money(finalPayable)}</td>
+      <td class="num" id="apPaid_${id}">—</td>
+      <td><input type="text" class="ap-comments" data-id="${id}" value="${esc(r.Ops_Approval_Comments||"")}" placeholder="—"></td>
+      <td>${esc(apPaymentStatusText(r))}</td>
+    </tr>`;
   }).join("");
+  const anyLocked = AP_CASES.some(function(r){ return !isReadyForVendorPayment(r); });
   $("apResults").innerHTML = `
     ${tdsPercent<=0 ? '<div class="va-hint" style="margin-bottom:10px">⚠ This vendor has no TDS_Percentage set — TDS is being calculated as ₹0. Confirm that\'s correct before recording payment.</div>' : ""}
-    <label class="rrow" style="cursor:pointer;font-weight:800"><input type="checkbox" id="apSelectAll" style="margin-right:10px">Select all (${AP_CASES.length})</label>
-    ${rows}
+    <div class="va-gridwrap">
+      <table class="va-grid">
+        <thead><tr>
+          <th><input type="checkbox" id="apSelectAll"></th>
+          <th>Vendor Name</th><th>Vendor ID</th><th>Case ID</th><th>Date &amp; Time</th>
+          <th>Case Status</th><th>Service</th><th>Vehicle</th>
+          <th class="num">Base Fee</th><th class="num">Travel Kms (RSR)</th><th class="num">Round-trip Kms</th>
+          <th class="num">Kms Fee</th><th class="num">Gross Fee</th><th class="num">Extras</th><th class="num">Net Fee</th>
+          <th class="num">TDS Rate</th><th class="num">TDS Amount</th><th class="num">Cash Collected</th>
+          <th class="num">Balance</th><th class="num">Final Payable</th><th class="num">Amount Paid</th>
+          <th>Comments</th><th>Payment Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${anyLocked?'<div class="va-hint" style="margin-top:8px">Dimmed rows are not in the '+esc(SETTLEMENT_STATUS_PAYABLE)+' state — they are shown because the Payment Status filter asked for them, and cannot be selected for payment.</div>':""}
+    <div class="va-hint" style="margin-top:6px"><b>Extras</b> and <b>Comments</b> are editable here. Changing Extras recalculates Net Fee, Balance, TDS and Final Payable for that case, and the revised figures are saved onto the case when you record the payment — so Creator and Zoho Books stay in agreement. Base Fee, Kms Fee, Gross Fee and Cash Collected come from the rate card and the case itself and are read-only: correct those in Operations Approval, before approval.</div>
     <div class="va-fee-box" id="apTotals" style="margin-top:14px"></div>
-    <div class="fld"><label>Payment Date</label><input type="date" id="apPaymentDate"></div>
-    <div class="fld"><label>UTR / Reference No.</label><input type="text" id="apUtrNo" placeholder="Bank transaction reference"></div>
+    <div class="fld"><label>Transaction Date</label><input type="date" id="apPaymentDate"></div>
+    <div class="fld"><label>UTR No.</label><input type="text" id="apUtrNo" placeholder="Bank transaction reference"></div>
     <button class="btn primary" id="apRecordBtn" type="button" disabled>Record Payment</button>
+    <div class="va-hint" style="margin-top:6px">Both Transaction Date and UTR No. are required before a payment can be recorded, and both apply to every selected case as one entry.</div>
   `;
   document.querySelectorAll(".ap-check").forEach(function(cb){
     cb.onchange=function(){
@@ -5786,8 +6493,67 @@ function renderAccountsPayableList(){
       recalcAccountsPayableTotals();
     };
   });
+  // Comments editable for the payments team (PDF: "Please make whatever fields
+  // below possible as 'editable' for the payments team"; Comments is the one
+  // row in its table marked Editable=Yes that carries no money). Writes onto
+  // the in-memory case; recordVendorPayment() sends it with the settlement.
+  document.querySelectorAll(".ap-comments").forEach(function(inp){
+    inp.oninput=function(){
+      const rec=AP_CASES.find(function(x){ return String(x.ID)===String(inp.dataset.id); });
+      if(rec) rec.Ops_Approval_Comments=inp.value;
+    };
+  });
+  /* Extras editable here — 2026-09-18, per the vendor payments PDF, which marks
+     Extras "Editable: Yes" in the Accounts Payable table as well as in
+     Operations Approval.
+
+     Extras is not a display-only number: Net Fee = Gross Fee + Extras, and
+     Balance, TDS and Final Payable all derive from Net Fee. Letting the payments
+     team change Extras without recomputing those would show one figure and pay
+     another, so editing it here rewrites the whole chain:
+
+         Net Fee  = Vendor_Gross_Fee + Extras     (Gross is untouched - it is
+                                                   rate-card output, not an input)
+         Balance  = Net Fee - Cash Collected
+         TDS      = batch allocation over the new Net Fees
+         Payable  = Net Fee - TDS - Cash Collected
+
+     Written onto the in-memory case so apSelectedCasesWithFees() - which reads
+     r.Vendor_Net_Fee - picks it up for the totals, the TDS allocation and the
+     amount actually paid, with no second copy of the arithmetic anywhere.
+
+     recordVendorPayment() persists Extras, Vendor_Net_Fee and
+     Vendor_Balance_Before_TDS alongside the payment, so Creator's own record
+     ends up agreeing with what Zoho Books was told to pay. Without that
+     write-back an edit here would be silently discarded on the next search
+     while the money had already moved.
+
+     Only enabled on rows that are actually payable; a case already paid, or not
+     yet Operations-approved, keeps its Extras locked. */
+  document.querySelectorAll(".ap-extras").forEach(function(inp){
+    inp.oninput=function(){
+      const rec=AP_CASES.find(function(x){ return String(x.ID)===String(inp.dataset.id); });
+      if(!rec) return;
+      const newExtras=Number(inp.value)||0;
+      const gross=Number(rec.Vendor_Gross_Fee)||0;
+      const cash=Number(rec.Cash_Collected)||0;
+      rec.Extras=newExtras;
+      rec.Vendor_Net_Fee=Math.round((gross+newExtras)*100)/100;
+      rec.Vendor_Balance_Before_TDS=Math.round((rec.Vendor_Net_Fee-cash)*100)/100;
+      const netCell=$("apNet_"+rec.ID), balCell=$("apBal_"+rec.ID);
+      if(netCell) netCell.textContent="₹"+rec.Vendor_Net_Fee.toFixed(2);
+      if(balCell) balCell.textContent="₹"+rec.Vendor_Balance_Before_TDS.toFixed(2);
+      console.log("[Get-Rescue] Accounts Payable: Extras edited on case", rec.ID, "→ Extras ₹"+newExtras, "| Net Fee ₹"+rec.Vendor_Net_Fee, "| Balance ₹"+rec.Vendor_Balance_Before_TDS);
+      // Recomputes this row's TDS and Final Payable plus every selected row's,
+      // since the batch TDS allocation depends on all the Net Fees together.
+      recalcAccountsPayableTotals();
+    };
+  });
   $("apSelectAll").onchange=function(){
-    document.querySelectorAll(".ap-check").forEach(function(cb){ cb.checked=$("apSelectAll").checked; cb.dispatchEvent(new Event("change")); });
+    document.querySelectorAll(".ap-check").forEach(function(cb){
+      if(cb.disabled) return; // never bulk-select a case that isn't payable
+      cb.checked=$("apSelectAll").checked; cb.dispatchEvent(new Event("change"));
+    });
   };
   $("apPaymentDate").oninput=recalcAccountsPayableTotals;
   $("apUtrNo").oninput=recalcAccountsPayableTotals;
@@ -5861,8 +6627,21 @@ function apSelectedCasesWithFees(){
 }
 // Shared row-text builder so the initial render and the per-selection refresh
 // below can never format a row differently.
+// SUPERSEDED 2026-09-17 — no callers left: the one-line "Net · TDS · Cash ·
+// Payable" row label it formatted was replaced by the full column table.
+// Kept rather than deleted (it is inert, and removing a function is a wider
+// change than this task needs); delete it whenever this area is next touched.
 function apRowText(netFee, tdsAmount, cashCollected, finalPayable){
   return "Net ₹"+netFee.toFixed(2)+" · TDS ₹"+tdsAmount.toFixed(2)+" · Cash ₹"+cashCollected.toFixed(2)+" · Payable ₹"+finalPayable.toFixed(2);
+}
+/* Per-row Payment Status for the Accounts Payable table (2026-09-17). Prefers
+   the case's own Vendor_Payment_Status when it is already Paid — that covers
+   cases settled before recordVendorPayment() began advancing Settlement_Status
+   — and otherwise reports Settlement_Status, defaulting a blank to Pending
+   Approval the same way vaPaymentStatusText() does on the Operations screen. */
+function apPaymentStatusText(r){
+  if(String(r.Vendor_Payment_Status||"").trim().toUpperCase()==="PAID") return SETTLEMENT_STATUS_PAID;
+  return String(r.Settlement_Status||"").trim() || SETTLEMENT_STATUS_PENDING;
 }
 function recalcAccountsPayableTotals(){
   const selected = apSelectedCasesWithFees();
@@ -5877,16 +6656,31 @@ function recalcAccountsPayableTotals(){
   const tdsPctForRows = Number(vendorRawForRows && vendorRawForRows.TDS_Percentage)||0;
   const selectedById = {};
   selected.forEach(function(x){ selectedById[String(x.r.ID)] = x; });
+  // AMOUNT PAID — the PDF's own rule, verbatim: "equal to Final Payable, when
+  // transaction Date is entered". So it stays "—" until a Transaction Date is
+  // actually filled in, then mirrors that row's Final Payable. A case that was
+  // already settled shows its own recorded Vendor_Amount_Paid instead, which is
+  // the real historical figure rather than a recomputed one.
+  const txnDateEntered = !!($("apPaymentDate") && $("apPaymentDate").value);
   AP_CASES.forEach(function(r){
-    const cell = $("apRow_"+r.ID);
-    if(!cell) return;
+    const tdsCell = $("apTds_"+r.ID), payCell = $("apPayable_"+r.ID), paidCell = $("apPaid_"+r.ID);
+    if(!tdsCell || !payCell) return;
     const hit = selectedById[String(r.ID)];
+    let tdsAmount, finalPayable;
     if(hit){
-      cell.textContent = apRowText(hit.netFee, hit.tdsAmount, hit.cashCollected, hit.finalPayable);
+      tdsAmount = hit.tdsAmount; finalPayable = hit.finalPayable;
     } else {
-      const netFee=Number(r.Vendor_Net_Fee)||0, cashCollected=Number(r.Cash_Collected)||0;
-      const solo=computeVendorTdsAndPayable(netFee, tdsPctForRows, cashCollected);
-      cell.textContent = apRowText(netFee, solo.tdsAmount, cashCollected, solo.finalPayable);
+      // Unselected rows keep showing their standalone "if paid on its own"
+      // figure — the only meaningful value for a case not yet in a batch.
+      const solo = computeVendorTdsAndPayable(Number(r.Vendor_Net_Fee)||0, tdsPctForRows, Number(r.Cash_Collected)||0);
+      tdsAmount = solo.tdsAmount; finalPayable = solo.finalPayable;
+    }
+    tdsCell.textContent = "₹"+tdsAmount.toFixed(2);
+    payCell.textContent = "₹"+finalPayable.toFixed(2);
+    if(paidCell){
+      const alreadyPaid = Number(r.Vendor_Amount_Paid)||0;
+      if(alreadyPaid>0) paidCell.textContent = "₹"+alreadyPaid.toFixed(2);
+      else paidCell.textContent = (hit && txnDateEntered) ? ("₹"+finalPayable.toFixed(2)) : "—";
     }
   });
   const sum=(key)=>selected.reduce(function(acc,x){ return acc+x[key]; },0);
@@ -5960,6 +6754,17 @@ async function recordVendorPayment(){
     }
     for(const x of selected){
       await apiUpdate(x.r.ID, {
+        // Extras / Vendor_Net_Fee / Vendor_Balance_Before_TDS written back
+        // 2026-09-18, alongside the payment. The payments team can now edit
+        // Extras on this screen (per the PDF), and that edit rewrites Net Fee
+        // and Balance in memory — if they were not persisted here, the case
+        // would keep Operations' original figures while Zoho Books had already
+        // been told to pay the revised ones, and nothing would show why the two
+        // disagreed. Unchanged on a case nobody edited: these are simply the
+        // same values that were already stored.
+        Extras: Number(x.r.Extras)||0,
+        Vendor_Net_Fee: x.netFee,
+        Vendor_Balance_Before_TDS: Math.round((x.netFee-x.cashCollected)*100)/100,
         TDS_Amount: x.tdsAmount,
         Final_Payable: x.finalPayable,
         Vendor_Amount_Paid: x.finalPayable,
@@ -5971,6 +6776,24 @@ async function recordVendorPayment(){
         Vendor_Payment_Date: fmtDate(paymentDate),
         Vendor_UTR_No: utrNo,
         Vendor_Payment_Status: "Paid",
+        // Settlement_Status advanced here 2026-09-17 — real gap: the PDF says
+        // 'On update of transaction ID - make settlement status = "PAYMENT
+        // COMPLETED"', but this write only ever set Vendor_Payment_Status,
+        // leaving Settlement_Status stuck on "Payable" forever. Every screen
+        // that reads Settlement_Status (the Operations pending list, the new
+        // Payment Status filter, vendorPerformance's settlement statement)
+        // therefore never saw a case reach its terminal state.
+        // Uses the EXISTING SETTLEMENT_STATUS_PAID constant rather than the
+        // PDF's literal "PAYMENT COMPLETED" wording: this project's confirmed
+        // 3-value Zoho dropdown is Pending Approval / Payable / Paid (see the
+        // constants' own comment and FIELDS.md), and writing a value the
+        // dropdown does not contain would be rejected by Zoho. Same meaning,
+        // the value the field actually accepts. ⚠ If the live dropdown is
+        // genuinely "PAYMENT COMPLETED", change the constant — one line.
+        Settlement_Status: SETTLEMENT_STATUS_PAID,
+        // Comments carried through so an edit made by the payments team in the
+        // grid is actually persisted rather than lost on the next search.
+        Ops_Approval_Comments: x.r.Ops_Approval_Comments||"",
         Zoho_Books_Bill_ID: data.bill_id||""
       });
     }
@@ -7151,7 +7974,39 @@ function isValidIndianPhoneDigits(v){
 // dropping it changes nothing any caller could observe. The `invoiceUrl`
 // function parameter itself is left in place (still harmless/unused) so
 // nothing about the function's own signature has to change either.
-async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl){
+/* customerPageButtonPath() — 2026-09-17. Every link-carrying WhatsApp template
+   in the live workspace now puts the link in a URL BUTTON rather than the
+   message body, confirmed by querying WhatsPortal's own /templates endpoint:
+   confirm_booking_fee_and_total_fee, balance_payment_link,
+   confirm_customer_location_details_copy and tow_confirm_customer_location_details
+   all have 0 body variables and a button url of
+   "https://creatorapp.zohopublic.in/{{1}}".
+
+   WhatsApp freezes everything before that {{1}} at approval time and appends
+   the value verbatim - no slash is added and nothing is URL-encoded. So what we
+   send is the full Customer Page URL with that exact prefix removed, and it
+   must NOT start with a slash. Query strings are explicitly allowed, which is
+   what carries recordId/mode/bookingamount.
+
+   Returns "" when the URL doesn't start with the approved prefix - callers
+   already abort on a blank link rather than send a broken button. */
+const WA_BUTTON_URL_PREFIX = "https://creatorapp.zohopublic.in/";
+function customerPageButtonPath(record, mode, extraParams){
+  const full = buildCustomerPageUrl(record, mode, extraParams);
+  if(!full) return "";
+  if(full.indexOf(WA_BUTTON_URL_PREFIX)!==0){
+    console.warn("[Get-Rescue] customerPageButtonPath: CUSTOMER_PAGE_BASE_URL does not start with the approved WhatsApp button prefix", WA_BUTTON_URL_PREFIX, "— the template's button cannot point at this URL. Full URL was:", full);
+    return "";
+  }
+  return full.slice(WA_BUTTON_URL_PREFIX.length);
+}
+// buttonParam added 2026-09-17 — when supplied, sendWhatsAppMessage.deluge
+// switches from the positional array to the KEYED object form and sends it as
+// button_0_1. A positional array only ever fills body placeholders, so a button
+// value sent that way is silently dropped and the customer receives a button
+// pointing at the bare domain. Callers that pass nothing are completely
+// unaffected and still use the array form.
+async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl, buttonParam){
   const to=formatIndianPhone(phone);
   if(!to){ console.warn("[Get-Rescue] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
   const fn=resolve("invokeCustomApi");
@@ -7178,9 +8033,33 @@ async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl){
     // a real 3rd param. Existing 3-param call sites (e.g. the dispatch
     // message) are unaffected — params[2] is truthy there, so param3 is
     // still sent exactly as before.
-    payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"" }
+    payload: { phone: to, templateName: templateName, param1: (params&&params[0])||"", param2: (params&&params[1])||"" }
   };
   if(params && params[2]) config.payload.param3 = params[2];
+  if(buttonParam) config.payload.buttonParam = buttonParam;
+  /* param3 as a SECOND carrier for the button value — 2026-09-17.
+     Zoho Creator Custom APIs only bind a parameter that is ALSO registered on
+     the Custom API's own setup screen; one that exists solely in the Deluge
+     signature arrives null no matter what is sent. `buttonParam` is new and
+     is not registered yet, so every button-carrying message has been going out
+     with an empty button — which is exactly the "link goes to the bare domain"
+     symptom. This project has hit that same trap repeatedly (applyTax, the four
+     invoice params, token, param3 itself).
+
+     Rather than stay blocked on a console change, the value is ALSO sent as
+     param3, which IS registered and proven working. Safe to do because of a
+     fact confirmed against the live WhatsPortal template list on 2026-09-17:
+     every template in this workspace that has a URL button with a {{1}}
+     variable has at most TWO body variables, so param3 is never already in use
+     on exactly those templates. sendWhatsAppMessage.deluge only treats param3
+     as a button value for that confirmed list of template names, so a
+     3-body-variable template like share_rescue_service_details_and_eta (which
+     has no button at all) is completely unaffected.
+
+     Belt-and-braces, the same shape as onDemandInvoicing.deluge's applyTax /
+     "-BF" pair: either signal alone is enough. Registering buttonParam later
+     changes nothing — the Deluge prefers it when present. */
+  if(buttonParam && !(params && params[2])) config.payload.param3 = buttonParam;
   // Real bug fixed 2026-08-25 (later, user request: "remove unnecessary
   // logs") — dropped the "calling invokeCustomApi with <config>" /
   // "sent ... -> response: <res>" dumps that used to fire on every single
@@ -7188,8 +8067,40 @@ async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl){
   // ever useful during the several rounds of live debugging earlier today
   // (param format, newline rejection, etc.), not ongoing signal. Failure
   // paths below still warn.
+  // Response inspection added 2026-09-17. This used to be a bare
+  // `await fn(config); return true;` — the reply was thrown away and EVERY
+  // send reported success as long as the call itself didn't throw. So a
+  // message WhatsApp refused outright (422 message_rejected on a parameter
+  // mismatch, 404 template_not_found, 402 when the wallet is empty) looked
+  // identical to a delivered one, in the toast and in the console. That is
+  // exactly why "the message wasn't received" has been impossible to debug:
+  // the only evidence was discarded a line after it arrived.
+  //
+  // Failure detection is deliberately CONSERVATIVE — the exact response shape
+  // of sendWhatsAppMessage.deluge is not confirmed in this repo (that script
+  // lives only in Zoho), so only an explicit error marker counts as failure.
+  // Anything unrecognised is still treated as sent, preserving today's
+  // behaviour rather than risking false alarms on working sends. The raw
+  // response is always logged either way, which is the part that actually
+  // unblocks diagnosis.
   try{
-    await fn(config);
+    const res = await fn(config);
+    let data = res;
+    if(data && typeof data.result === "string"){
+      try{ data = JSON.parse(data.result); }
+      catch(parseErr){ /* not JSON — keep the raw value for the log below */ }
+    }
+    console.log("[Get-Rescue] sendWhatsAppTemplate:", templateName, "-> raw response:", res, "| unwrapped:", data);
+    const codeText = (data && data.code != null) ? String(data.code).toUpperCase() : "";
+    const rejected = codeText === "ERROR"
+      || !!(data && data.error)
+      || !!(data && data.errors);
+    if(rejected){
+      console.warn("[Get-Rescue] sendWhatsAppTemplate: '"+templateName+"' was REJECTED — code:", data && data.code,
+        "| message:", (data && (data.message || data.error)) || "(none given)",
+        "| params sent:", params, "| full response:", res);
+      return false;
+    }
     return true;
   }catch(e){
     console.warn("[Get-Rescue] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
@@ -7304,22 +8215,30 @@ async function placeVoiceCallbackFromTicket(phoneNumber){
       }));
       return;
     }
+    // A MISSING UCID IS NORMAL (2026-09-16, confirmed against the live API).
+    // Ozonetel's AgentManualDial answers a successful dial request with just
+    // {"status":"queued successfully"} — it never returns a ucid at all. The
+    // call id only arrives later, in the campaign's "URL to push" callback that
+    // getCallbackStatus.deluge receives once the call ends.
+    //
+    // This used to `return` early whenever ucid was empty, which meant every
+    // genuinely successful call was reported as "no call ID came back" AND
+    // never written to Call_Log — the row was only ever created on the failure
+    // path above. Both are fixed: the call is reported as placed, and the row
+    // is always written.
     const ucid = data.ucid || data.callback_id || "";
-    if(!ucid){
-      console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: SUCCESS response had no ucid/callback_id. Full response:", res);
-      toast("Call placed, but no call ID came back — status can't be checked","ok");
-      return;
-    }
     toast("Call placed to "+digits,"ok");
-    // Logged now, then updated in place once the status check returns — one
-    // row per call attempt, not two. The returned record id is handed to the
-    // status check so it can update that exact row.
+    // Logged with whatever we have. UCID is usually blank at this point;
+    // getCallbackStatus fills it in, along with status and duration, when
+    // Ozonetel pushes the call summary.
     const logId = await logCallAttempt(ticketId, Object.assign({}, baseLog, {
       UCID: ucid, Call_Status: "Placed", Call_Duration: "", Call_Outcome: ""
     }));
-    // One automatic status check a few seconds after placing — same UX
-    // pattern callCenter's own onPlaceCall() already uses (setTimeout, 4s).
-    setTimeout(function(){ checkVoiceCallbackStatusFromTicket(ucid, logId, ticketId); }, 4000);
+    // The follow-up status check only makes sense when a ucid actually came
+    // back. With Ozonetel's callback configured it never does, and the callback
+    // supersedes polling entirely — so this stays as a no-op for that API and
+    // remains correct for any future one that does return a ucid.
+    if(ucid) setTimeout(function(){ checkVoiceCallbackStatusFromTicket(ucid, logId, ticketId); }, 4000);
   }catch(e){
     console.warn("[Get-Rescue] placeVoiceCallbackFromTicket: invokeCustomApi failed", e);
     toast("Call request failed — check console","err");
@@ -7462,7 +8381,15 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
     console.warn("[Get-Rescue] onDemandInvoicing: no \"invokeCustomApi\" method found — cannot create the invoice or get its payment link.");
     return "";
   }
-  const isOnDemand=String(record.Client||"").trim().toUpperCase()==="ON DEMAND";
+  // isOnDemandClient() (2026-09-17) — was a raw string comparison against the
+  // Client field, which never matched a real Client_Report Lookup ID. See that
+  // helper's own header comment for the full root cause. Fixed together with
+  // onDemandInvoiceEligibility()'s identical check, deliberately: this one
+  // gates bookingFeeToApply/remainingFeeToApply just below, so fixing only the
+  // eligibility side would have produced an invoice with NO collected payments
+  // recorded against it — showing the full amount outstanding on a ticket that
+  // was already paid.
+  const isOnDemand=isOnDemandClient(record);
   const amount = (amountOverride!=null && Number(amountOverride)>0)
     ? Number(amountOverride)
     : (isOnDemand ? (Number(record.Total_Service_Fee)||0) : (Number(record.Rescue_Charge)||0));
@@ -7729,6 +8656,18 @@ async function generateZohoPaymentLink(record, amount, referenceId, description,
       paymentUrlField: paymentUrlField||"Zoho_Payment_URL"
     }
   };
+  // Outgoing-payload log added 2026-09-17 (live: the Custom API answered
+  // "recordId is required" on a real click). This function never logged what it
+  // sent, so there was no way to tell "the widget sent nothing" apart from
+  // "Zoho didn't bind what the widget sent" — which have different fixes. Pair
+  // this line with generateZohoPaymentLink.deluge's own new entry log: if
+  // recordId is present HERE but null THERE, the parameter is not registered on
+  // the Custom API's setup screen. Mirrors the TEMP DEBUG line onDemandInvoicing()
+  // already carries for the same reason.
+  if(!config.payload.recordId){
+    console.warn("[Get-Rescue] generateZohoPaymentLink: record.ID is EMPTY — the ticket has no record ID in memory, so the Custom API will refuse with \"recordId is required\". This means the button fired against an unsaved record; save the step first.", record);
+  }
+  console.log("[Get-Rescue] generateZohoPaymentLink: outgoing payload:", JSON.stringify(config.payload));
   try{
     const res=await fn(config);
     let data=res;
@@ -8838,7 +9777,26 @@ function renderWizard(){
   // it no longer needs to be clicked for the first send to go out.
   if(step.key==="locations" && !state.record.Send_Link_For_The_Breakdown_Location){
     state.record.Send_Link_For_The_Breakdown_Location=true;
-    sendWhatsAppTemplate(state.record.Phone_Number1, "location", [state.record.Customer_Name||"Customer"])
+    // Real bug fixed 2026-09-15. This auto-send passed only
+    // state.record.Customer_Name as {{1}}, but the "location" template's {{1}}
+    // is the LINK itself - "please click this secure link: {{1}}" - so the
+    // message every customer received on reaching this step read "please click
+    // this secure link: Rahul." with no link in it at all. And because this
+    // fires automatically on arriving at the step, it is the location message
+    // customers actually get; the manual button below is only ever a resend.
+    //
+    // Now uses customerNameWithPageLink() - the exact same helper the manual
+    // Send_Link_For_The_Breakdown_Location button already passes (see its own
+    // call site), with the same "breakdown" locationType - so the automatic
+    // send and the manual resend produce an identical message instead of two
+    // different ones. No new helper, no change to either template.
+    // Template switched 2026-09-17 — "location" no longer exists in the
+    // workspace. TOW tickets get the tow wording (which asks for the drop
+    // location as well), repairs get the repair wording; sending the wrong one
+    // gives the customer the wrong instructions.
+    const autoLocTemplate = String(state.record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
+      ? "tow_confirm_customer_location_details" : "confirm_customer_location_details_copy";
+    sendWhatsAppTemplate(state.record.Phone_Number1, autoLocTemplate, [], null, customerPageButtonPath(state.record, "location", {locationType:"breakdown"}))
       .then(function(ok){ toast(ok?"Location link sent to customer":"Couldn't send the WhatsApp location-request message — check console", ok?"ok":"err"); });
   }
   // fields
@@ -9273,7 +10231,22 @@ function buildField(f){
     // WhatsApp sending. Only appears once a value actually exists — every
     // other t:"tel" field on this app's own Create/edit forms (not just
     // Phone_Number1) picks this up too, for free.
-    const telLinkHtml = (f.t==="tel" && cur) ? ` <a href="tel:${esc(formatIndianPhone(cur))}" style="display:inline-block;margin-top:6px;font-family:var(--f-mono);font-size:12px;color:var(--muted);text-decoration:none" title="Call ${esc(cur)}">📞 Call</a>` : "";
+    // "📞 Call" (the plain tel: link) is HIDDEN on any field that also offers
+    // "📲 Call via System" (2026-09-16, user request). Two call buttons side by
+    // side next to one number is confusing, and on the desktop browsers agents
+    // actually use, a tel: link does nothing at all unless a softphone is
+    // registered to handle it — so the one being hidden is the one that doesn't
+    // work here.
+    //
+    // Scoped deliberately to f.ozonetelCall, NOT removed outright: click-to-dial
+    // on contact numbers was an explicit earlier requirement ("Customer mobile
+    // numbers must be formatted as clickable links to allow quick dial-out on
+    // both Agent apps and vendor app pages"), and it genuinely works on mobile.
+    // Only Phone_Number1 on the Create step carries ozonetelCall today, so every
+    // other tel: field in this widget — and every one in vendorTicket /
+    // technicianTicket / driverTicket, which are the mobile apps where it
+    // matters most — is completely untouched.
+    const telLinkHtml = (f.t==="tel" && cur && !f.ozonetelCall) ? ` <a href="tel:${esc(formatIndianPhone(cur))}" style="display:inline-block;margin-top:6px;font-family:var(--f-mono);font-size:12px;color:var(--muted);text-decoration:none" title="Call ${esc(cur)}">📞 Call</a>` : "";
     // Ozonetel click-to-call (2026-09-14) — see Phone_Number1's own field def
     // comment and placeVoiceCallbackFromTicket()'s own header comment for the
     // full reasoning. Purely additive, right next to the plain tel: link
@@ -9363,13 +10336,84 @@ const AGENT_CLOSURE_POLL_MS=20000;
 function agentClosureEditableFieldNames(){
   return CLOSURE_FIELDS.filter(function(f){ return f.t!=="summary" && f.t!=="file" && !f.readonly; }).map(function(f){ return f.n; });
 }
+/* Payment-status live refresh — 2026-09-18, user request ("also update status
+   in UI based on the payment status").
+
+   paymentWebhook.deluge writes Payment_Status / the transaction IDs /
+   Payment_received straight onto the ticket in Zoho the moment Zoho Payments
+   confirms a payment. But an agent sitting on the Quote or Payment step — which
+   is exactly where they are, having just sent the link and now waiting — sees
+   none of it until they close and reopen the ticket. The data was right and the
+   screen was stale.
+
+   Reuses the Agent Closure poll's own timer and lifecycle verbatim (same 20s
+   interval, same start/stop call sites in showView()/renderWizard(), same
+   "re-check we're still here" guard) rather than adding a second timer that
+   could stack with it — the two can never run at once because a step is either
+   agentClosure or one of these, never both.
+
+   The merge is DELIBERATELY NARROW and this is the whole safety argument: on
+   the closure step the existing poll merges every field except the ones the
+   agent might be typing into, which is right for a screen that is mostly a
+   live summary. Quote and Payment are ordinary data-entry steps where the
+   agent IS actively typing, so merging everything would fight them. Only the
+   six fields the payment gateway itself owns are touched, a blank is never
+   written over a real value, and nothing is written unless it actually
+   changed. */
+const PAYMENT_POLL_STEPS = ["quote","payment"];
+const PAYMENT_STATUS_FIELDS = ["Payment_Status","Payment_received","Booking_Fee_Transaction_ID","Remaining_Fee_Transaction_ID","Zoho_Payment_URL","Zoho_Payment_URL_Remaining"];
 function stopAgentClosurePoll(){ if(AGENT_CLOSURE_POLL_TIMER){ clearInterval(AGENT_CLOSURE_POLL_TIMER); AGENT_CLOSURE_POLL_TIMER=null; } }
 function startAgentClosurePollIfNeeded(){
   stopAgentClosurePoll(); // never let two timers stack across re-renders
   if(state.view!=="wizard" || !state.recordId) return;
   const step=state.path[state.stepIndex];
-  if(!step || step.key!=="agentClosure") return;
-  AGENT_CLOSURE_POLL_TIMER=setInterval(pollAgentClosureRefresh, AGENT_CLOSURE_POLL_MS);
+  if(!step) return;
+  if(step.key==="agentClosure"){
+    AGENT_CLOSURE_POLL_TIMER=setInterval(pollAgentClosureRefresh, AGENT_CLOSURE_POLL_MS);
+    return;
+  }
+  if(PAYMENT_POLL_STEPS.indexOf(step.key)>=0){
+    AGENT_CLOSURE_POLL_TIMER=setInterval(pollPaymentStatusRefresh, AGENT_CLOSURE_POLL_MS);
+  }
+}
+async function pollPaymentStatusRefresh(){
+  if(state.view!=="wizard" || !state.recordId){ stopAgentClosurePoll(); return; }
+  const step=state.path[state.stepIndex];
+  if(!step || PAYMENT_POLL_STEPS.indexOf(step.key)<0){ stopAgentClosurePoll(); return; }
+  try{
+    const fresh=await apiGetById(state.recordId);
+    if(!fresh) return;
+    // Snapshot in-progress typing BEFORE merging, exactly as the closure poll
+    // does — otherwise the DOM rebuild below discards whatever the agent has
+    // half-finished in any other field on this step.
+    collectStep(false);
+    const changed=[];
+    PAYMENT_STATUS_FIELDS.forEach(function(f){
+      const incoming=fresh[f];
+      // Never blank out a value we already hold: a field the gateway hasn't
+      // written yet comes back empty, and letting that overwrite a real value
+      // would make the screen worse than not polling at all.
+      if(incoming==null || String(incoming).trim()==="") return;
+      if(String(state.record[f]==null?"":state.record[f])===String(incoming)) return;
+      state.record[f]=incoming;
+      changed.push(f);
+    });
+    if(!changed.length) return;
+    console.log("[Get-Rescue] pollPaymentStatusRefresh: payment fields changed in Zoho —", changed.join(", "), "| Payment_Status:", state.record.Payment_Status, "| Payment_received:", state.record.Payment_received);
+    rerenderCurrentView();
+    // One clear toast rather than a silent field change — the agent is waiting
+    // on precisely this, and a value that changes on screen with no explanation
+    // reads as a glitch.
+    const nowPaid=String(state.record.Payment_Status||"").trim().toUpperCase()==="PAID";
+    const rfReceived=String(state.record.Payment_received||"").trim()==="Yes";
+    if(step.key==="payment" && rfReceived){
+      toast("Remaining Fee paid — confirmed by the payment gateway","ok");
+    } else if(nowPaid){
+      toast("Payment received — confirmed by the payment gateway","ok");
+    } else {
+      toast("Payment details updated from the payment gateway","ok");
+    }
+  }catch(e){ console.warn("[Get-Rescue] pollPaymentStatusRefresh failed (non-blocking)", e); }
 }
 async function pollAgentClosureRefresh(){
   // Re-check we're still actually here — covers any transition that didn't

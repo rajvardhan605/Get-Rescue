@@ -1,150 +1,701 @@
-string getCallbackStatus(string callbackId)
+string getCallbackStatus(string data, string ucid, string callbackId)
 {
 	try
 	{
-		// ================= CONFIGURATION =================
-		// OZONETEL_STATUS_API_URL - MUST BE REPLACED BEFORE THIS WORKS.
-		// This was "https://ozonetel.com", Ozonetel's marketing homepage, the
-		// same wrong value getVoiceCallbackDetails.deluge had. A GET against it
-		// returns an HTML page, and every field read below then comes back null.
-		// NOTE: this is very likely a DIFFERENT endpoint from the one that
-		// PLACES a call - CDR / call-status lookup is normally its own URL in
-		// Ozonetel's API. Do not assume the callback URL works here; ask
-		// Ozonetel for the call-detail/CDR endpoint specifically.
-		OZONETEL_STATUS_API_URL = "REPLACE_WITH_REAL_OZONETEL_STATUS_API_URL";
-		OZONETEL_API_KEY = "KKb437079c7866db0ac92b8a90420a0602";
-		info "Checking Ozonetel call details for UCID: " + callbackId;
-
-		// ================= CONFIG GUARD =================
-		// Fails immediately and clearly rather than querying a web page and
-		// then reporting a SUCCESS full of "null" values.
-		if(OZONETEL_STATUS_API_URL == "REPLACE_WITH_REAL_OZONETEL_STATUS_API_URL")
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.4de5086eb114fdcfef03ea973af4328e.a3846f28e4c7a981e9950189893e7adb";
+		ZC_CALLLOG_URL_BASE = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Call_Log_Report/";
+		ZC_CALLLOG_FORM_URL = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/form/Call_Log";
+		info "========== OZONETEL CALLBACK RECEIVED ==========";
+		info "  Time       : " + zoho.currenttime;
+		info "  ucid param = [" + ifnull(ucid,"(null)") + "]";
+		info "  callbackId = [" + ifnull(callbackId,"(null)") + "]";
+		payloadText = ifnull(data,"");
+		payloadLength = payloadText.length();
+		info "  data length = " + payloadLength;
+		shownText = payloadText;
+		if(payloadLength > 2000)
 		{
-			info "CONFIG ERROR: OZONETEL_STATUS_API_URL is still the placeholder.";
-			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel status API URL is not configured in getCallbackStatus.deluge - no status was checked.\"}";
+			shownText = payloadText.subText(0,2000);
 		}
-
-		// ================= VALIDATION =================
-		if(callbackId == null || callbackId == "")
+		info "  data = " + shownText;
+		if(payloadText.trim() == "")
 		{
-			return "{\"code\": \"ERROR\", \"message\": \"Callback ID (UCID) is required\"}";
+			if(ifnull(ucid,"").trim() == "")
+			{
+				if(ifnull(callbackId,"").trim() == "")
+				{
+					info "  NOTHING BOUND - no data, ucid or callbackId arrived. Register 'data' in this Custom API's setup screen and confirm the campaign URL to push is configured. Nothing updated.";
+					return "{\"code\": \"SUCCESS\", \"result\": \"NOTHING_BOUND\", \"updated\": false, \"message\": \"No data, ucid or callbackId reached this script. Check that 'data' is registered on the Custom API setup screen and that the campaign's URL to Push is configured.\"}";
+				}
+			}
 		}
+		wantedKeys = List();
+		wantedKeys.add("monitorUCID");
+		wantedKeys.add("UCID");
+		wantedKeys.add("Type");
+		wantedKeys.add("CallerID");
+		wantedKeys.add("StartTime");
+		wantedKeys.add("TimeToAnswer");
+		wantedKeys.add("EndTime");
+		wantedKeys.add("CallDuration");
+		wantedKeys.add("Duration");
+		wantedKeys.add("AgentName");
+		wantedKeys.add("DialStatus");
+		wantedKeys.add("HangupBy");
+		wantedKeys.add("AudioFile");
+		wantedKeys.add("CallerConfAudioFile");
+		wantedKeys.add("ConfDuration");
+		wantedKeys.add("TransferredTo");
+		wantedKeys.add("CallFlow");
+		wantedKeys.add("Call_Flow");
+		wantedKeys.add("CallFlowDetails");
+		wantedKeys.add("Status");
+		wantedKeys.add("Disposition");
+		extracted = Map();
+		for each wantedKey in wantedKeys
+		{
+			valueFound = "";
+			keyVariants = List();
+			keyVariants.add("\"" + wantedKey + "\"");
+			keyVariants.add("'" + wantedKey + "'");
+			keyVariants.add(wantedKey);
+			for each keyVariant in keyVariants
+			{
+				if(valueFound == "")
+				{
+					keyParts = payloadText.toList(keyVariant);
+					if(keyParts.size() > 1)
+					{
+						afterKey = keyParts.get(1);
+						commaParts = afterKey.toList(",");
+						firstSeg = commaParts.get(0);
+						sqTokens = firstSeg.toList("'");
+						for each sqTok in sqTokens
+						{
+							if(valueFound == "")
+							{
+								cand = sqTok.trim();
+								if(cand != "")
+								{
+									if(cand != ":")
+									{
+										valueFound = cand;
+									}
+								}
+							}
+						}
+						if(valueFound == "")
+						{
+							dqTokens = firstSeg.toList("\"");
+							for each dqTok in dqTokens
+							{
+								if(valueFound == "")
+								{
+									cand2 = dqTok.trim();
+									if(cand2 != "")
+									{
+										if(cand2 != ":")
+										{
+											valueFound = cand2;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			if(valueFound != "")
+			{
+				if(valueFound.subText(0,1) == ":")
+				{
+					valueFound = valueFound.subText(1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
+				lastChar = valueFound.subText(valueFound.length() - 1);
+				if(lastChar == "}")
+				{
+					valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
+				lastChar2 = valueFound.subText(valueFound.length() - 1);
+				if(lastChar2 == "]")
+				{
+					valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
+				firstChar = valueFound.subText(0,1);
+				if(firstChar == "\"")
+				{
+					valueFound = valueFound.subText(1).trim();
+				}
+				if(firstChar == "'")
+				{
+					valueFound = valueFound.subText(1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
+				lastChar3 = valueFound.subText(valueFound.length() - 1);
+				if(lastChar3 == "\"")
+				{
+					valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
+				}
+				if(lastChar3 == "'")
+				{
+					valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
+				extracted.put(wantedKey,valueFound);
+			}
+		}
+		info "  extracted (" + extracted.size() + " of " + wantedKeys.size() + " keys) = " + extracted.toString();
 
-		// ================= REQUEST =================
-		queryParams = Map();
-		queryParams.put("ucid",callbackId);
-		statusResp = invokeurl
+		vMonitorUcid = ifnull(extracted.get("monitorUCID"),"").toString().trim();
+		vUcid = ifnull(extracted.get("UCID"),"").toString().trim();
+		vType = ifnull(extracted.get("Type"),"").toString().trim();
+		vCallerId = ifnull(extracted.get("CallerID"),"").toString().trim();
+		vStartTime = ifnull(extracted.get("StartTime"),"").toString().trim();
+		vTimeToAnswer = ifnull(extracted.get("TimeToAnswer"),"").toString().trim();
+		vEndTime = ifnull(extracted.get("EndTime"),"").toString().trim();
+		vCallDuration = ifnull(extracted.get("CallDuration"),"").toString().trim();
+		vDuration = ifnull(extracted.get("Duration"),"").toString().trim();
+		vAgentName = ifnull(extracted.get("AgentName"),"").toString().trim();
+		vDialStatus = ifnull(extracted.get("DialStatus"),"").toString().trim();
+		vHangupBy = ifnull(extracted.get("HangupBy"),"").toString().trim();
+		vAudioFile = ifnull(extracted.get("AudioFile"),"").toString().trim();
+		vConfAudioFile = ifnull(extracted.get("CallerConfAudioFile"),"").toString().trim();
+		vConfDuration = ifnull(extracted.get("ConfDuration"),"").toString().trim();
+		vTransferredTo = ifnull(extracted.get("TransferredTo"),"").toString().trim();
+		vCallFlow = ifnull(extracted.get("CallFlow"),"").toString().trim();
+		if(vCallFlow == "")
+		{
+			vCallFlow = ifnull(extracted.get("Call_Flow"),"").toString().trim();
+		}
+		if(vCallFlow == "")
+		{
+			vCallFlow = ifnull(extracted.get("CallFlowDetails"),"").toString().trim();
+		}
+		vStatus = ifnull(extracted.get("Status"),"").toString().trim();
+		vDisposition = ifnull(extracted.get("Disposition"),"").toString().trim();
+
+		clockFields = List();
+		clockFields.add(vCallDuration);
+		clockFields.add(vDuration);
+		clockFields.add(vTimeToAnswer);
+		clockFields.add(vConfDuration);
+		clockSeconds = List();
+		for each clockText in clockFields
+		{
+			convertedText = clockText;
+			if(clockText.contains(":"))
+			{
+				clockParts = clockText.toList(":");
+				if(clockParts.size() == 3)
+				{
+					hourPart = clockParts.get(0).trim().toLong();
+					minutePart = clockParts.get(1).trim().toLong();
+					secondPart = clockParts.get(2).trim().toLong();
+					totalSeconds = hourPart * 3600 + minutePart * 60 + secondPart;
+					convertedText = totalSeconds.toString();
+				}
+			}
+			clockSeconds.add(convertedText);
+		}
+		vCallDuration = clockSeconds.get(0);
+		vDuration = clockSeconds.get(1);
+		vTimeToAnswer = clockSeconds.get(2);
+		vConfDuration = clockSeconds.get(3);
+		info "  durations normalised to seconds - talk=[" + vCallDuration + "] total=[" + vDuration + "] answerIn=[" + vTimeToAnswer + "] conf=[" + vConfDuration + "]";
+
+		vTypeLower = vType.toLowerCase();
+		if(vTypeLower != "")
+		{
+			vType = "Outbound";
+		}
+		if(vTypeLower.contains("inbound"))
+		{
+			vType = "Inbound";
+		}
+		info "  call direction resolved to [" + vType + "]";
+
+		resolvedUcid = vUcid;
+		if(resolvedUcid == "")
+		{
+			resolvedUcid = vMonitorUcid;
+		}
+		if(resolvedUcid == "")
+		{
+			resolvedUcid = ifnull(ucid,"").trim();
+		}
+		if(resolvedUcid == "")
+		{
+			resolvedUcid = ifnull(callbackId,"").trim();
+		}
+		info "  resolvedUcid = [" + resolvedUcid + "]";
+		resolvedPhone = vCallerId;
+		if(resolvedPhone.length() > 10)
+		{
+			resolvedPhone = resolvedPhone.subText(resolvedPhone.length() - 10);
+		}
+		info "  resolvedPhone (last 10) = [" + resolvedPhone + "]";
+
+		tokenResp = invokeurl
 		[
-			url :OZONETEL_STATUS_API_URL
-			type :GET
-			parameters:queryParams
-			headers:{"accept":"application/json","apiKey":OZONETEL_API_KEY}
+			url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+			type :POST
 		];
-		// Truncated logging, same reason as getVoiceCallbackDetails.deluge: an
-		// unbounded info of an HTML response blows Deluge's own 500000-char
-		// limit and silently cuts the rest of the execution log off. The length
-		// alone identifies a web page instantly.
-		rawRespText = statusResp.toString();
-		rawRespLength = rawRespText.length();
-		if(rawRespLength > 500)
+		zcAccessToken = tokenResp.get("access_token");
+		if(zcAccessToken == null)
 		{
-			rawRespText = rawRespText.subText(0,500);
+			info "  TOKEN FAILED - no access_token returned. Raw response: " + tokenResp.toString();
+			return "{\"code\": \"SUCCESS\", \"result\": \"TOKEN_FAILED\", \"updated\": false, \"message\": \"Could not get an access token from the refresh token, so nothing was written. See this Custom API execution log for the raw response.\"}";
 		}
-		info "Raw Report Response (length " + rawRespLength + ", first 500 chars): " + rawRespText;
-		if(rawRespLength > 5000)
+		logRecId = "";
+		if(resolvedUcid != "")
 		{
-			info "WARNING: the response is " + rawRespLength + " characters. A real API reply is small; this size means OZONETEL_STATUS_API_URL is almost certainly pointing at a web page rather than an API endpoint.";
+			for each ucidRow in Call_Log[UCID == resolvedUcid]
+			{
+				if(logRecId == "")
+				{
+					logRecId = ucidRow.ID.toString();
+					info "  Matched Call_Log " + logRecId + " by UCID.";
+				}
+			}
+		}
+		if(logRecId == "null")
+		{
+			logRecId = "";
+		}
+		if(logRecId == "")
+		{
+			if(resolvedPhone != "")
+			{
+				bestId = 0;
+				bestIdText = "";
+				for each pendingRow in Call_Log[Phone_Number == resolvedPhone]
+				{
+					existingUcid = ifnull(pendingRow.UCID,"").toString().trim();
+					if(existingUcid == "")
+					{
+						thisId = pendingRow.ID;
+						if(thisId > bestId)
+						{
+							bestId = thisId;
+							bestIdText = pendingRow.ID.toString();
+						}
+					}
+				}
+				if(bestId > 0)
+				{
+					logRecId = bestIdText;
+					numericIdText = bestId.toString();
+					info "  Matched Call_Log " + logRecId + " by phone number (newest row for this number that has no UCID yet).";
+					info "  Record id as text = [" + bestIdText + "] | same id after passing through a NUMBER variable = [" + numericIdText + "]. If these two differ, Deluge lost precision on the 18-digit id and the text one is the real record.";
+				}
+			}
+		}
+		createdNewRow = false;
+		if(logRecId == "")
+		{
+			info "  No existing Call_Log row matched. Creating one - every call must be logged whether it was placed from this app, from the Ozonetel iframe, or came in as an inbound call.";
+			matchedTicketId = 0;
+			if(resolvedPhone != "")
+			{
+				phoneVariants = List();
+				phoneVariants.add(resolvedPhone);
+				phoneVariants.add("+91" + resolvedPhone);
+				phoneVariants.add("91" + resolvedPhone);
+				phoneVariants.add("0" + resolvedPhone);
+				for each phoneVariant in phoneVariants
+				{
+					if(matchedTicketId == 0)
+					{
+						for each ticketRow in Create_Case[Phone_Number1 == phoneVariant]
+						{
+							if(ticketRow.ID > matchedTicketId)
+							{
+								matchedTicketId = ticketRow.ID;
+							}
+						}
+					}
+				}
+				if(matchedTicketId == 0)
+				{
+					for each phoneVariant2 in phoneVariants
+					{
+						if(matchedTicketId == 0)
+						{
+							for each ticketRow2 in Create_Case[Phone_Number == phoneVariant2]
+							{
+								if(ticketRow2.ID > matchedTicketId)
+								{
+									matchedTicketId = ticketRow2.ID;
+								}
+							}
+						}
+					}
+				}
+			}
+			if(matchedTicketId > 0)
+			{
+				info "  Linked to ticket " + matchedTicketId + " (newest ticket carrying this phone number).";
+			}
+			else
+			{
+				info "  No ticket carries this phone number, so the row is created unlinked. It is still captured, and an agent can attach it by hand.";
+			}
+			createMap = Map();
+			createMap.put("Phone_Number",resolvedPhone);
+			if(resolvedUcid != "")
+			{
+				createMap.put("UCID",resolvedUcid);
+			}
+			if(vType != "")
+			{
+				createMap.put("Call_Direction",vType);
+			}
+			if(matchedTicketId > 0)
+			{
+				createMap.put("Create_Case",matchedTicketId.toString());
+			}
+			createBody = Map();
+			createBody.put("data",createMap);
+			createResp = invokeurl
+			[
+				url :ZC_CALLLOG_FORM_URL
+				type :POST
+				parameters:createBody.toString()
+				headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+			];
+			info "  CREATE Call_Log response: " + createResp.toString();
+			newRowId = "";
+			if(createResp.get("code") == 3000)
+			{
+				createdData = createResp.get("data");
+				if(createdData != null)
+				{
+					if(createdData.get("ID") != null)
+					{
+						newRowId = createdData.get("ID").toString();
+					}
+				}
+			}
+			if(newRowId == "")
+			{
+				info "  CREATE FAILED - could not add a Call_Log row for this call. Nothing recorded.";
+				createDiag = "url=" + ZC_CALLLOG_FORM_URL + " || sent=" + createBody.toString() + " || reply=" + createResp.toString();
+				if(createDiag.length() > 700)
+				{
+					createDiag = createDiag.subText(0,700);
+				}
+				createDiagSafe = createDiag.replaceAll("\"","'");
+				return "{\"code\": \"SUCCESS\", \"result\": \"CREATE_FAILED\", \"updated\": false, \"ucid\": \"" + resolvedUcid + "\", \"phone\": \"" + resolvedPhone + "\", \"create_response\": \"" + createDiagSafe + "\", \"message\": \"No Call_Log row matched this callback and creating one failed. The create_response field above carries the exact URL, the payload sent, and Zoho's raw reply.\"}";
+			}
+			logRecId = newRowId;
+			createdNewRow = true;
+			info "  Created Call_Log " + logRecId + " for this call.";
 		}
 
-		// ================= EXPLICIT FAILURE FROM OZONETEL =================
-		apiStatus = statusResp.get("status");
-		if(apiStatus == "false" || apiStatus == "Fail")
+		statusText = vDialStatus;
+		if(statusText == "")
 		{
-			errMsg = statusResp.get("message");
-			info "Status check FAILED: " + errMsg;
-			return "{\"code\": \"ERROR\", \"message\": \"" + errMsg + "\"}";
+			statusText = vStatus;
+		}
+		outcomeText = vDisposition;
+		if(outcomeText == "")
+		{
+			if(vHangupBy != "")
+			{
+				outcomeText = "Hangup by " + vHangupBy;
+			}
 		}
 
-		// ================= EXTRACT CDR FIELDS =================
-		// Every value is normalised to "" when absent. The old version
-		// concatenated raw nulls straight into the JSON, producing the literal
-		// text "null" in status/call_duration/disconnect_reason - the same bug
-		// that made getVoiceCallbackDetails report ucid "null" as a success.
-		callResultRaw = statusResp.get("Status");
-		if(callResultRaw == null)
+		coreFieldMap = Map();
+		fullFieldMap = Map();
+		if(resolvedUcid != "")
 		{
-			callResultRaw = statusResp.get("status");
+			coreFieldMap.put("UCID",resolvedUcid);
+			fullFieldMap.put("UCID",resolvedUcid);
 		}
-		callResultText = "";
-		if(callResultRaw != null)
+		if(statusText != "")
 		{
-			callResultText = callResultRaw.toString().trim();
+			coreFieldMap.put("Call_Status",statusText);
+			fullFieldMap.put("Call_Status",statusText);
 		}
-		if(callResultText == "null")
+		if(vCallDuration != "")
 		{
-			callResultText = "";
+			coreFieldMap.put("Call_Duration",vCallDuration);
+			fullFieldMap.put("Call_Duration",vCallDuration);
 		}
-
-		callDurationRaw = statusResp.get("Duration");
-		callDurationText = "";
-		if(callDurationRaw != null)
+		if(outcomeText != "")
 		{
-			callDurationText = callDurationRaw.toString().trim();
+			coreFieldMap.put("Call_Outcome",outcomeText);
+			fullFieldMap.put("Call_Outcome",outcomeText);
 		}
-		if(callDurationText == "null")
+		if(vType != "")
 		{
-			callDurationText = "";
+			coreFieldMap.put("Call_Direction",vType);
+			fullFieldMap.put("Call_Direction",vType);
 		}
 
-		disconnectReasonRaw = statusResp.get("DisconnectReason");
-		disconnectReasonText = "";
-		if(disconnectReasonRaw != null)
+		extraFieldMap = Map();
+		if(vStartTime != "")
 		{
-			disconnectReasonText = disconnectReasonRaw.toString().trim();
+			extraFieldMap.put("Call_Start_Time",vStartTime);
+			fullFieldMap.put("Call_Start_Time",vStartTime);
 		}
-		if(disconnectReasonText == "null")
+		if(vEndTime != "")
 		{
-			disconnectReasonText = "";
+			extraFieldMap.put("Call_End_Time",vEndTime);
+			fullFieldMap.put("Call_End_Time",vEndTime);
+		}
+		if(vTimeToAnswer != "")
+		{
+			extraFieldMap.put("Time_To_Answer",vTimeToAnswer);
+			fullFieldMap.put("Time_To_Answer",vTimeToAnswer);
+		}
+		if(vDuration != "")
+		{
+			extraFieldMap.put("Total_Duration",vDuration);
+			fullFieldMap.put("Total_Duration",vDuration);
+		}
+		if(vAgentName != "")
+		{
+			extraFieldMap.put("Agent_Name",vAgentName);
+			fullFieldMap.put("Agent_Name",vAgentName);
+		}
+		if(vAudioFile != "")
+		{
+			extraFieldMap.put("Audio_File_URL",vAudioFile);
+			fullFieldMap.put("Audio_File_URL",vAudioFile);
+		}
+		if(vConfAudioFile != "")
+		{
+			extraFieldMap.put("Conference_Audio_URL",vConfAudioFile);
+			fullFieldMap.put("Conference_Audio_URL",vConfAudioFile);
+		}
+		if(vConfDuration != "")
+		{
+			extraFieldMap.put("Conference_Duration",vConfDuration);
+			fullFieldMap.put("Conference_Duration",vConfDuration);
+		}
+		if(vTransferredTo != "")
+		{
+			extraFieldMap.put("Transferred_To",vTransferredTo);
+			fullFieldMap.put("Transferred_To",vTransferredTo);
+		}
+		if(vCallFlow != "")
+		{
+			extraFieldMap.put("Call_Flow",vCallFlow);
+			fullFieldMap.put("Call_Flow",vCallFlow);
 		}
 
-		// If NOTHING came back for this UCID, say so instead of returning a
-		// SUCCESS with three blank fields. Deliberately requires ALL three to be
-		// empty before failing: a call still in progress can legitimately have a
-		// status but no duration or disconnect reason yet, and that is a real,
-		// useful answer - not an error.
-		fieldsFound = 0;
-		if(callResultText != "")
+		existingHistory = "";
+		try
 		{
-			fieldsFound = fieldsFound + 1;
+			readBackResp = invokeurl
+			[
+				url :ZC_CALLLOG_URL_BASE + logRecId
+				type :GET
+				headers:{"Authorization":"Bearer " + zcAccessToken}
+			];
+			if(readBackResp.get("code") == 3000)
+			{
+				readBackData = readBackResp.get("data");
+				if(readBackData != null)
+				{
+					if(readBackData.get("Call_Callback_History") != null)
+					{
+						existingHistory = readBackData.get("Call_Callback_History").toString();
+					}
+				}
+			}
+			else
+			{
+				info "  Could not read back Call_Log " + logRecId + " for its existing history (non-fatal, this callback will simply start a fresh history): " + readBackResp.toString();
+			}
 		}
-		if(callDurationText != "")
+		catch (readBackEx)
 		{
-			fieldsFound = fieldsFound + 1;
+			info "  Read-back of the existing history threw (non-fatal): " + readBackEx.toString();
 		}
-		if(disconnectReasonText != "")
+		historyLine = "--- " + zoho.currenttime.toString("dd-MMM-yyyy hh:mm:ss a") + " ---";
+		if(resolvedUcid != "")
 		{
-			fieldsFound = fieldsFound + 1;
+			historyLine = historyLine + "\nUCID: " + resolvedUcid;
 		}
-		if(fieldsFound == 0)
+		if(vType != "")
 		{
-			info "NO CDR DATA returned for UCID " + callbackId + " - reporting ERROR rather than a SUCCESS full of blanks.";
-			return "{\"code\": \"ERROR\", \"message\": \"Ozonetel returned no call data for UCID " + callbackId + ". Check this Custom API's execution log for the raw response.\", \"callback_id\": \"" + callbackId + "\"}";
+			historyLine = historyLine + "\nType: " + vType;
+		}
+		if(vCallerId != "")
+		{
+			historyLine = historyLine + "\nCallerID: " + vCallerId;
+		}
+		if(vAgentName != "")
+		{
+			historyLine = historyLine + "\nAgentName: " + vAgentName;
+		}
+		if(vStartTime != "")
+		{
+			historyLine = historyLine + "\nStartTime: " + vStartTime;
+		}
+		if(vTimeToAnswer != "")
+		{
+			historyLine = historyLine + "\nTimeToAnswer: " + vTimeToAnswer;
+		}
+		if(vEndTime != "")
+		{
+			historyLine = historyLine + "\nEndTime: " + vEndTime;
+		}
+		if(vCallDuration != "")
+		{
+			historyLine = historyLine + "\nCallDuration (talk): " + vCallDuration;
+		}
+		if(vDuration != "")
+		{
+			historyLine = historyLine + "\nDuration (total): " + vDuration;
+		}
+		if(statusText != "")
+		{
+			historyLine = historyLine + "\nDialStatus: " + statusText;
+		}
+		if(vHangupBy != "")
+		{
+			historyLine = historyLine + "\nHangupBy: " + vHangupBy;
+		}
+		if(vTransferredTo != "")
+		{
+			historyLine = historyLine + "\nTransferredTo: " + vTransferredTo;
+		}
+		if(vConfDuration != "")
+		{
+			historyLine = historyLine + "\nConfDuration: " + vConfDuration;
+		}
+		if(vAudioFile != "")
+		{
+			historyLine = historyLine + "\nAudioFile: " + vAudioFile;
+		}
+		if(vConfAudioFile != "")
+		{
+			historyLine = historyLine + "\nCallerConfAudioFile: " + vConfAudioFile;
+		}
+		if(vCallFlow != "")
+		{
+			historyLine = historyLine + "\nCall Flow: " + vCallFlow;
+		}
+		if(existingHistory.trim() == "")
+		{
+			extraFieldMap.put("Call_Callback_History",historyLine);
+			fullFieldMap.put("Call_Callback_History",historyLine);
+		}
+		else
+		{
+			appendedHistory = existingHistory + "\n\n" + historyLine;
+			extraFieldMap.put("Call_Callback_History",appendedHistory);
+			fullFieldMap.put("Call_Callback_History",appendedHistory);
 		}
 
-		info "Callback Result: " + callResultText + " | Reason: " + disconnectReasonText + " | Duration: " + callDurationText;
-		// Return shape deliberately UNCHANGED - getRescueTicket's own
-		// checkVoiceCallbackStatusFromTicket() and callCenter's own
-		// checkVoiceCallbackStatus() both read exactly status / call_duration /
-		// disconnect_reason from here (they also try call_result first, which
-		// this API has never returned - their "||" fallback already covers it).
-		// Changing these key names would silently break both widgets.
-		resultResponse = "{\"code\": \"SUCCESS\", \"callback_id\": \"" + callbackId + "\", \"status\": \"" + callResultText + "\", \"call_duration\": \"" + callDurationText + "\", \"disconnect_reason\": \"" + disconnectReasonText + "\"}";
-		return resultResponse;
-	}	catch (e)
-	{
-		info "Exception: " + e.toString();
-		return "{\"code\": \"ERROR\", \"message\": \"" + e.toString() + "\"}";
+		if(fullFieldMap.size() == 0)
+		{
+			info "  Callback carried nothing usable, so there is nothing to write onto Call_Log " + logRecId + ".";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NOTHING_TO_WRITE\", \"updated\": false, \"recordId\": \"" + logRecId + "\", \"message\": \"A Call_Log row was matched but the callback carried no readable values, so nothing was written.\"}";
+		}
+		info "  Fields to write on Call_Log " + logRecId + " (" + fullFieldMap.size() + " total, " + coreFieldMap.size() + " core + " + extraFieldMap.size() + " extended): " + fullFieldMap.toString();
+
+		rowMode = "existing";
+		if(createdNewRow)
+		{
+			rowMode = "created";
+		}
+		writtenMode = "none";
+		patchBody = Map();
+		patchBody.put("data",fullFieldMap);
+		patchDiag = "";
+		patchResp = invokeurl
+		[
+			url :ZC_CALLLOG_URL_BASE + logRecId
+			type :PATCH
+			parameters:patchBody.toString()
+			headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+		];
+		info "  PATCH (full) response: " + patchResp.toString();
+		patchDiag = "url=" + ZC_CALLLOG_URL_BASE + logRecId + " || full=" + patchResp.toString();
+		if(patchResp.get("code") == 3000)
+		{
+			writtenMode = "full";
+			info "  WRITE OK - Call_Log " + logRecId + " updated with all " + fullFieldMap.size() + " fields, history appended.";
+		}
+		else
+		{
+			if(patchResp.get("code") == 1000)
+			{
+				info "  FULL WRITE REFUSED with code 1000 (Invalid API URL format). This is NOT a missing-field problem - the record id in the PATCH URL is empty or not a number, so no Call_Log row was actually addressed. The id used was [" + logRecId + "]. Check the row-matching log lines above.";
+			}
+			else
+			{
+				info "  FULL WRITE REFUSED - most likely one of the new Call_Log fields does not exist yet. Retrying with the core fields only. Create these on Call_Log to capture everything: Call_Start_Time, Call_End_Time, Time_To_Answer, Total_Duration, Agent_Name, Audio_File_URL, Conference_Audio_URL, Conference_Duration, Transferred_To, Call_Flow, Call_Callback_History.";
+			}
+			if(coreFieldMap.size() > 0)
+			{
+				coreBody = Map();
+				coreBody.put("data",coreFieldMap);
+				coreResp = invokeurl
+				[
+					url :ZC_CALLLOG_URL_BASE + logRecId
+					type :PATCH
+					parameters:coreBody.toString()
+					headers:{"Content-Type":"application/json","Authorization":"Bearer " + zcAccessToken}
+				];
+				info "  PATCH (core only) response: " + coreResp.toString();
+				patchDiag = patchDiag + " || core=" + coreResp.toString();
+				if(coreResp.get("code") == 3000)
+				{
+					writtenMode = "core";
+					info "  WRITE OK (core fields only) - Call_Log " + logRecId + " updated. The extended fields were skipped.";
+				}
+				else
+				{
+					info "  WRITE FAILED on both attempts - " + coreResp.get("message");
+				}
+			}
+		}
+		info "===============================================";
+		if(writtenMode == "none")
+		{
+			probeResp = invokeurl
+			[
+				url :"https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Call_Log_Report?max_records=200"
+				type :GET
+				headers:{"Authorization":"Bearer " + zcAccessToken}
+			];
+			probeText = probeResp.toString();
+			if(probeText.length() > 300)
+			{
+				probeText = probeText.subText(0,300);
+			}
+			info "  PROBE - plain list GET on Call_Log_Report: " + probeText;
+			patchDiag = patchDiag + " || report_list_probe=" + probeText;
+			patchDiagSafe = patchDiag.replaceAll("\"","'");
+			return "{\"code\": \"SUCCESS\", \"result\": \"WRITE_FAILED\", \"updated\": false, \"recordId\": \"" + logRecId + "\", \"patch_responses\": \"" + patchDiagSafe + "\", \"message\": \"A Call_Log row was matched and the callback was parsed, but both the full and the core write were refused. The patch_responses field above carries the raw PATCH replies and the exact URL used.\"}";
+		}
+		return "{\"code\": \"SUCCESS\", \"result\": \"UPDATED\", \"updated\": true, \"row\": \"" + rowMode + "\", \"written\": \"" + writtenMode + "\", \"recordId\": \"" + logRecId + "\", \"fields_written\": " + fullFieldMap.size() + ", \"keys_extracted\": " + extracted.size() + ", \"ucid\": \"" + resolvedUcid + "\", \"type\": \"" + vType + "\", \"caller_id\": \"" + vCallerId + "\", \"agent\": \"" + vAgentName + "\", \"start_time\": \"" + vStartTime + "\", \"end_time\": \"" + vEndTime + "\", \"time_to_answer\": \"" + vTimeToAnswer + "\", \"talk_time\": \"" + vCallDuration + "\", \"total_duration\": \"" + vDuration + "\", \"dial_status\": \"" + statusText + "\", \"hangup_by\": \"" + vHangupBy + "\", \"transferred_to\": \"" + vTransferredTo + "\", \"conf_duration\": \"" + vConfDuration + "\", \"audio_file\": \"" + vAudioFile + "\", \"conf_audio_file\": \"" + vConfAudioFile + "\", \"call_flow\": \"" + vCallFlow + "\", \"message\": \"Call_Log " + logRecId + " updated from the Ozonetel callback and one timestamped entry appended to its history.\"}";
 	}
-	// Fallback return if execution somehow drops out of the try/catch.
-	return "{\"code\": \"ERROR\", \"message\": \"Critical script processing failure\"}";
+	catch (e)
+	{
+		info "getCallbackStatus threw (nothing was updated by this call): " + e.toString();
+		return "{\"code\": \"SUCCESS\", \"result\": \"EXCEPTION\", \"updated\": false, \"exception\": \"" + e.toString() + "\", \"message\": \"The script threw an error and nothing was updated. The exception text is in the exception field above and in this Custom API execution log.\"}";
+	}
+	return "{\"code\": \"SUCCESS\", \"result\": \"NO_RESULT\", \"updated\": false, \"message\": \"The script finished without reaching any known outcome. This should not happen - send the execution log over.\"}";
 }

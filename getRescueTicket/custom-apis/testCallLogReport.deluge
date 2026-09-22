@@ -1,0 +1,102 @@
+void testCallLogReport()
+{
+	ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+	ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+	ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+	TEST_PHONE = "7210036790";
+	info "========== CALL_LOG REPORT DIAGNOSTIC ==========";
+	info "STEP 1 - what Deluge itself can see in the Call_Log FORM";
+	deluGeIds = "";
+	for each seenRow in Call_Log[Phone_Number == TEST_PHONE]
+	{
+		deluGeIds = deluGeIds + " [" + seenRow.ID.toString() + "]";
+	}
+	if(deluGeIds == "")
+	{
+		info "  Deluge found NO Call_Log row with Phone_Number = " + TEST_PHONE;
+	}
+	else
+	{
+		info "  Deluge found these Call_Log record ids:" + deluGeIds;
+	}
+	info "STEP 2 - refresh the access token";
+	tokenResp = invokeurl
+	[
+		url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+		type :POST
+	];
+	accessToken = tokenResp.get("access_token");
+	if(accessToken == null)
+	{
+		info "  TOKEN FAILED. Raw response: " + tokenResp.toString();
+		info "  Nothing below can work until this is fixed. STOPPING.";
+		return;
+	}
+	info "  token OK";
+	info "  granted scopes = " + ifnull(tokenResp.get("scope"),"(the token endpoint returned no scope field)");
+	info "STEP 3 - plain LIST read of Call_Log_Report (no record id involved)";
+	listResp = invokeurl
+	[
+		url :"https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Call_Log_Report?max_records=3"
+		type :GET
+		headers:{"Authorization":"Bearer " + accessToken}
+	];
+	listText = listResp.toString();
+	if(listText.length() > 900)
+	{
+		listText = listText.subText(0,900);
+	}
+	info "  response = " + listText;
+	info "STEP 4 - same LIST read against Agent_Ticket_Report, which paymentWebhook already writes to successfully";
+	controlResp = invokeurl
+	[
+		url :"https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Agent_Ticket_Report?max_records=1"
+		type :GET
+		headers:{"Authorization":"Bearer " + accessToken}
+	];
+	controlText = controlResp.toString();
+	if(controlText.length() > 400)
+	{
+		controlText = controlText.subText(0,400);
+	}
+	info "  response = " + controlText;
+	info "STEP 5 - read ONE specific record that Deluge says exists";
+	if(deluGeIds != "")
+	{
+		firstId = "";
+		idChunks = deluGeIds.toList("[");
+		for each idChunk in idChunks
+		{
+			if(firstId == "")
+			{
+				if(idChunk.contains("]"))
+				{
+					firstId = idChunk.toList("]").get(0).trim();
+				}
+			}
+		}
+		info "  asking the API for record id [" + firstId + "]";
+		oneResp = invokeurl
+		[
+			url :"https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Call_Log_Report/" + firstId
+			type :GET
+			headers:{"Authorization":"Bearer " + accessToken}
+		];
+		oneText = oneResp.toString();
+		if(oneText.length() > 600)
+		{
+			oneText = oneText.subText(0,600);
+		}
+		info "  response = " + oneText;
+	}
+	else
+	{
+		info "  skipped - Deluge found no record id to test with";
+	}
+	info "========== HOW TO READ THIS ==========";
+	info "STEP 3 = 3000 with records -> the report is fine, and the problem is the specific record id.";
+	info "STEP 3 = 3100 while STEP 4 = 3000 -> same token, same app, one report works and the other does not. That means Call_Log_Report itself is filtered, unshared, or built on a different form.";
+	info "STEP 3 and STEP 4 both fail -> the token or its scopes are the problem, not this report.";
+	info "STEP 1 shows an id but STEP 5 says 9290 -> the form and the report genuinely disagree about that record.";
+	info "==============================================";
+}

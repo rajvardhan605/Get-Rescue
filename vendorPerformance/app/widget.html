@@ -83,6 +83,12 @@ select#filterRange{font-family:var(--f-disp);font-weight:700;font-size:13.5px;pa
    ===================================================================== */
 const CONFIG = {
   appName: "get-rescue",
+  // reportName / taskRejectionsReport are NO LONGER READ BY THIS WIDGET
+  // (2026-09-18). Both reports are now fetched server-side by the
+  // getVendorTickets and getTaskRejections Custom APIs, which hold the real
+  // report names themselves. Kept here purely as documentation of what those
+  // two APIs read — if either report is ever renamed in Zoho, the name has to
+  // change in the Deluge, not here.
   reportName: "Agent_Ticket_Report",
   taskRejectionsReport: "Task_Rejections_Report",
   vendorReport: "Vendors_Report",
@@ -118,14 +124,124 @@ async function apiGetReport(report, criteria, max){
 }
 function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
 
+/* resolveVendorRecord() — 2026-09-18, user request ("use My_Availability_Vendor
+   report in place of Vendors_Report").
+
+   A vendor signing in to the portal got "No matching Vendors_Report record found
+   for your login" even though their vendor record plainly exists. Same root
+   cause as the raw vehicle ids on the dashboard the same day: the Vendor portal
+   profile is refused Vendors_Report with {"code":2898,"message":"Permission
+   denied to view record(s)."}, and apiGetReport turns that refusal into an empty
+   array — so the search had nothing to search.
+
+   My_Availability_Vendor is a report over the SAME underlying Vendors form
+   (unified 2026-08-03, see FIELDS.md Form 4) but scoped to the signed-in user,
+   which is exactly why a portal vendor can read it when the full report is
+   closed to them. Record IDs and field names are therefore identical — nothing
+   downstream of this function changes.
+
+   Tried in order, first hit wins, so this is additive rather than a swap:
+   My_Availability_Vendor first (works for a portal vendor), then Vendors_Report
+   (works for an internal user, and is what every existing working setup uses).
+   Neither report being readable leaves currentVendorRecord null and produces the
+   same error screen as before, so the failure mode is unchanged. */
+/* loadTaskRejectionsViaCustomApi() — 2026-09-18. Server-side read of
+   Task_Rejections_Report via the getTaskRejections Custom API, for the case
+   where this portal profile is refused the report directly (code 2898).
+
+   Returns rows in the SAME shape the direct read produces — objects carrying
+   RSP_Name and Rejected_At — so the existing filter below is untouched and does
+   not need to know which route the data arrived by.
+
+   Fails soft in every branch: any problem returns an empty array, which is
+   exactly what the direct read already returned, so the screen behaves as it
+   does today rather than breaking. */
+/* loadVendorTicketsViaCustomApi() — 2026-09-18. Server-side read of
+   Agent_Ticket_Report via the getVendorTickets Custom API, for the case where
+   this portal profile cannot read that report directly.
+
+   Unlike the direct read, this one filters BY VENDOR on the server, so it comes
+   back with only this vendor's cases instead of all 1000. Rows carry
+   Assigned_Vendor as a bare id, so boot()'s existing client-side filter still
+   matches and did not need changing.
+
+   Fails soft: any problem returns an empty array, which is what the direct read
+   already returned in this situation. */
+async function loadVendorTicketsViaCustomApi(vendorId){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[GR-VendorPerf] loadVendorTicketsViaCustomApi: invokeCustomApi unavailable — no tickets."); return []; }
+  try{
+    const res=await fn({ api_name:"getVendorTickets", workspace_name:"getrescued", http_method:"POST", content_type:"application/json", payload:{ vendorId:String(vendorId) } });
+    console.log("[GR-VendorPerf] loadVendorTicketsViaCustomApi: raw response:", res);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-VendorPerf] loadVendorTicketsViaCustomApi: response.result wasn't valid JSON", e, res); return []; }
+    }
+    if(!data || data.code!=="SUCCESS" || !Array.isArray(data.tickets)){
+      console.warn("[GR-VendorPerf] loadVendorTicketsViaCustomApi: Custom API did not return tickets —", (data&&data.message)||"(no message)", res);
+      return [];
+    }
+    console.log("[GR-VendorPerf] loadVendorTicketsViaCustomApi: resolved "+data.tickets.length+" ticket(s) via the Custom API fallback.");
+    return data.tickets;
+  }catch(e){
+    console.warn("[GR-VendorPerf] loadVendorTicketsViaCustomApi failed — no tickets.", e);
+    return [];
+  }
+}
+async function loadTaskRejectionsViaCustomApi(){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: invokeCustomApi unavailable — rejections stay at zero."); return []; }
+  try{
+    // POST with no payload key — the shape proven by this project's other
+    // zero-parameter Custom APIs (checkOperationsManagerPermission,
+    // getVehicleNames). GET with an empty payload does not work.
+    const res=await fn({ api_name:"getTaskRejections", workspace_name:"getrescued", http_method:"POST", content_type:"application/json" });
+    console.log("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: raw response:", res);
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: response.result wasn't valid JSON", e, res); return []; }
+    }
+    if(!data || data.code!=="SUCCESS" || !Array.isArray(data.rejections)){
+      console.warn("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: Custom API did not return rejections —", (data&&data.message)||"(no message)", res);
+      return [];
+    }
+    console.log("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: resolved "+data.rejections.length+" rejection row(s) via the Custom API fallback.");
+    return data.rejections;
+  }catch(e){
+    console.warn("[GR-VendorPerf] loadTaskRejectionsViaCustomApi failed — rejections stay at zero.", e);
+    return [];
+  }
+}
+const VENDOR_SELF_REPORTS = ["My_Availability_Vendor", "Vendors_Report"];
 async function resolveVendorRecord(){
   if(!LOGIN_EMAIL) return null;
-  const vrecs = await apiGetReport(CONFIG.vendorReport, null, 1000);
-  const myVendor = vrecs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
-  if(myVendor){
-    currentVendorRecord = { id: myVendor.ID, data: myVendor };
-    MY_VENDOR_NAME = myVendor[CONFIG.vendorNameField] || "";
+  const wanted = LOGIN_EMAIL.trim().toLowerCase();
+  for(const reportName of VENDOR_SELF_REPORTS){
+    const vrecs = await apiGetReport(reportName, null, 1000);
+    console.log("[GR-VendorPerf] resolveVendorRecord: "+reportName+" returned "+vrecs.length+" record(s).");
+    if(!vrecs.length) continue;
+    // Email match first — the original behaviour, unchanged.
+    let myVendor = vrecs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===wanted; });
+    // My_Availability_Vendor is already filtered to the signed-in user, so a
+    // single row IS this vendor even when its email column is blank or held
+    // under a different field name. Only ever applied to a one-row result, and
+    // never to the full Vendors_Report, where picking "the only row" would be
+    // meaningless.
+    if(!myVendor && vrecs.length===1 && reportName!=="Vendors_Report"){
+      myVendor = vrecs[0];
+      console.log("[GR-VendorPerf] resolveVendorRecord: no email match in "+reportName+", but it returned exactly one row and is a self-scoped report — using it.");
+    }
+    if(myVendor){
+      currentVendorRecord = { id: myVendor.ID, data: myVendor };
+      MY_VENDOR_NAME = myVendor[CONFIG.vendorNameField] || "";
+      console.log("[GR-VendorPerf] resolveVendorRecord: matched vendor "+currentVendorRecord.id+" ("+(MY_VENDOR_NAME||"no name")+") via "+reportName+".");
+      return currentVendorRecord;
+    }
+    console.log("[GR-VendorPerf] resolveVendorRecord: "+reportName+" had rows but none matched "+wanted+" on "+CONFIG.vendorEmailField+".");
   }
+  console.warn("[GR-VendorPerf] resolveVendorRecord: no vendor record found in any of", VENDOR_SELF_REPORTS, "for", LOGIN_EMAIL);
   return currentVendorRecord;
 }
 
@@ -352,26 +468,45 @@ async function boot(){
     await resolveVendorRecord();
     $("vendorNameLine").textContent = MY_VENDOR_NAME ? MY_VENDOR_NAME : (LOGIN_EMAIL || "Unknown vendor");
     if(!currentVendorRecord){
-      renderError("No matching Vendors_Report record found for your login ("+esc(LOGIN_EMAIL)+") — performance can't be computed without it.");
+      renderError("No vendor record found for your login ("+esc(LOGIN_EMAIL)+") in either My_Availability_Vendor or Vendors_Report — performance can't be computed without it. If your vendor record does exist, the most likely cause is that this portal profile cannot read either report (Zoho answers \"Permission denied to view record(s)\"); the browser console names which report was tried and what each returned.");
       return;
     }
     const vid = currentVendorRecord.id;
+    /* Both reports now come ONLY from their Custom APIs — 2026-09-18, user
+       request ("now we move to these two api, so remove unnecessary api calls").
+
+       The two direct apiGetReport() reads that used to run first are gone. They
+       were refused for a Vendor portal profile anyway (code 2898, which
+       apiGetReport turns into an empty array), so on this screen they were two
+       guaranteed-wasted round trips — one of them pulling the entire
+       Agent_Ticket_Report, all 1000 rows, before discarding nearly all of it.
+
+       What this removes, per page load:
+         - a full Agent_Ticket_Report fetch (~20 kB and rising with every case)
+         - a full Task_Rejections_Report fetch
+         - the fallback branches that decided between the two routes
+
+       getVendorTickets filters by vendor SERVER-SIDE, so what arrives is only
+       this vendor's cases. That is both far smaller and a genuine privacy fix:
+       the old direct read shipped every other vendor's cases, customer names and
+       money fields into this vendor's browser.
+
+       resolveVendorRecord() above still uses apiGetReport for
+       My_Availability_Vendor — that one is self-scoped and readable by the
+       portal profile, so it needs no Custom API. */
     const [allTicketRecs, rejectionRecs] = await Promise.all([
-      apiGetReport(CONFIG.reportName, null, 1000),
-      apiGetReport(CONFIG.taskRejectionsReport, null, 1000)
+      loadVendorTicketsViaCustomApi(vid),
+      loadTaskRejectionsViaCustomApi()
     ]);
-    // Real bug fixed (2026-09-03, user-reported live: dashboard showed all
-    // zeros for a vendor with real assigned tickets) — a server-side
-    // criteria of "Assigned_Vendor == vid" against a real Lookup field
-    // silently matches nothing; Zoho's own documented convention needs a
-    // ".ID" suffix ("Assigned_Vendor.ID == vid") for Lookup-field criteria,
-    // which was never confirmed live here. Sidesteps the uncertainty
-    // entirely by fetching all tickets and filtering client-side with
-    // lookupId() — the same "fetch all, match by unwrapped ID" pattern
-    // vendorTicket's own isMine()/loadMyInvites() already rely on, proven
-    // correct there regardless of exactly how a Lookup value round-trips.
+    // The client-side Assigned_Vendor filter is KEPT even though
+    // getVendorTickets already filters server-side. It is one cheap pass over an
+    // already-small list, and it means this line stays correct if the Custom API
+    // is ever changed to return a wider set. Historical note: a server-side
+    // Zoho criteria of "Assigned_Vendor == vid" silently matches nothing against
+    // a real Lookup field (2026-09-03, live) — which is why matching is done on
+    // an unwrapped id here rather than in a report criteria.
     ALL_TICKETS = allTicketRecs.filter(function(r){ return String(lookupId(r.Assigned_Vendor))===String(vid); });
-    console.log("[GR-VendorPerf] boot: "+allTicketRecs.length+" total tickets fetched, "+ALL_TICKETS.length+" match Assigned_Vendor id "+vid);
+    console.log("[GR-VendorPerf] boot: "+allTicketRecs.length+" ticket(s) returned by getVendorTickets, "+ALL_TICKETS.length+" match Assigned_Vendor id "+vid);
     // Diagnostic (2026-09-04) — "This Month" showed 0 of 37 in range, which
     // means either none of this vendor's tickets are dated this month, or
     // Added_Time isn't parsing the way this widget expects. Dumping every
