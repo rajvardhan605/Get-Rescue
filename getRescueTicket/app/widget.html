@@ -276,12 +276,25 @@ img,svg{max-width:100%}
 /* Chips + the "add" input/select live inside one bordered box together
    (2026-08-04, matches native Zoho Creator multiselect Lookup fields — user
    request) instead of a separate chips row sitting above a separate input. */
-.combo-multi{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+/* Stacked layout — 2026-09-23 (user request, with before/after screenshots:
+   "when first value is selected don't show value in left side, show value
+   above the drop down"). This was flex-direction:row + wrap, so ONE selected
+   chip sat inline to the left of the search box and only once several chips
+   no longer fitted did they wrap onto their own line. That meant the control
+   changed shape as you used it — cramped and inconsistent with one value,
+   tidy with three. Column keeps every selection above the input from the
+   first chip onward, which is what the multi-chip case already looked like.
+   :empty hides the chips row entirely while nothing is selected, so an
+   untouched field is exactly as compact as before this change. Inputs drop
+   flex:1 (which would stretch them vertically in a column) for a plain
+   full-width row. */
+.combo-multi{position:relative;display:flex;flex-direction:column;align-items:stretch;gap:8px;
   border:1.5px solid var(--line-strong);border-radius:10px;padding:8px 10px;background:#fff;transition:.12s}
 .combo-multi:focus-within{border-color:var(--signal);box-shadow:0 0 0 3px rgba(241,90,34,.18)}
 .combo-multi .chips{margin-bottom:0}
-.combo-multi-input{border:0;outline:0;flex:1;min-width:120px;font-size:14.5px;padding:6px 2px;background:transparent}
-.combo-multi select.add-select{border:0;background:transparent;flex:1;min-width:140px;padding:6px 2px}
+.combo-multi .chips:empty{display:none}
+.combo-multi-input{border:0;outline:0;flex:none;width:100%;min-width:0;font-size:14.5px;padding:6px 2px;background:transparent}
+.combo-multi select.add-select{border:0;background:transparent;flex:none;width:100%;min-width:0;padding:6px 2px}
 .check{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding:8px 0}
 .check input{width:20px;height:20px;accent-color:var(--signal)}
 .check span{font-size:14px;color:var(--text)}
@@ -1472,7 +1485,12 @@ const STAGES = [
     { n:"Vehicle_Status", l:"Vehicle Status", t:"select", o:["ONROAD","SAFE PARKING"], req:true, row:"issuestatus" }, // required per 2026-07-31 flow spec — was optional
     // default:"NOW" added 2026-08-06 per the wireframe's own "Default=NOW"
     // annotation — was unset before (agent had to pick one explicitly).
-    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true, default:"NOW", row:"schedule" }, // required per 2026-07-31 flow spec — was optional
+    // default:"NOW" removed 2026-09-23 (user request: "in the beginning unselect
+    // the now") — neither option is pre-selected now, so choosing between an
+    // immediate and a scheduled job is a deliberate act rather than something
+    // an agent can skip past without reading. req:true already blocks the save
+    // until one is picked, so nothing can slip through unset.
+    { n:"Time_of_service", l:"Time of Service", t:"radio", o:["NOW","LATER"], req:true, row:"schedule" }, // required per 2026-07-31 flow spec — was optional
     // Replaced 2026-08-05 (user request) — was two separate fields
     // (Schedule_Date + a half-hour Service_Time slot picker). The user added
     // a single Schedule_Date_Time field to Create_Case in Zoho instead; one
@@ -1488,7 +1506,18 @@ const STAGES = [
     // always-visible, read-only mirror of the value already computed and
     // saved via this stage's own extra() hook above — no new field, no new
     // write, just a display of what's already being written silently.
-    { n:"Computed_Service_Time", l:"Schedule Date & Time", t:"text", readonly:true, full:true },
+    // when: added 2026-09-23 (user request: "when LATER is selected hide the
+    // Schedule Date & Time disable field") — under LATER the editable
+    // Schedule_Date_Time picker directly above is already on screen with the
+    // SAME label, so this read-only mirror rendered as a confusing second
+    // "Schedule Date & Time" that an agent cannot type into. It only has a job
+    // on a NOW ticket, where there is no schedule input at all and this is the
+    // only place the computed service time (+30 min from save) is visible.
+    // Display-only change: the field is still saved on every save exactly as
+    // before via this stage's own extra() hook, LATER included — hiding it
+    // here does not stop it being written, and the Closure summary still reads
+    // it (which is the gap it was added for in the first place).
+    { n:"Computed_Service_Time", l:"Schedule Date & Time", t:"text", readonly:true, full:true, when:(s)=>s.Time_of_service==="NOW" },
     { n:"Service_Type", l:"Service Type", t:"badge", full:true },
     // Lead_Source / Added_Time (2026-09-11, Task Tracker PDF items 2/5) — both
     // already exist and are already correctly populated (Lead_Source silently
@@ -1503,7 +1532,12 @@ const STAGES = [
     // what this readonly display field's own value resolves to on save, so
     // it needs no such protection.
     { n:"Lead_Source", l:"Lead Source", t:"text", readonly:true, row:"meta" },
-    { n:"Added_Time", l:"Task Creation Time", t:"text", readonly:true, ephemeral:true, row:"meta" },
+    // when: added 2026-09-23 (user request: "don't show any data related to
+    // time; whenever select on the NOW and LATER then show data") — every
+    // time-related field on this step now stays hidden until the agent has
+    // actually chosen NOW or LATER, so a brand-new form opens with no
+    // timestamps on it at all. Picking either option reveals them together.
+    { n:"Added_Time", l:"Task Creation Time", t:"text", readonly:true, ephemeral:true, row:"meta", when:(s)=>!!s.Time_of_service },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -2001,7 +2035,16 @@ const STAGES = [
     // creating in Zoho Studio (Single Line Text) before this can actually
     // save. Nothing else in this app reads/writes it — purely for the agent
     // to record a reference number against the booking fee payment.
-    { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5" },
+    // when: added 2026-09-23 (user request: "when cash is selected hide the BF
+    // Transaction ID and show the rest options") — a cash payment has no
+    // reference number to record, so the box was dead space the agent had to
+    // skip past. Shown for every other method (UPI / Card / Net Banking /
+    // Payment Gateway), each of which does produce one. Display-only: the
+    // field is still saved normally whenever it holds a value, and
+    // paymentWebhook still writes it on a successful online booking-fee
+    // payment regardless of what is on screen here.
+    { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5",
+      when:(s)=>!!s.Payment_Method && s.Payment_Method!=="Cash" },
     // Added 2026-09-02 (build-plan item #2, wireframe: "Upload Photo of
     // receipt [Attachment Field] *Mandatory if Payment Method is not
     // 'Payment gateway'") — this field genuinely never existed on this step
@@ -4999,6 +5042,26 @@ function sendRescuerEtaMessage(r){
 // constant does NOT update itself, and neither does any already-sent
 // WhatsApp message (their links stay dead — a fresh Send Payment Link click
 // is needed after updating this constant, not just a redeploy).
+/* breakdownLocationAlreadyCaptured() — 2026-09-23, user request: "when
+   location is already received don't share link automatically to the
+   customer". The auto-send below was guarded ONLY on
+   Send_Link_For_The_Breakdown_Location, i.e. "have we sent this before on this
+   ticket", which misses the case that actually matters: the customer has
+   already shared their location, so asking again is pointless and looks broken
+   to them. Happens whenever that flag didn't persist — a reopened ticket, a
+   location captured by the agent pasting lat/long by hand, or a customer who
+   used a link from an earlier session.
+   Treats the location as captured if EITHER the received-time stamp is set or
+   both coordinates parse — either one alone is enough to know we have it.
+   Deliberately does NOT touch the manual "Send Breakdown Location Link to
+   Customer" button: an agent can still resend by hand whenever they judge it
+   necessary. Only the automatic fire-on-arrival send is suppressed. */
+function breakdownLocationAlreadyCaptured(r){
+  if(!r) return false;
+  if(String(r.Location_Received_Time||"").trim()!=="") return true;
+  const lat=parseCoord(r.Latitude), lon=parseCoord(r.Longitude);
+  return lat!=null && lon!=null;
+}
 const CUSTOMER_PAGE_BASE_URL = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/0gVCSNX48ASbYtRFUJ563eAbKzNFNnaVwH8fPFZCqaROx4z5T6QRyEQVTshspvvXSgyt5vuyPJSQQC0dwZGyYQKdMeySnUS6mYJr"; // 2026-09-13 (updated after 3rd republish), real published Permalink, user-confirmed
 
 function buildCustomerPageUrl(record, mode, extraParams){
@@ -7835,6 +7898,24 @@ function isServiceTimeFarFuture(r){
    local> value ("YYYY-MM-DDTHH:mm") at this point — buildPayload()'s own
    per-field encoding (which formats it for Zoho) runs separately and never
    mutates state.record, so `new Date(...)` here parses it directly. */
+/* NOW branch anchored on the ticket's own creation time — 2026-09-23, user
+   request: "by default set the Schedule Date & Time to Task Creation Time + 30
+   minutes... ensure the calculated schedule date and time are based on the
+   actual task creation timestamp".
+
+   It used to return Date.now()+30min, i.e. thirty minutes from whenever this
+   happened to run. Two consequences, both now gone:
+     - the value shown while creating a ticket never matched the one saved a
+       few minutes later, because they were computed at different moments;
+     - extra() re-runs computeServiceTime() on EVERY step save, so a NOW
+       ticket's service time silently crept forward each time an agent saved
+       any later step - it was never a fixed point.
+
+   Anchor order: the record's own Added_Time (Zoho's system creation stamp,
+   authoritative once saved), then NEW_TICKET_CREATED_AT (captured in
+   newTicket() so an unsaved ticket has a stable anchor too), then now (the
+   old behaviour, kept as the last resort so nothing can end up blank).
+   The LATER branch is untouched - it reads the agent's own picker. */
 function computeServiceTime(r){
   if(r.Time_of_service==="LATER"){
     if(!r.Schedule_Date_Time) return "";
@@ -7842,7 +7923,8 @@ function computeServiceTime(r){
     if(isNaN(d)) return "";
     return fmtDateTime12(d);
   }
-  return fmtDateTime12(new Date(Date.now()+30*60*1000));
+  const created = parseAnyDateTime(r.Added_Time) || NEW_TICKET_CREATED_AT || new Date();
+  return fmtDateTime12(new Date(created.getTime()+30*60*1000));
 }
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 // Soft-test item #12 (2026-09-10) — see vendorTicket's own matching comment
@@ -8966,12 +9048,43 @@ async function autoPromoteScheduledTickets(recs){
     }catch(e){ console.warn("[Get-Rescue] autoPromoteScheduledTickets: failed to promote", r.ID, e); }
   }
 }
+/* sortTicketsNewestFirst() — 2026-09-23, user request: "display the tickets in
+   descending order based on their Added Time, so that the latest/most recently
+   added ticket appears at the top... applied consistently whenever the ticket
+   list is loaded or refreshed".
+
+   Both dashboard render paths previously sorted on record ID descending. That
+   is only an APPROXIMATION of newest-first: Creator ids are allocated in
+   creation order, so it usually agrees, but it is not the field the user asked
+   for and it drifts the moment a record is imported, migrated, or created out
+   of band.
+
+   Added_Time is a built-in Creator SYSTEM field, and its string format is not
+   guaranteed stable across reports — parseAnyDateTime() is the parser the age
+   timers on these very rows already use for the same field, so this reuses it
+   rather than inventing a second interpretation of the same value.
+
+   The old ID comparison is kept as the tie-breaker, NOT discarded: two tickets
+   created in the same second, or any row whose Added_Time is blank or
+   unparseable, still order exactly as they do today. So the visible change is
+   strictly "sort by real creation time where we can read it", never a fall
+   into arbitrary order. Sorts in place and returns, matching how both call
+   sites already used Array.sort. */
+function sortTicketsNewestFirst(recs){
+  return recs.sort(function(a,b){
+    const da=parseAnyDateTime(a && a.Added_Time), db=parseAnyDateTime(b && b.Added_Time);
+    if(da && db && da.getTime()!==db.getTime()) return db.getTime()-da.getTime();
+    if(da && !db) return -1; // a has a real timestamp, b doesn't — dated rows sort above undated ones
+    if(!da && db) return 1;
+    return String(b && b.ID).localeCompare(String(a && a.ID),undefined,{numeric:true});
+  });
+}
 async function loadDashboard(){
   showView("dashboard");
   $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
   let recs = await getTickets(null);
   await autoPromoteScheduledTickets(recs);
-  recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
+  sortTicketsNewestFirst(recs);
   renderReportLists(recs);
   // Real-time-ish mechanic-update notifications (2026-08-07) — silently
   // (re)baselines the snapshot every normal load (initial boot, manual
@@ -9020,15 +9133,21 @@ function renderReportLists(recs){
   // for triage. A ticket with no parseable Added_Time sorts to the END of
   // its own bucket instead of winning a "most urgent" ranking it has no real
   // data to support.
-  cols.forEach(function(list){
-    list.sort(function(a,b){
-      const ageA=ticketAgeMs(a), ageB=ticketAgeMs(b);
-      if(ageA==null && ageB==null) return 0;
-      if(ageA==null) return 1;
-      if(ageB==null) return -1;
-      return ageB-ageA;
-    });
-  });
+  /* Per-bucket order flipped to newest-first — 2026-09-23, user-reported live
+     ("I have just created sagar test ticket, it does not show at the top").
+
+     This sorted on ticketAgeMs DESCENDING, i.e. largest age first, which put
+     the OLDEST ticket at the top of every bucket. That is also why sorting
+     recs in loadDashboard() had no visible effect: this re-sorted each bucket
+     immediately afterwards and won.
+
+     Now uses the same sortTicketsNewestFirst() helper as both dashboard render
+     paths, so there is exactly ONE definition of ticket order in this file
+     instead of two that disagreed. It reads the same field ticketAgeMs() does
+     (Added_Time, via parseAnyDateTime), so nothing new is being trusted here —
+     only the direction changed, plus the record-id tie-break the helper adds
+     for rows created within the same second or missing Added_Time entirely. */
+  cols.forEach(function(list){ sortTicketsNewestFirst(list); });
   $("columns").innerHTML = BUCKETS.map((bk,i)=>{
     const items = cols[i]; // show every matching ticket, not just the first few
     const rows = items.length ? items.map(rowHtmlWithClose).join("") : `<div class="rlist-empty">No tickets right now</div>`;
@@ -9328,8 +9447,33 @@ function showView(v){
 /* =====================================================================
    WIZARD
    ===================================================================== */
+/* NEW_TICKET_CREATED_AT — 2026-09-23. A brand-new ticket has no Added_Time
+   yet (that is a Zoho SYSTEM field, only stamped when the record is actually
+   saved), so both "Task Creation Time" and the derived "Schedule Date & Time"
+   rendered blank for the whole time the agent was filling the form in. This
+   holds the moment the Create step was opened so both can be shown straight
+   away, and so the +30min schedule is anchored to one fixed point rather than
+   drifting with every re-render. Reset on every newTicket(); left alone when
+   an existing ticket is opened, where the real Added_Time takes over. */
+let NEW_TICKET_CREATED_AT = null;
 function newTicket(){
   state.record={}; state.files={}; state.recordId=null; state.editing=false;
+  /* Seed the two read-only time fields for display. Added_Time is
+     ephemeral:true (see its field definition), so it is NEVER sent in a save
+     payload - Zoho stamps the real system value itself on create, and this
+     local one is overwritten by it the moment the ticket is reopened. It
+     exists purely so the agent is not looking at two empty boxes.
+     Computed_Service_Time IS saved (via the create stage's own extra() hook),
+     and seeding it here means the value on screen is the same one that gets
+     written - computeServiceTime() now anchors on this same timestamp. */
+  NEW_TICKET_CREATED_AT = new Date();
+  state.record.Added_Time = fmtDateTime12(NEW_TICKET_CREATED_AT);
+  /* Time_of_service deliberately left UNSET (2026-09-23, same request as the
+     removed default above). computeServiceTime() treats "not LATER" as the NOW
+     branch, so the Schedule Date & Time below still seeds to creation + 30 min
+     and the agent sees a sensible default value without either radio being
+     pre-chosen for them. Picking LATER swaps in their own date/time picker. */
+  state.record.Computed_Service_Time = computeServiceTime(state.record);
   // Real bug fixed (2026-08-07): without this, opening a brand-new ticket
   // right after viewing an existing one's Assignment step left the previous
   // ticket's Vendor Invite Status panel showing until this new one reached
@@ -9775,7 +9919,7 @@ function renderWizard(){
   // the button itself stays enabled afterward (repeatable:true, see its own
   // field comment) purely so the agent can still resend by hand if needed;
   // it no longer needs to be clicked for the first send to go out.
-  if(step.key==="locations" && !state.record.Send_Link_For_The_Breakdown_Location){
+  if(step.key==="locations" && !state.record.Send_Link_For_The_Breakdown_Location && !breakdownLocationAlreadyCaptured(state.record)){
     state.record.Send_Link_For_The_Breakdown_Location=true;
     // Real bug fixed 2026-09-15. This auto-send passed only
     // state.record.Customer_Name as {{1}}, but the "location" template's {{1}}
@@ -10291,6 +10435,15 @@ const RERENDER=["Time_of_service","Vehicle","Client","Preferred_Vendor",
   // re-evaluated on a full re-render; without this, the dropdown itself
   // updated (native browser behavior) but the QR block never appeared until
   // the agent navigated away and back.
+  // Payment_Method added 2026-09-23 (user-reported live: "when I select the
+  // other option it does not show the BF Transaction ID field"). The new
+  // when: on Booking_Fee_Transaction_ID evaluated correctly on RENDER - Cash
+  // hid it as intended - but changing the select never re-rendered the step,
+  // so switching to UPI/Card/Net Banking left it hidden until the agent
+  // navigated away and back. Its Final Payment counterpart
+  // Payment_Method_Final was already here for exactly the same reason (the
+  // QR block's own when:), so this just brings the booking-fee side in line.
+  "Payment_Method",
   "Payment_Method_Final"];
 /* Radio-field changes force a full re-render (see wireField's radio branch,
    above RERENDER's own declaration) — this app now has two different top-level
@@ -10653,7 +10806,7 @@ async function pollDashboardForMechanicUpdates(){
     if(changed.length) notifyMechanicUpdates(changed);
     if(locationChanged.length) notifyLocationShared(locationChanged);
     if(changed.length || hasNewTicket || locationChanged.length){
-      recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}));
+      sortTicketsNewestFirst(recs);
       renderReportLists(recs);
     }
   }catch(e){ console.warn("[Get-Rescue] pollDashboardForMechanicUpdates failed (non-blocking)", e); }
@@ -11788,7 +11941,28 @@ function buildPayload(step){
   // explicitly for !r.ID, so this should still never actually fire either).
   p[CONFIG.stageField]=computeStatus(step, r) || r.Status || step.title;
   if(!state.recordId && r[CONFIG.caseIdField]) p[CONFIG.caseIdField]=r[CONFIG.caseIdField];
-  if(typeof step.extra==="function") Object.assign(p, step.extra(r)); // mirror values into required fields the UI doesn't show separately
+  /* extra() output now mirrored into the IN-MEMORY record too — 2026-09-23,
+     user-reported live: "after creating the ticket, Schedule Date & Time is
+     not showing a value when creating the first time ticket".
+
+     Same shape of bug as state.record.ID on the create path: extra() derives
+     values (Computed_Service_Time, Lead_Source, Phone_Number,
+     Created_By_Agent_Email…), they were written into the PAYLOAD and saved to
+     Zoho correctly — but never into state.record. So every read-only field
+     that displays one of them stayed blank on screen until the ticket was
+     closed and reopened, which re-fetches the saved record. That is exactly
+     why it looked right on a search-and-open and wrong on a fresh create.
+
+     Assigning into r (which IS state.record, by reference, see the top of this
+     function) keeps what the form shows identical to what was just sent.
+     Deliberately the same values in both places rather than recomputing later:
+     computeServiceTime() returns "now + 30 min", so a second call would
+     produce a different answer than the one actually stored. */
+  if(typeof step.extra==="function"){
+    const extraVals=step.extra(r);
+    Object.assign(p, extraVals); // mirror values into required fields the UI doesn't show separately
+    Object.assign(r, extraVals);
+  }
   return p;
 }
 
@@ -11822,6 +11996,25 @@ async function saveStep(advance){
   try{
     if(!state.recordId){
       const id=await saveWithCoordFallback(payload, addTicket); state.recordId=id;
+      /* state.record.ID set here too — 2026-09-23, user-reported live: "this
+         error appears when I create a ticket and open it for the first time...
+         if I search for the same ticket and open it again, it works correctly".
+
+         Root cause: this create path set state.recordId but never
+         state.record.ID, while openTicket()/openClosure() both do
+         state.record = Object.assign({}, rec) from a fetched report record,
+         which always carries ID. So the two flows disagreed on exactly one
+         property, and every helper that reads record.ID rather than
+         state.recordId silently failed on a freshly created ticket only.
+
+         buildCustomerPageUrl() is the one that surfaced it — it bails on
+         !record.ID and returns "", which made Send_Payment_Link abort the
+         WhatsApp send with "Couldn't build the Customer Page link". Same
+         latent problem for any other record.ID reader on the first pass.
+
+         Assigning it here makes the freshly created record identical in shape
+         to a reopened one, which is what the rest of the file already assumes. */
+      state.record.ID=id;
       // Real bug fixed (2026-08-05, user request, reapplied after it was
       // somehow lost from an earlier pass — see the top-of-file OneDrive
       // note): the header kept showing "New Ticket" for the rest of this

@@ -314,13 +314,41 @@ function etaMetStatus(r){
 }
 
 /* ---------- stat computation ---------- */
-function computeStats(tickets, rejections, range){
-  const mine = tickets.filter(function(r){ return inRange(r.Added_Time, range); });
+/* Per-metric timestamps - 2026-09-23, same fix as agentPerformance and for the
+   same reported reason ("not showing the completed data").
 
-  const cancelled = mine.filter(function(r){
+   Every metric here filtered on Added_Time, the ticket's CREATION date, so
+   "Completed" for a period really meant "created in that period AND now
+   complete". A job a vendor finished this morning but that was raised last
+   week counted as zero, which made short ranges look empty.
+
+   Each metric now uses the date it is actually about. The four closure stamps
+   were not previously returned by getVendorTickets at all - they were added to
+   that Custom API in the same change, so re-paste it alongside this widget or
+   these all silently fall back to Added_Time (i.e. exactly today's behaviour,
+   never worse).
+
+   activityTime() is what the quality percentages below are scoped by: a
+   vendor's "% ETA met" for a month should cover the jobs they FINISHED that
+   month, not the ones that happened to be raised then. Open tickets fall back
+   to Added_Time so they still appear somewhere. */
+function completionTime(r){
+  return r.Agent_Closure_Time || r.RSP_Closure_Time || r.RSP_Completion_Time || r.Added_Time;
+}
+function cancellationTime(r){
+  return r.Cancellation_Time || r.Agent_Closure_Time || r.RSP_Closure_Time || r.Added_Time;
+}
+function activityTime(r){
+  return r.Agent_Closure_Time || r.RSP_Closure_Time || r.RSP_Completion_Time || r.Cancellation_Time || r.Added_Time;
+}
+function computeStats(tickets, rejections, range){
+  const mine = tickets.filter(function(r){ return inRange(activityTime(r), range); });
+
+  const cancelled = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    return st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable";
+    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable")) return false;
+    return inRange(cancellationTime(r), range);
   }).length;
   // Real bug fixed 2026-09-04, live-confirmed via console dump: Closure_Status
   // is a separate, agent-driven Final Closure field that in practice is
@@ -330,10 +358,11 @@ function computeStats(tickets, rejections, range){
   // optional Final Closure step. Keeping the Closure_Status check too (a
   // ticket that DOES reach full Final Closure with Completed set should
   // still count) — just no longer the only signal.
-  const completed = mine.filter(function(r){
+  const completed = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    return st==="RSP CLOSED" || cs==="Completed";
+    if(!(st==="RSP CLOSED" || cs==="Completed")) return false;
+    return inRange(completionTime(r), range);
   }).length;
 
   const rejectedCount = rejections.filter(function(t){ return inRange(t.Rejected_At, range); }).length;
@@ -448,7 +477,7 @@ async function refresh(){
   // (mine=0 out of ALL_TICKETS) or a Closure_Status/Status value mismatch
   // (mine>0 but the string values don't match what computeStats() checks
   // for: "Completed", "Cancelled", "Cancelled - Billable", "RSP CANCELLED").
-  const mineNow = ALL_TICKETS.filter(function(r){ return inRange(r.Added_Time, range); });
+  const mineNow = ALL_TICKETS.filter(function(r){ return inRange(activityTime(r), range); });
   console.log("[GR-VendorPerf] refresh: range="+range.from.toDateString()+" to "+range.to.toDateString()+" | "+mineNow.length+" of "+ALL_TICKETS.length+" tickets in range | Closure_Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Closure_Status||"(blank)"; }))+" | Status values seen="+JSON.stringify(mineNow.map(function(r){ return r.Status||"(blank)"; })));
   // Settlement is computed from the UNFILTERED ticket list on purpose — see
   // computeSettlement()'s own header for why money owed must not be hidden by

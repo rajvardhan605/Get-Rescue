@@ -116,6 +116,13 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 			}
 			if(valueFound != "")
 			{
+				if(valueFound.subText(0,1) == "=")
+				{
+					valueFound = valueFound.subText(1).trim();
+				}
+			}
+			if(valueFound != "")
+			{
 				lastChar = valueFound.subText(valueFound.length() - 1);
 				if(lastChar == "}")
 				{

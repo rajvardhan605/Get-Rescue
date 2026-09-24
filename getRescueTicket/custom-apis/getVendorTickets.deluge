@@ -15,7 +15,10 @@ string getVendorTickets(string vendorId)
 		// fixes that as well as making the response small enough to build as JSON,
 		// which a 1000-row dump would not be.
 		//
-		// Returns only the 19 fields vendorPerformance actually reads. Assigned_Vendor
+		// Returns the 23 fields vendorPerformance actually reads. The four closure
+		// timestamps were added 2026-09-23: without them that page could only date
+		// a ticket by Added_Time, so "Completed" for a period meant "created in
+		// that period AND complete" rather than "completed in that period". Assigned_Vendor
 		// is included as a bare id so the widget's own existing client-side filter
 		// still matches and needed no change.
 		//
@@ -90,6 +93,10 @@ string getVendorTickets(string vendorId)
 		fieldNames.add("Agent_ETA_Override_TOW");
 		fieldNames.add("Service_Acceptance");
 		fieldNames.add("Service_Acceptance_For_Tow");
+		fieldNames.add("RSP_Closure_Time");
+		fieldNames.add("Agent_Closure_Time");
+		fieldNames.add("RSP_Completion_Time");
+		fieldNames.add("Cancellation_Time");
 		fieldNames.add("Settlement_Status");
 		fieldNames.add("Vendor_Payment_Status");
 		fieldNames.add("Vendor_Balance_Before_TDS");

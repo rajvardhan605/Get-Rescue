@@ -713,6 +713,12 @@ document.addEventListener("click", unlockNotifSound);
 // previously played the identical 2-beep sine tone) — a rising sweep reads
 // very differently from a repeated flat beep even at a glance/half-heard,
 // and louder (gain 0.28 -> 0.5) than before.
+/* Volume raised again 2026-09-23 (user request: "increase volume") — peak
+   gain 0.5/0.55 -> 0.85. Still under Web Audio's clipping ceiling of 1.0, so
+   the tone stays clean rather than distorting. The PATTERN (pulse count,
+   waveform, frequency, spacing) is deliberately unchanged: each of the three
+   field apps has its own signature so someone in earshot of more than one
+   device can tell which app a ticket landed on by sound alone. */
 function playNotifSound(){
   try{
     unlockNotifSound();
@@ -724,7 +730,7 @@ function playNotifSound(){
       osc.frequency.setValueAtTime(523,t);
       osc.frequency.exponentialRampToValueAtTime(784,t+0.18);
       gain.gain.setValueAtTime(0.0001,t);
-      gain.gain.linearRampToValueAtTime(0.5,t+0.03);
+      gain.gain.linearRampToValueAtTime(0.85,t+0.03);
       gain.gain.exponentialRampToValueAtTime(0.0001,t+0.2);
       osc.connect(gain); gain.connect(ctx.destination);
       osc.start(t); osc.stop(t+0.21);

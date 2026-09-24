@@ -109,10 +109,18 @@ body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-si
 const CONFIG = {
   appName: "get-rescue",
   reportName: "Agent_Ticket_Report",
+  // Call_Log_Report wired in 2026-09-23. The header comment above used to say
+  // the call-centre metrics had "NO data source anywhere in this app" - that
+  // was true when written, but the Ozonetel integration and the Call_Log form
+  // exist now, so those five tiles no longer have to read "Not available".
+  callLogReport: "Call_Log_Report",
   serviceTypeField: "Service_Type"
 };
 const MAX_RANGE_DAYS = 60;
 let INIT_PARAMS = null, LOGIN_EMAIL = "";
+/* null = not loaded yet / unreadable -> tiles stay "Not available"; an array
+   (even empty) = Call_Log was read successfully, so real figures are shown. */
+let ALL_CALLS = null;
 
 const $=(id)=>document.getElementById(id);
 function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -193,6 +201,73 @@ $("applyRange").onclick=function(){
 };
 
 /* ---------- stat computation ---------- */
+/* computeCallStats() - 2026-09-23. The five call-centre tiles were hardcoded
+   to "Not available" because no telephony data existed when this widget was
+   written. Call_Log now exists and is populated by two independent paths (the
+   callCenter widget when an agent places a call, and getCallbackStatus when
+   Ozonetel pushes the end-of-call record), so these can be real.
+
+   Attribution: Placed_By carries the agent's own login email and is the only
+   field that maps a call to THIS agent reliably. Ozonetel's Agent_Name is its
+   own agent label ("Sagar"), which cannot be mapped back to a Creator login,
+   so rows without Placed_By - notably inbound calls logged by the callback
+   alone - are not attributed to anyone here. That is a data-model gap, not
+   something this widget can infer; better to under-count than to credit an
+   agent with calls that may not be theirs.
+
+   Durations arrive in seconds (getCallbackStatus converts Ozonetel's HH:MM:SS
+   before writing), so they are averaged directly and rendered as mm:ss. */
+function callTime(c){ return c.Call_Start_Time || c.Added_Time; }
+function isMissedCall(c){
+  const st=String(c.Call_Status||"").trim().toLowerCase();
+  if(st==="") return false;
+  if(st.indexOf("answer")>=0) return false;
+  return true;
+}
+function secsOf(v){ const x=Number(v); return isNaN(x) ? null : x; }
+function mmss(totalSecs){
+  const s=Math.round(totalSecs);
+  return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+}
+function computeCallStats(calls, range){
+  if(!Array.isArray(calls)) return null;
+  const mine = calls.filter(function(c){
+    if(String(c.Placed_By||"").trim().toLowerCase() !== String(LOGIN_EMAIL||"").trim().toLowerCase()) return false;
+    return inRange(callTime(c), range);
+  });
+  const landed = mine.length;
+  const missed = mine.filter(isMissedCall).length;
+  const answerTimes = mine.map(function(c){ return secsOf(c.Time_To_Answer); }).filter(function(v){ return v!=null && v>0; });
+  const talkTimes   = mine.map(function(c){ return secsOf(c.Call_Duration); }).filter(function(v){ return v!=null && v>0; });
+  const avg=function(list){ return list.length ? list.reduce(function(a,b){ return a+b; },0)/list.length : null; };
+  const agentHangups = mine.filter(function(c){
+    return String(c.Call_Outcome||"").toLowerCase().indexOf("agent")>=0;
+  }).length;
+  return { landed:landed, missed:missed, avgAnswer:avg(answerTimes), avgTalk:avg(talkTimes),
+    pctAgentHangup: landed ? Math.round((agentHangups/landed)*100) : null };
+}
+/* Per-metric timestamps - 2026-09-23, user-reported live ("in agent
+   performance page not showing proper data, not showing the completed data").
+
+   Every metric used to be filtered on Added_Time, the ticket's CREATION date.
+   So "Completed Tickets" for Today actually meant "tickets CREATED today that
+   happen to be complete" - a ticket opened last week and finished this morning
+   counted as zero. With a Today filter that reads as an empty dashboard, which
+   is exactly what was reported.
+
+   Each metric now filters on the date that metric is actually about. Where a
+   ticket carries no closure stamp at all (older records, or a status set
+   before these fields existed) it falls back to Added_Time, i.e. precisely the
+   old behaviour - so nothing that used to be counted stops being counted. */
+function completionTime(r){
+  return r.Agent_Closure_Time || r.RSP_Closure_Time || r.RSP_Completion_Time || r.Added_Time;
+}
+function cancellationTime(r){
+  return r.Cancellation_Time || r.Agent_Closure_Time || r.RSP_Closure_Time || r.Added_Time;
+}
+function closureTime(r){
+  return r.Agent_Closure_Time || r.RSP_Closure_Time || r.Added_Time;
+}
 function computeStats(tickets, range){
   const mine = tickets.filter(function(r){ return inRange(r.Added_Time, range); });
 
@@ -205,25 +280,37 @@ function computeStats(tickets, range){
   // any optional Final Closure step. Keeping the Closure_Status check too
   // (a ticket that DOES reach full Final Closure with Completed set should
   // still count) — just no longer the only signal.
-  const completed = mine.filter(function(r){
+  /* Note these filter `tickets`, NOT `mine` - `mine` is "created in range",
+     which is the right basis for New Tickets Created and for the
+     creation-to-assignment average, but the wrong one for everything below. */
+  const completedList = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    return st==="RSP CLOSED" || cs==="Completed";
-  }).length;
-  const cancelled = mine.filter(function(r){
+    if(!(st==="RSP CLOSED" || cs==="Completed")) return false;
+    return inRange(completionTime(r), range);
+  });
+  const completed = completedList.length;
+  const cancelled = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    return st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable";
+    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable")) return false;
+    return inRange(cancellationTime(r), range);
   }).length;
-  const notConverted = mine.filter(function(r){ return String(r.Closure_Status||"").trim()==="Not Converted"; }).length;
+  const notConverted = tickets.filter(function(r){
+    if(String(r.Closure_Status||"").trim()!=="Not Converted") return false;
+    return inRange(closureTime(r), range);
+  }).length;
 
   // "ON DEMAND" is a plain sentinel string on Client (not a Lookup id for
   // that special walk-in client) — same check getRescueTicket's own
   // onDemandInvoicing()/clientDisplayName() already use.
   const isOnDemand=function(r){ return String(r.Client||"").trim().toUpperCase()==="ON DEMAND"; };
   const sumFee=function(list){ return list.reduce(function(acc,r){ return acc+(Number(r.Total_Service_Fee)||0); }, 0); };
-  const revRSR = sumFee(mine.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW"; }));
-  const revTOW = sumFee(mine.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; }));
+  /* Revenue follows COMPLETED tickets, not created ones - money is earned when
+     the job finishes. Uses completedList above so the two figures can never
+     disagree about which tickets counted. */
+  const revRSR = sumFee(completedList.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW"; }));
+  const revTOW = sumFee(completedList.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; }));
 
   const withBoth = mine.map(function(r){
     const created=parseAnyDateTime(r.Added_Time);
@@ -239,6 +326,7 @@ function computeStats(tickets, range){
 const ICON_TICKET='<svg viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
 const ICON_MONEY='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 7v10M9.5 9.5c0-1 1-1.8 2.5-1.8s2.5.9 2.5 2-1 1.6-2.5 2-2.5.9-2.5 2 1 2 2.5 2 2.5-.8 2.5-1.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const ICON_CLOCK='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_PHONE='<svg viewBox="0 0 24 24" fill="none"><path d="M6.5 3h3l1.5 4.5-2 1.5a12 12 0 0 0 6 6l1.5-2L21 14.5v3a2 2 0 0 1-2.2 2A17 17 0 0 1 4 5.2 2 2 0 0 1 6 3Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
 const ICON_NA='<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M8 8l8 8M16 8l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 function statCard(icon, value, label, na){
@@ -246,16 +334,22 @@ function statCard(icon, value, label, na){
 }
 function money(v){ return "₹"+Math.round(v).toLocaleString("en-IN"); }
 
-function render(stats){
+function render(stats, callStats){
   const NA = "Not available";
+  /* callStats === null means Call_Log itself could not be read, so the tiles
+     keep their original honest "Not available". A real (possibly all-zero)
+     result means the data source works and this agent simply had no calls in
+     the period - 0 is then the correct answer, not "unavailable". */
+  const haveCalls = !!callStats;
+  const cs = callStats || {};
   $("content").innerHTML = `
-    <div class="section-title">Call Center (requires Cloud Telephony integration)</div>
+    <div class="section-title">${haveCalls ? "Call Center" : "Call Center (requires Cloud Telephony integration)"}</div>
     <div class="grid">
-      ${statCard(ICON_NA, NA, "Number of Calls Landed", true)}
-      ${statCard(ICON_NA, NA, "Number of Missed Calls", true)}
-      ${statCard(ICON_NA, NA, "Avg. Call Answer Time", true)}
-      ${statCard(ICON_NA, NA, "Avg. Talk Time", true)}
-      ${statCard(ICON_NA, NA, "% of Calls Hung Up by Agent", true)}
+      ${haveCalls ? statCard(ICON_PHONE, String(cs.landed), "Number of Calls Landed") : statCard(ICON_NA, NA, "Number of Calls Landed", true)}
+      ${haveCalls ? statCard(ICON_PHONE, String(cs.missed), "Number of Missed Calls") : statCard(ICON_NA, NA, "Number of Missed Calls", true)}
+      ${haveCalls ? statCard(ICON_CLOCK, cs.avgAnswer==null ? "—" : mmss(cs.avgAnswer), "Avg. Call Answer Time") : statCard(ICON_NA, NA, "Avg. Call Answer Time", true)}
+      ${haveCalls ? statCard(ICON_CLOCK, cs.avgTalk==null ? "—" : mmss(cs.avgTalk), "Avg. Talk Time") : statCard(ICON_NA, NA, "Avg. Talk Time", true)}
+      ${haveCalls ? statCard(ICON_PHONE, cs.pctAgentHangup==null ? "—" : cs.pctAgentHangup+"%", "% of Calls Hung Up by Agent") : statCard(ICON_NA, NA, "% of Calls Hung Up by Agent", true)}
     </div>
     <div class="section-title">Tickets</div>
     <div class="grid">
@@ -283,7 +377,7 @@ function runRefresh(range){
     return;
   }
   $("rangeWarn").style.display="none";
-  render(computeStats(ALL_TICKETS, range));
+  render(computeStats(ALL_TICKETS, range), computeCallStats(ALL_CALLS, range));
 }
 
 async function boot(){
@@ -297,6 +391,22 @@ async function boot(){
     if(!LOGIN_EMAIL){ renderError("Couldn't identify your login — performance can't be scoped to an agent."); return; }
     ALL_TICKETS = await apiGetReport(CONFIG.reportName, 'Created_By_Agent_Email == "'+LOGIN_EMAIL.replace(/"/g,'\\"')+'"', 1000);
     console.log("[GR-AgentPerf] boot: "+ALL_TICKETS.length+" tickets matched Created_By_Agent_Email == \""+LOGIN_EMAIL+"\"");
+    /* Call_Log load - 2026-09-23. Best-effort and deliberately AFTER the
+       tickets: if this report does not exist, is not shared with this portal
+       profile, or simply errors, apiGetReport() returns [] and every
+       ticket-based metric on this page still renders exactly as before.
+       ALL_CALLS stays null only when the call below throws outright, which is
+       what keeps the five tiles on their honest "Not available" rather than
+       showing a misleading 0. */
+    try{
+      ALL_CALLS = await apiGetReport(CONFIG.callLogReport, null, 1000);
+      console.log("[GR-AgentPerf] boot: "+ALL_CALLS.length+" Call_Log rows loaded; "+
+        ALL_CALLS.filter(function(c){ return String(c.Placed_By||"").trim().toLowerCase()===String(LOGIN_EMAIL||"").trim().toLowerCase(); }).length+
+        " carry Placed_By == \""+LOGIN_EMAIL+"\" and are attributable to this agent.");
+    }catch(e){
+      ALL_CALLS = null;
+      console.warn("[GR-AgentPerf] boot: Call_Log could not be read — the call-centre tiles will stay \"Not available\". Everything else is unaffected.", e);
+    }
     // Default to "Today" (was "Last Month") — defaulting a live performance
     // dashboard to last month meant a ticket created/completed the same day
     // never showed up until the user manually switched presets, which read
