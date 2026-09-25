@@ -419,7 +419,13 @@ async function popReadParams(){
   try{
     if(window.parent && window.parent !== window) parentHref = window.parent.location.href || "";
   }catch(e){
-    console.log("[GR-CallCenter] popReadParams: parent URL is cross-origin and can't be read — falling back to document.referrer.");
+    /* EXPECTED, not a fault. Zoho serves widgets from sigmacdncontent.in and
+       the page from creatorapp.zoho.in — different origins, so the browser
+       blocks window.parent.location by design. There is no setting on either
+       side that opens it. getQueryParams() above is the supported route, and
+       since 2026-09-24 the pop's real trigger is ringPollTick() reading a
+       Call_Log RINGING row, which needs no URL parameters at all. */
+    console.log("[GR-CallCenter] popReadParams: parent URL is cross-origin (expected — widgets run on a different origin to the page). Using the SDK's getQueryParams() and document.referrer instead. The screen-pop's main trigger is the ring poll, which doesn't use URL parameters.");
   }
   popParseUrlInto(parentHref, add);
   popParseUrlInto(document.referrer || "", add);
@@ -516,10 +522,121 @@ function popTicketHtml(t){
     <span class="v">${esc(t.Customer_Name||"(no name)")}${bits.length?(" — "+esc(bits.join(" · "))):""}</span>
   </div>`;
 }
-async function renderIncomingCallPop(){
-  const params = await popReadParams();
+/* override added 2026-09-24. This used to read the page URL and nothing else,
+   which only works if something navigates the page with a phone number on it.
+   Ozonetel's CloudAgent is embedded as an iframe INSIDE this same Creator page,
+   and its own "Pop CRM" tab cannot render a Zoho page back (Zoho serves
+   X-Frame-Options: DENY on both portal and public pages - verified against the
+   live headers, and the panel shows "refused to connect"). So the URL route is
+   a dead end while the toolbar is embedded this way.
+
+   Passing an override lets the SAME pop be triggered by anything that learns
+   the caller's number - currently the postMessage listener below. Called with
+   no argument it behaves exactly as before, so boot() is unchanged. */
+
+/* =====================================================================
+   EMBEDDED-TOOLBAR CALL EVENTS  (2026-09-24)
+   =====================================================================
+   Ozonetel's CloudAgent runs in an iframe on this same Creator page. A child
+   iframe cannot be read across origins, but it CAN postMessage to its parent -
+   and many CTI toolbars announce call events that way. Whether CloudAgent does
+   is not documented anywhere we have, so this does two things at once:
+
+     1. DIAGNOSTIC - logs every message this page receives, with its origin and
+        payload. One inbound call and the console says definitively whether
+        CloudAgent posts anything and in what shape. That answer is what any
+        further work here depends on, and it costs nothing to collect.
+
+     2. TRIGGER - if a message carries something that looks like a phone
+        number, it opens the existing screen-pop for it. No new UI: this reuses
+        renderIncomingCallPop() exactly as the URL route does.
+
+   Deliberately permissive about shape (it walks the payload looking for a
+   plausible number) and deliberately strict about acting (>=10 digits, and the
+   origin must be an ozonetel.com host). Getting a pop that should not have
+   opened is worse than getting none, because it writes a Call_Log row.
+
+   If the console shows nothing at all during a call, CloudAgent does not post
+   to its parent and this route is closed - which is itself the answer, and
+   means asking Ozonetel to open ScreenPop in a new browser tab is the way. */
+var EMBEDDED_LISTENER_ON = false;
+function looksLikePhone(v){
+  if(typeof v !== "string" && typeof v !== "number") return "";
+  const digits = String(v).replace(/D/g,"");
+  if(digits.length < 10 || digits.length > 15) return "";
+  return digits.slice(-10);
+}
+function findPhoneDeep(obj, depth){
+  if(depth > 4 || obj == null) return "";
+  if(typeof obj === "string" || typeof obj === "number"){ return looksLikePhone(obj); }
+  if(typeof obj !== "object") return "";
+  // prefer a key that names a caller before falling back to any numeric-looking value
+  const preferred = ["callerid","caller","phone","mobile","number","from","ani","customernumber","did"];
+  for(const k of Object.keys(obj)){
+    if(preferred.indexOf(String(k).toLowerCase()) >= 0){
+      const hit = looksLikePhone(obj[k]);
+      if(hit) return hit;
+    }
+  }
+  for(const k of Object.keys(obj)){
+    const hit = findPhoneDeep(obj[k], depth+1);
+    if(hit) return hit;
+  }
+  return "";
+}
+function findKeyDeep(obj, names, depth){
+  if(depth > 4 || obj == null || typeof obj !== "object") return "";
+  for(const k of Object.keys(obj)){
+    if(names.indexOf(String(k).toLowerCase()) >= 0){
+      const v = obj[k];
+      if(v != null && String(v).trim() !== "") return String(v).trim();
+    }
+  }
+  for(const k of Object.keys(obj)){
+    const hit = findKeyDeep(obj[k], names, depth+1);
+    if(hit) return hit;
+  }
+  return "";
+}
+function listenForEmbeddedCallEvents(){
+  if(EMBEDDED_LISTENER_ON) return;
+  EMBEDDED_LISTENER_ON = true;
+  let lastPhone = "", lastAt = 0;
+  window.addEventListener("message", function(ev){
+    let payload = ev.data;
+    if(typeof payload === "string"){
+      const t = payload.trim();
+      if(t.charAt(0) === "{" || t.charAt(0) === "["){
+        try{ payload = JSON.parse(t); }catch(e){ /* leave as the original string */ }
+      }
+    }
+    console.log("[GR-CallCenter] postMessage from", ev.origin, "|", payload);
+
+    let host = "";
+    try{ host = new URL(ev.origin).hostname; }catch(e){ host = ""; }
+    if(!/(^|.)ozonetel.com$/i.test(host)) return;   // only act on the telephony frame
+
+    const phone = findPhoneDeep(payload, 0);
+    if(!phone) return;
+
+    // one pop per call: the same number arriving repeatedly inside 30s is the
+    // toolbar re-announcing a call already on screen, not a second call.
+    const now = Date.now();
+    if(phone === lastPhone && (now - lastAt) < 30000) return;
+    lastPhone = phone; lastAt = now;
+
+    const ucid = findKeyDeep(payload, ["ucid","monitorucid","callid","uuid"], 0);
+    const type = findKeyDeep(payload, ["type","calltype","direction"], 0) || "Inbound";
+    console.log("[GR-CallCenter] embedded toolbar announced a call — phone:", phone, "| ucid:", ucid || "(none)", "| type:", type);
+    renderIncomingCallPop({ phone: phone, ucid: ucid, type: type })
+      .catch(function(e){ console.warn("[GR-CallCenter] screen-pop from embedded event failed (non-blocking)", e); });
+  });
+  console.log("[GR-CallCenter] listening for call events from the embedded Ozonetel frame. Every postMessage this page receives will be logged above — make one inbound call and check whether CloudAgent posts anything.");
+}
+async function renderIncomingCallPop(override){
+  const params = override || await popReadParams();
   const keyCount = Object.keys(params).length;
-  console.log("[GR-CallCenter] screen-pop: "+keyCount+" URL parameter(s) seen:", JSON.stringify(params));
+  console.log("[GR-CallCenter] screen-pop: "+keyCount+" parameter(s) seen"+(override?" (from the embedded Ozonetel frame)":" (from the page URL)")+":", JSON.stringify(params));
   const rawPhone = popPick(params, POP_PHONE_KEYS);
   if(!rawPhone){
     if(keyCount) console.log("[GR-CallCenter] screen-pop: no caller number under any known key. If Ozonetel sends one under a different name, add it to POP_PHONE_KEYS — the parameter list above shows what actually arrived.");
@@ -577,6 +694,16 @@ async function renderIncomingCallPop(){
     $("popLogNote").textContent = "Not logged — the Call_Log form isn't available (see the banner above).";
     return;
   }
+  /* Ring-time route (2026-09-24): the pop was opened by pollForRingingCalls()
+     from a Call_Log row recordRingingCall.deluge had ALREADY created, so
+     writing another one here would duplicate it. Every other route into this
+     function leaves logRowId undefined and logs exactly as before. */
+  if(override && override.logRowId){
+    $("popLogNote").textContent = tickets.length
+      ? ("Logged against ticket "+(tickets[0].Case_ID||tickets[0].ID)+". Full call details arrive when the call ends.")
+      : "Logged (not linked to a ticket — no ticket carries this number). Full call details arrive when the call ends.";
+    return;
+  }
   try{
     const data = { Phone_Number: phone10, Call_Direction: popType, Call_Status: "Incoming" };
     if(popUcid) data.UCID = popUcid;
@@ -592,6 +719,77 @@ async function renderIncomingCallPop(){
     $("popLogNote").textContent = "Couldn't log it from here — it will still be recorded when the call ends.";
   }
 }
+/* ---------- RING-TIME SCREEN-POP POLL (2026-09-24) ------------------------
+   Why a poll rather than a frame: Ozonetel's "Pop CRM" tab is an iframe, and
+   no Zoho page can be framed — portal pages answer X-Frame-Options SAMEORIGIN,
+   public pages answer DENY (both measured against the live hosts). That is a
+   Zoho-side header, so no URL, page type or iframe attribute changes it, and
+   the tab renders "Page inaccessible" every time.
+
+   The route that does work needs no frame at all. Ozonetel's ScreenPop, set to
+   Server Side, has its SERVER fetch the URL at ring time — no browser, so the
+   header is simply not in play. That URL is recordRingingCall.deluge, which
+   writes a Call_Log row with Call_Status "RINGING". This poll notices the row
+   and opens the pop IN THE PAGE THE AGENT ALREADY HAS OPEN, which is a better
+   result than a tab anyway.
+
+   Nothing is duplicated and nothing existing changes:
+     - the row already exists, so the pop skips its own write (logRowId).
+     - getCallbackStatus.deluge matches Call_Log by UCID before it considers
+       creating a row, so at hangup it COMPLETES this same row in place.
+   Degrades to exactly the old behaviour: if the Custom API is never set up,
+   no row is ever written, the poll finds nothing and does nothing. -------- */
+const RING_POLL_MS = 5000;
+let RING_SEEN = null;        // null until the first tick takes a baseline
+let RING_POLL_ON = false;
+async function apiGetRingingCalls(){
+  const fn = resolve("getRecords"); if(!fn) return null;
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.logReportName,
+                         criteria:'Call_Status == "RINGING"', field_config:"all", max_records:200 });
+    if(r && r.code===3000 && Array.isArray(r.data)) return r.data;
+    // 3100 "No Data Available" is what Creator answers when the criteria matches
+    // nothing — an empty result, NOT a read failure. Treating it as failure here
+    // would silently disable the poll for the whole idle period between calls.
+    if(r && r.code===3100) return [];
+    return null;
+  }catch(e){ return null; }
+}
+async function ringPollTick(){
+  if(CALL_LOG_AVAILABLE===false) return;   // form doesn't exist — banner already explains why
+  const rows = await apiGetRingingCalls();
+  if(rows===null) return;                  // couldn't read — stay quiet, try again next tick
+  if(RING_SEEN===null){
+    /* Baseline. Rows already RINGING when this page opened belong to calls that
+       started before the agent got here, or to rows getCallbackStatus never
+       completed. Popping for those on every page load would be noise. */
+    RING_SEEN = {};
+    rows.forEach(function(r){ RING_SEEN[String(r.ID)] = 1; });
+    console.log("[GR-CallCenter] ring poll started — "+rows.length+" row(s) already RINGING are treated as history and will not pop. New ones will.");
+    return;
+  }
+  const fresh = rows.filter(function(r){ return !RING_SEEN[String(r.ID)]; });
+  fresh.forEach(function(r){ RING_SEEN[String(r.ID)] = 1; });
+  if(!fresh.length) return;
+  // Newest first, and pop only the newest — two calls landing inside one 5s
+  // tick is a queue, not two pops; the rest are in the history table below.
+  fresh.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+  const row = fresh[0];
+  console.log("[GR-CallCenter] ring poll: Ozonetel recorded a ringing call — Call_Log "+row.ID+", phone "+row.Phone_Number+", UCID "+(row.UCID||"(none)"));
+  try{
+    await renderIncomingCallPop({ phone: row.Phone_Number, ucid: row.UCID,
+                                  type: row.Call_Direction || "Inbound", logRowId: String(row.ID) });
+    await loadHistory();
+  }catch(e){ console.warn("[GR-CallCenter] ring poll: pop failed (non-blocking)", e); }
+}
+function startRingPoll(){
+  if(RING_POLL_ON) return;
+  RING_POLL_ON = true;
+  const tick = function(){ ringPollTick().catch(function(e){ console.warn("[GR-CallCenter] ring poll tick failed (non-blocking)", e); }); };
+  tick();
+  setInterval(tick, RING_POLL_MS);
+}
+
 function showDegradedBanner(){ $("degradedBanner").hidden = false; }
 function hideDegradedBanner(){ $("degradedBanner").hidden = true; }
 
@@ -812,6 +1010,8 @@ async function boot(){
   // sets, and it refreshes the history itself after logging. Does nothing at
   // all unless a caller number arrived in the URL.
   try{ await renderIncomingCallPop(); }catch(e){ console.warn("[GR-CallCenter] screen-pop failed (non-blocking — the rest of the page is unaffected)", e); }
+  listenForEmbeddedCallEvents();
+  startRingPoll();
 }
 document.addEventListener("DOMContentLoaded", boot);
 </script>

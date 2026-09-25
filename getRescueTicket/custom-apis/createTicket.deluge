@@ -1,54 +1,147 @@
-string createTicket(string customerName, string mobile, string email, string vehicle, string issue)
+string createTicket(string customerName, string mobile, string email, string vehicle, string issue, string recordId)
 {
 	returnstring = "";
 	try
 	{
 		result = Map();
-		if(customerName == null || customerName.trim() == "")
+		wantedId = ifnull(recordId,"").trim();
+		targetId = 0;
+		if(wantedId != "")
 		{
-			result.put("code", "ERROR");
-			result.put("message", "Customer Name is required");
-			returnstring = result.toString();
+			maybeId = 0;
+			try
+			{
+				maybeId = wantedId.toLong();
+			}
+			catch (idEx)
+			{
+				maybeId = 0;
+			}
+			if(maybeId > 0)
+			{
+				for each existingRec in Create_Case[ID == maybeId]
+				{
+					targetId = maybeId;
+				}
+			}
 		}
-		else if(mobile == null || mobile.trim() == "")
+		isUpdate = false;
+		if(targetId > 0)
 		{
-			result.put("code", "ERROR");
-			result.put("message", "Mobile is required");
-			returnstring = result.toString();
+			isUpdate = true;
 		}
-		else if(vehicle == null || vehicle.trim() == "")
+		if(wantedId != "")
 		{
-			result.put("code", "ERROR");
-			result.put("message", "Vehicle is required");
-			returnstring = result.toString();
+			if(isUpdate == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","recordId " + wantedId + " was supplied but no Create_Case record with that ID exists. Nothing was created or updated. Omit recordId entirely to create a new ticket.");
+				return result.toString();
+			}
 		}
-		else if(issue == null || issue.trim() == "")
+		hasName = false;
+		if(ifnull(customerName,"").trim() != "")
 		{
-			result.put("code", "ERROR");
-			result.put("message", "Issue is required");
-			returnstring = result.toString();
+			hasName = true;
+		}
+		hasMobile = false;
+		if(ifnull(mobile,"").trim() != "")
+		{
+			hasMobile = true;
+		}
+		hasEmail = false;
+		if(ifnull(email,"").trim() != "")
+		{
+			hasEmail = true;
+		}
+		hasVehicle = false;
+		if(ifnull(vehicle,"").trim() != "")
+		{
+			hasVehicle = true;
+		}
+		hasIssue = false;
+		if(ifnull(issue,"").trim() != "")
+		{
+			hasIssue = true;
+		}
+		if(isUpdate)
+		{
+			anySupplied = false;
+			if(hasName)
+			{
+				anySupplied = true;
+			}
+			if(hasMobile)
+			{
+				anySupplied = true;
+			}
+			if(hasEmail)
+			{
+				anySupplied = true;
+			}
+			if(hasVehicle)
+			{
+				anySupplied = true;
+			}
+			if(hasIssue)
+			{
+				anySupplied = true;
+			}
+			if(anySupplied == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","recordId " + targetId + " was found, but no field was supplied to change. Send at least one of customerName, mobile, email, vehicle or issue.");
+				return result.toString();
+			}
 		}
 		else
 		{
+			if(hasName == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","Customer Name is required");
+				return result.toString();
+			}
+			if(hasMobile == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","Mobile is required");
+				return result.toString();
+			}
+			if(hasVehicle == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","Vehicle is required");
+				return result.toString();
+			}
+			if(hasIssue == false)
+			{
+				result.put("code","ERROR");
+				result.put("message","Issue is required");
+				return result.toString();
+			}
+		}
+		resolvedVehicleId = 0;
+		if(hasVehicle)
+		{
 			vehicleTrim = vehicle.trim();
 			vehicleFound = false;
-			resolvedVehicleId = 0;
+			vehicleMaybeId = 0;
 			try
 			{
 				vehicleMaybeId = vehicleTrim.toLong();
-				if(vehicleMaybeId > 0)
-				{
-					vehicleById = vehicle_master[ID == vehicleMaybeId];
-					if(vehicleById != null)
-					{
-						resolvedVehicleId = vehicleMaybeId;
-						vehicleFound = true;
-					}
-				}
 			}
 			catch (vehicleIdEx)
 			{
-				vehicleFound = false;
+				vehicleMaybeId = 0;
+			}
+			if(vehicleMaybeId > 0)
+			{
+				for each vehicleById in vehicle_master[ID == vehicleMaybeId]
+				{
+					resolvedVehicleId = vehicleMaybeId;
+					vehicleFound = true;
+				}
 			}
 			if(vehicleFound == false)
 			{
@@ -68,128 +161,177 @@ string createTicket(string customerName, string mobile, string email, string veh
 			}
 			if(vehicleFound == false)
 			{
-				result.put("code", "ERROR");
-				result.put("message", "Vehicle not recognised: '" + vehicleTrim + "'. Send either a Vehicle Master record ID, or the vehicle name exactly as it appears in Vehicle Master (case does not matter).");
-				returnstring = result.toString();
+				result.put("code","ERROR");
+				result.put("message","Vehicle not recognised: " + vehicleTrim + ". Send either a Vehicle Master record ID, or the vehicle name exactly as it appears in Vehicle Master (case does not matter).");
+				return result.toString();
 			}
-			else
+		}
+		issueLongIds = List();
+		unmatchedIssues = "";
+		isTow = false;
+		if(hasIssue)
+		{
+			issueNameList = issue.toList(",");
+			for each issueNameRaw in issueNameList
 			{
-				issueNameList = issue.toList(",");
-				issueLongIds = List();
-				unmatchedIssues = "";
-				isTow = false;
-				for each issueNameRaw in issueNameList
+				issueNameTrim = issueNameRaw.trim();
+				if(issueNameTrim != "")
 				{
-					issueNameTrim = issueNameRaw.trim();
-					if(issueNameTrim != "")
+					issueMatched = false;
+					matchedIssueType = "";
+					issueMaybeId = 0;
+					try
 					{
-						issueMatched = false;
-						matchedIssueType = "";
-						try
+						issueMaybeId = issueNameTrim.toLong();
+					}
+					catch (issueIdEx)
+					{
+						issueMaybeId = 0;
+					}
+					if(issueMaybeId > 0)
+					{
+						for each issueById in Vehicle_Issue[ID == issueMaybeId]
 						{
-							issueMaybeId = issueNameTrim.toLong();
-							if(issueMaybeId > 0)
+							issueLongIds.add(issueMaybeId);
+							issueMatched = true;
+							matchedIssueType = ifnull(issueById.Issue_Type,"").toString().toLowerCase();
+						}
+					}
+					if(issueMatched == false)
+					{
+						issueWanted = issueNameTrim.toLowerCase();
+						for each issueRec in Vehicle_Issue[ID != 0]
+						{
+							if(issueMatched == false)
 							{
-								issueById = Vehicle_Issue[ID == issueMaybeId];
-								if(issueById != null)
+								issueNameText = ifnull(issueRec.Issue_Name,"").toString().trim().toLowerCase();
+								if(issueNameText == issueWanted)
 								{
-									issueLongIds.add(issueMaybeId);
+									issueLongIds.add(issueRec.ID.toString().toLong());
 									issueMatched = true;
-									matchedIssueType = ifnull(issueById.Issue_Type,"").toString().toLowerCase();
+									matchedIssueType = ifnull(issueRec.Issue_Type,"").toString().toLowerCase();
 								}
 							}
 						}
-						catch (issueIdEx)
+					}
+					if(issueMatched)
+					{
+						if(matchedIssueType.contains("tow"))
 						{
-							issueMatched = false;
+							isTow = true;
 						}
-						if(issueMatched == false)
+					}
+					else
+					{
+						if(unmatchedIssues == "")
 						{
-							issueWanted = issueNameTrim.toLowerCase();
-							for each issueRec in Vehicle_Issue[ID != 0]
-							{
-								if(issueMatched == false)
-								{
-									issueNameText = ifnull(issueRec.Issue_Name,"").toString().trim().toLowerCase();
-									if(issueNameText == issueWanted)
-									{
-										issueLongIds.add(issueRec.ID.toString().toLong());
-										issueMatched = true;
-										matchedIssueType = ifnull(issueRec.Issue_Type,"").toString().toLowerCase();
-									}
-								}
-							}
-						}
-						if(issueMatched)
-						{
-							if(matchedIssueType.contains("tow"))
-							{
-								isTow = true;
-							}
+							unmatchedIssues = issueNameTrim;
 						}
 						else
 						{
-							if(unmatchedIssues == "")
-							{
-								unmatchedIssues = issueNameTrim;
-							}
-							else
-							{
-								unmatchedIssues = unmatchedIssues + ", " + issueNameTrim;
-							}
+							unmatchedIssues = unmatchedIssues + ", " + issueNameTrim;
 						}
 					}
 				}
-				if(issueLongIds.size() == 0)
-				{
-					result.put("code", "ERROR");
-					result.put("message", "Issue not recognised: '" + unmatchedIssues + "'. Send either a Vehicle Issue record ID, or the issue name exactly as it appears in Vehicle Issue (case does not matter).");
-					returnstring = result.toString();
-				}
-				else
-				{
-					serviceType = "RSR";
-					if(isTow)
-					{
-						serviceType = "TOW";
-					}
-					newId = insert into Create_Case
-					[
-						Customer_Name = customerName.trim()
-						Phone_Number1 = mobile.trim()
-						Phone_Number = mobile.trim()
-						Email = ifnull(email,"").trim()
-						Vehicle = resolvedVehicleId
-						Vehicle_Issue = issueLongIds
-						Vehicle_Status = "ONROAD"
-						Service_Type = serviceType
-						Time_of_service = "NOW"
-						Remarks = "Raised via Client API."
-						Lead_Source = "App"
-						Status = "SERVICE FEE QUOTE"
-					];
-					caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
-					updateRec = Create_Case[ID == newId];
-					updateRec.Case_ID = caseId;
-					result.put("code", "SUCCESS");
-					result.put("message", "Service request created");
-					result.put("recordId", newId);
-					result.put("caseId", caseId);
-					result.put("serviceType", serviceType);
-					if(unmatchedIssues != "")
-					{
-						result.put("unmatchedIssues", unmatchedIssues);
-					}
-					returnstring = result.toString();
-				}
 			}
+			if(issueLongIds.size() == 0)
+			{
+				result.put("code","ERROR");
+				result.put("message","Issue not recognised: " + unmatchedIssues + ". Send either a Vehicle Issue record ID, or the issue name exactly as it appears in Vehicle Issue (case does not matter).");
+				return result.toString();
+			}
+		}
+		serviceType = "RSR";
+		if(isTow)
+		{
+			serviceType = "TOW";
+		}
+		if(isUpdate)
+		{
+			updateRec = Create_Case[ID == targetId];
+			changedFields = "";
+			if(hasName)
+			{
+				updateRec.Customer_Name = customerName.trim();
+				changedFields = changedFields + "Customer_Name ";
+			}
+			if(hasMobile)
+			{
+				updateRec.Phone_Number1 = mobile.trim();
+				updateRec.Phone_Number = mobile.trim();
+				changedFields = changedFields + "Phone_Number1 Phone_Number ";
+			}
+			if(hasEmail)
+			{
+				updateRec.Email = email.trim();
+				changedFields = changedFields + "Email ";
+			}
+			if(hasVehicle)
+			{
+				updateRec.Vehicle = resolvedVehicleId;
+				changedFields = changedFields + "Vehicle ";
+			}
+			if(hasIssue)
+			{
+				updateRec.Vehicle_Issue = issueLongIds;
+				updateRec.Service_Type = serviceType;
+				changedFields = changedFields + "Vehicle_Issue Service_Type ";
+			}
+			result.put("code","SUCCESS");
+			result.put("mode","updated");
+			result.put("message","Service request updated");
+			result.put("recordId",targetId);
+			result.put("caseId",ifnull(updateRec.Case_ID,"").toString());
+			result.put("updatedFields",changedFields.trim());
+			if(hasIssue)
+			{
+				result.put("serviceType",serviceType);
+			}
+			if(unmatchedIssues != "")
+			{
+				result.put("unmatchedIssues",unmatchedIssues);
+			}
+			returnstring = result.toString();
+		}
+		else
+		{
+			newId = insert into Create_Case
+			[
+				Customer_Name=customerName.trim()
+				Phone_Number1=mobile.trim()
+				Phone_Number=mobile.trim()
+				Email=ifnull(email,"").trim()
+				Vehicle=resolvedVehicleId
+				Vehicle_Issue=issueLongIds
+				Vehicle_Status="ONROAD"
+				Service_Type=serviceType
+				Time_of_service="NOW"
+				Remarks="Whatsapp."
+				Lead_Source="Whatsapp"
+				Status="SERVICE FEE QUOTE"
+				Added_User=zoho.loginuser
+			];
+			caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
+			updateRec = Create_Case[ID == newId];
+			updateRec.Case_ID=caseId;
+			result.put("code","SUCCESS");
+			result.put("mode","created");
+			result.put("message","Service request created");
+			result.put("recordId",newId);
+			result.put("caseId",caseId);
+			result.put("serviceType",serviceType);
+			if(unmatchedIssues != "")
+			{
+				result.put("unmatchedIssues",unmatchedIssues);
+			}
+			returnstring = result.toString();
 		}
 	}
 	catch (e)
 	{
 		errResult = Map();
-		errResult.put("code", "ERROR");
-		errResult.put("message", e.toString());
+		errResult.put("code","ERROR");
+		errResult.put("message",e.toString());
 		returnstring = errResult.toString();
 	}
 	return returnstring;

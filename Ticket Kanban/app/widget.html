@@ -1051,11 +1051,60 @@ $("mYes").onclick=()=>{ $("modal").classList.remove("on"); if(modalResolve) moda
 /* =====================================================================
    KANBAN BOARD
    ===================================================================== */
+/* Ticket ordering - 2026-09-23, ported from getRescueTicket, where the user
+   asked for "the latest/most recently added ticket at the top". This board
+   sorted on record ID descending, which only APPROXIMATES newest-first:
+   Creator allocates ids in creation order, so it usually agrees, but it is
+   not the field that was asked for and it drifts as soon as a record is
+   imported, migrated, or created out of band.
+
+   This file had no date PARSER at all (only the fmtDateTime formatters), so
+   the three below are ported verbatim from getRescueTicket rather than
+   invented here - Added_Time is a Zoho system field whose wire format is not
+   guaranteed, and both apps must read it the same way.
+
+   The old id comparison is kept as the tie-break, not discarded: two tickets
+   created in the same second, or any row with a blank/unparseable Added_Time,
+   still order exactly as they do today. */
+function parseDateTime12(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(d{1,2})-([A-Za-z]{3})-(d{4})s+(d{1,2}):(d{2}):(d{2})s*(AM|PM)$/i);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  let hour=Number(m[4])%12; if(/pm/i.test(m[7])) hour+=12;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), hour, Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseDateTime24(str){
+  if(!str) return null;
+  const m=String(str).trim().match(/^(d{1,2})-([A-Za-z]{3})-(d{4})s+(d{1,2}):(d{2}):(d{2})$/);
+  if(!m) return null;
+  const monIdx=MON.findIndex(function(mo){ return mo.toLowerCase()===m[2].toLowerCase(); });
+  if(monIdx<0) return null;
+  const d=new Date(Number(m[3]), monIdx, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6]));
+  return isNaN(d) ? null : d;
+}
+function parseAnyDateTime(str){
+  if(!str) return null;
+  const native=new Date(str);
+  if(!isNaN(native)) return native;
+  return parseDateTime12(str) || parseDateTime24(str);
+}
+function sortTicketsNewestFirst(recs){
+  return recs.sort(function(a,b){
+    const da=parseAnyDateTime(a && a.Added_Time), db=parseAnyDateTime(b && b.Added_Time);
+    if(da && db && da.getTime()!==db.getTime()) return db.getTime()-da.getTime();
+    if(da && !db) return -1;
+    if(!da && db) return 1;
+    return String(b && b.ID).localeCompare(String(a && a.ID),undefined,{numeric:true});
+  });
+}
 async function loadDashboard(){
   showView("dashboard");
   $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
   let recs = await getTickets(null);
-  recs.sort((a,b)=> String(b.ID).localeCompare(String(a.ID),undefined,{numeric:true}) );
+  sortTicketsNewestFirst(recs);
   renderBoard(recs);
 }
 // closed tickets hidden from the default board (2026-09-12, client email:
@@ -1622,6 +1671,14 @@ async function saveStep(advance){
   try{
     if(!state.recordId){
       const id=await addTicket(payload); state.recordId=id;
+      /* state.record.ID set here too - 2026-09-23, ported from getRescueTicket.
+         openTicket() builds state.record from a fetched record (which always
+         carries ID), but this create path only ever set state.recordId, so a
+         freshly created ticket and a reopened one disagreed on exactly one
+         property. Nothing in THIS file reads state.record.ID today, so there is
+         no visible symptom here - it is carried over so the two apps cannot
+         drift again, and so anything added later that reads record.ID finds it. */
+      state.record.ID=id;
       // Case_ID depends on the record's own ID, so it can only be set after creation —
       // short, unique-enough tag: "RSID" + the last 6 digits of the new record's ID.
       // Best-effort: if Create_Case already auto-stamps its own Case_ID on create

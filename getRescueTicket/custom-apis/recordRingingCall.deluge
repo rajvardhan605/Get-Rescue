@@ -1,0 +1,98 @@
+string recordRingingCall(string callerID, string ucid, string type, string agentID)
+{
+	try
+	{
+		info "========== RINGING CALL (SCREENPOP SERVER SIDE) ==========";
+		info "  time     = " + zoho.currenttime;
+		info "  callerID = [" + ifnull(callerID,"(null)") + "]";
+		info "  ucid     = [" + ifnull(ucid,"(null)") + "]";
+		info "  type     = [" + ifnull(type,"(null)") + "]";
+		info "  agentID  = [" + ifnull(agentID,"(null)") + "]";
+		rawPhone = ifnull(callerID,"").trim();
+		digitsOnly = rawPhone.replaceAll("[^0-9]","");
+		last10 = digitsOnly;
+		if(last10.length() > 10)
+		{
+			last10 = last10.subText(last10.length() - 10);
+		}
+		info "  digits = [" + digitsOnly + "] | last10 = [" + last10 + "]";
+		if(last10.length() < 6)
+		{
+			info "  NO USABLE NUMBER - nothing recorded.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_PHONE\", \"created\": false, \"message\": \"No usable caller number arrived, so no ringing row was recorded. If callerID reads like an unsubstituted placeholder such as $CallerID$, the calling system opened the URL without replacing its own token.\"}";
+		}
+		resolvedUcid = ifnull(ucid,"").trim();
+		if(resolvedUcid.contains("$"))
+		{
+			resolvedUcid = "";
+		}
+		if(resolvedUcid != "")
+		{
+			existingId = "";
+			for each dupRow in Call_Log[UCID == resolvedUcid]
+			{
+				if(existingId == "")
+				{
+					existingId = dupRow.ID.toString();
+				}
+			}
+			if(existingId != "")
+			{
+				info "  Call_Log " + existingId + " already carries this UCID - nothing inserted.";
+				return "{\"code\": \"SUCCESS\", \"result\": \"ALREADY_RECORDED\", \"created\": false, \"recordId\": \"" + existingId + "\", \"phone\": \"" + last10 + "\", \"ucid\": \"" + resolvedUcid + "\", \"message\": \"A Call_Log row already exists for this UCID, so this hit was ignored. This is expected when ScreenPop is set to Client&Server, which fires twice for one call.\"}";
+			}
+		}
+		vType = "Inbound";
+		typeLower = ifnull(type,"").trim().toLowerCase();
+		if(typeLower.contains("out"))
+		{
+			vType = "Outbound";
+		}
+		agentText = ifnull(agentID,"").trim();
+		if(agentText.contains("$"))
+		{
+			agentText = "";
+		}
+		newRowId = insert into Call_Log
+		[
+			Phone_Number=last10
+			UCID=resolvedUcid
+			Call_Status="RINGING"
+			Call_Direction=vType
+			Agent_Name=agentText
+		];
+		newRowIdText = newRowId.toString();
+		info "  Created Call_Log " + newRowIdText + " for the ringing call.";
+		matchedCaseId = 0;
+		matchedCaseLabel = "";
+		for each caseRec in Create_Case[Phone_Number1.contains(last10) || Phone_Number.contains(last10)] sort by ID desc
+		{
+			if(matchedCaseId == 0)
+			{
+				matchedCaseId = caseRec.ID.toString().toLong();
+				matchedCaseLabel = ifnull(caseRec.Case_ID,"").toString().trim();
+			}
+		}
+		if(matchedCaseId > 0)
+		{
+			try
+			{
+				linkRec = Call_Log[ID == newRowId];
+				linkRec.Create_Case = matchedCaseId;
+				info "  Linked Call_Log " + newRowIdText + " to Create_Case " + matchedCaseId + " (" + matchedCaseLabel + ").";
+			}
+			catch (linkEx)
+			{
+				info "  Could not link the ticket (non-fatal, the ringing row still exists): " + linkEx.toString();
+			}
+		}
+		info "===========================================";
+		return "{\"code\": \"SUCCESS\", \"result\": \"RINGING_RECORDED\", \"created\": true, \"recordId\": \"" + newRowIdText + "\", \"phone\": \"" + last10 + "\", \"ucid\": \"" + resolvedUcid + "\", \"direction\": \"" + vType + "\", \"agent\": \"" + agentText + "\", \"caseId\": \"" + matchedCaseLabel + "\", \"message\": \"A Call_Log row was created with Call_Status RINGING. The Call Center page polls for it and opens the screen-pop; getCallbackStatus completes this same row when the call ends.\"}";
+	}
+	catch (e)
+	{
+		info "recordRingingCall threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"result\": \"EXCEPTION\", \"created\": false, \"message\": \"" + e.toString().replaceAll("\"","'") + "\"}";
+	}
+	return "{\"code\": \"ERROR\", \"result\": \"NO_RESULT\", \"created\": false, \"message\": \"The script finished without reaching any known outcome.\"}";
+}

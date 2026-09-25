@@ -1,0 +1,93 @@
+string getInboundCallerInfo(string phone)
+{
+	try
+	{
+		info "========== INBOUND CALLER LOOKUP ==========";
+		info "  time  = " + zoho.currenttime;
+		info "  phone = [" + ifnull(phone,"(null)") + "]";
+		rawPhone = ifnull(phone,"").trim();
+		digitsOnly = rawPhone.replaceAll("[^0-9]","");
+		last10 = digitsOnly;
+		if(last10.length() > 10)
+		{
+			last10 = last10.subText(last10.length() - 10);
+		}
+		info "  digits = [" + digitsOnly + "] | last10 = [" + last10 + "]";
+		if(last10.length() < 6)
+		{
+			info "  TOO SHORT - not a usable phone number. Nothing looked up.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_PHONE\", \"phone\": \"" + last10 + "\", \"count\": 0, \"tickets\": [], \"message\": \"No usable phone number arrived, so no lookup was done. If this reads like an unsubstituted placeholder such as $CallerID$, the calling system opened the URL without replacing its own token.\"}";
+		}
+		ticketsJson = "";
+		foundCount = 0;
+		for each caseRec in Create_Case[Phone_Number1.contains(last10) || Phone_Number.contains(last10)] sort by ID desc
+		{
+			if(foundCount < 5)
+			{
+				recId = caseRec.ID.toString();
+				caseIdText = ifnull(caseRec.Case_ID,"").toString().trim();
+				nameText = ifnull(caseRec.Customer_Name,"").toString().trim();
+				statusText = ifnull(caseRec.Status,"").toString().trim();
+				serviceText = ifnull(caseRec.Service_Type,"").toString().trim();
+				closureText = ifnull(caseRec.Closure_Status,"").toString().trim();
+				addedText = ifnull(caseRec.Added_Time,"").toString().trim();
+				vehicleText = "";
+				vehicleRef = caseRec.Vehicle;
+				if(vehicleRef != null)
+				{
+					vehicleIdText = vehicleRef.toString().trim();
+					if(vehicleIdText != "")
+					{
+						vehicleLong = 0;
+						try
+						{
+							vehicleLong = vehicleIdText.toLong();
+						}
+						catch (vehEx)
+						{
+							vehicleLong = 0;
+						}
+						if(vehicleLong > 0)
+						{
+							for each vehRec in vehicle_master[ID == vehicleLong]
+							{
+								vehicleText = ifnull(vehRec.Name,"").toString().trim();
+							}
+						}
+						if(vehicleText == "")
+						{
+							vehicleText = vehicleIdText;
+						}
+					}
+				}
+				nameText = nameText.replaceAll("\"","'");
+				vehicleText = vehicleText.replaceAll("\"","'");
+				statusText = statusText.replaceAll("\"","'");
+				closureText = closureText.replaceAll("\"","'");
+				rowJson = "{\"id\": \"" + recId + "\", \"caseId\": \"" + caseIdText + "\", \"customerName\": \"" + nameText + "\", \"status\": \"" + statusText + "\", \"serviceType\": \"" + serviceText + "\", \"vehicle\": \"" + vehicleText + "\", \"closureStatus\": \"" + closureText + "\", \"addedTime\": \"" + addedText + "\"}";
+				if(ticketsJson == "")
+				{
+					ticketsJson = rowJson;
+				}
+				else
+				{
+					ticketsJson = ticketsJson + ", " + rowJson;
+				}
+				foundCount = foundCount + 1;
+			}
+		}
+		info "  matched " + foundCount + " ticket(s) for " + last10;
+		info "===========================================";
+		if(foundCount == 0)
+		{
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_MATCH\", \"phone\": \"" + last10 + "\", \"count\": 0, \"tickets\": [], \"message\": \"No existing ticket carries this number. Treat as a new customer.\"}";
+		}
+		return "{\"code\": \"SUCCESS\", \"result\": \"MATCHED\", \"phone\": \"" + last10 + "\", \"count\": " + foundCount + ", \"tickets\": [" + ticketsJson + "], \"message\": \"Up to five most recent tickets for this number, newest first.\"}";
+	}
+	catch (e)
+	{
+		info "getInboundCallerInfo threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"result\": \"EXCEPTION\", \"phone\": \"\", \"count\": 0, \"tickets\": [], \"message\": \"" + e.toString().replaceAll("\"","'") + "\"}";
+	}
+	return "{\"code\": \"ERROR\", \"result\": \"NO_RESULT\", \"count\": 0, \"tickets\": [], \"message\": \"The script finished without reaching any known outcome.\"}";
+}

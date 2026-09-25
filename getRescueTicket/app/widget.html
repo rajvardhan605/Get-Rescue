@@ -797,7 +797,18 @@ const CONFIG = {
   optionReports: {
     vehicles:    { report:"Vehicle_Master_Report", label:["Name"], max:1000 },
     issues:      { report:"Vehicle_Issue_Report",  label:["Issue_Name","Name"] },
-    vendors:     { report:"Vendors_Report",        label:["vendor_name","Vendor_Name","Name"] },
+    /* max:1000 added 2026-09-25 — user-reported live: every row in Vendor
+       Accounting read "(no vendor)" while Service and Vehicle resolved fine.
+       apiGetReport() defaults to max_records:200 when no max is given, so this
+       list silently truncated at the 200th vendor: any vendor past that point
+       could not be resolved from a ticket ANYWHERE in this widget — blank in the
+       Assigned Vendor picker, "(no vendor)" in Vendor Accounting, and no rate
+       card at all, which is why those cases could not be approved.
+       vendorTicket hit this exact symptom and raised its own Vendors_Report
+       fetch from 200 to 1000 on 2026-08-19; this is the same fix on the agent
+       side, and the same cap Vehicle_Master_Report already uses just above.
+       Zoho accepts only 200/500/1000 for max_records (error 9250). */
+    vendors:     { report:"Vendors_Report",        label:["vendor_name","Vendor_Name","Name"], max:1000 },
     // Real bug fixed 2026-08-31 (user-reported live, via the new opsMap
     // widget's own diagnostic console.warn — same underlying data, so this
     // widget had the identical wrong guess): the field WAS renamed
@@ -807,7 +818,9 @@ const CONFIG = {
     // landed/reverted" surprise that's already hit Vendors_Report's own
     // vendor_name once before (see this same array's vendors entry just
     // above). Lowercase tried first now, matching that same shape.
-    technicians: { report:"Technicians_Report",    label:["technician_name","Technician_Name","Name"], emailField:"Email" },
+    // max:1000 for the same reason as vendors just above — Technicians_Report is
+    // read by the same screens and carries the identical latent truncation.
+    technicians: { report:"Technicians_Report",    label:["technician_name","Technician_Name","Name"], emailField:"Email", max:1000 },
     clients:     { report:"Client_Report",         label:["Client_Name","Name"] },
     // "Agent_Report" — report name AND name field both user-confirmed
     // 2026-08-05: field is "Agent_Name" (an earlier "cloned from
@@ -1977,7 +1990,11 @@ const STAGES = [
             toast("Couldn't build the Customer Page link — WhatsApp message not sent","err");
             return null;
           }
-          return sendWhatsAppTemplate(r.Phone_Number1, "confirm_booking_fee_and_total_fee", waParams, null, waButtonPath);
+          // SEND 1 and SEND 2 first, then SEND 3 — the Booking Fee page order from
+          // both sheets. The opener never blocks this send (see its own comment).
+          return sendOpenerMessages(r).then(function(){
+            return sendWhatsAppTemplate(r.Phone_Number1, "confirm_booking_fee_and_total_fee", waParams, null, waButtonPath);
+          });
         }).then(function(ok){ if(ok===null) return; if(!ok) toast("Saved, but the WhatsApp payment link message failed to send — check console","err"); });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
@@ -2007,8 +2024,17 @@ const STAGES = [
       // param1 (Customer_Name) is a reasonable guess, not confirmed against
       // the actual approved template text.
       action:(r)=>{
-        sendWhatsAppTemplate(r.Phone_Number1, "confirm_customer_location_details_copy", [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}))
-          .then(function(ok){ if(!ok) toast("Saved, but the WhatsApp location-request message failed to send — check console","err"); });
+        /* Same TOW/repair branch as the Locations step's own Send Breakdown Location
+           Link button (2026-09-25). Both buttons are now the only way a location
+           request goes out, so both need it: a TOW ticket sent the repair wording
+           never gets asked for its drop location. */
+        const locTemplate = String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
+          ? "tow_confirm_customer_location_details" : "confirm_customer_location_details_copy";
+        // SEND 1 and SEND 2 first, then SEND 4 — the Location page order from both
+        // sheets, for the booking-fee-is-zero branch this button already covers.
+        sendOpenerMessages(r).then(function(){
+          return sendWhatsAppTemplate(r.Phone_Number1, locTemplate, [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}));
+        }).then(function(ok){ if(!ok) toast("Saved, but the WhatsApp location-request message failed to send — check console","err"); });
       } },
     // Real change (2026-08-07, explicit user request) — labels only, "please
     // rename not change the api name just for the layout": still the exact
@@ -2169,7 +2195,16 @@ const STAGES = [
     { n:"Send_Link_For_The_Breakdown_Location", l:"Send Breakdown Location Link", t:"button", full:true, repeatable:true,
       buttonLabel:"Send Breakdown Location Link to Customer", doneLabel:"Location Link Sent",
       action:(r)=>{
-        sendWhatsAppTemplate(r.Phone_Number1, "confirm_customer_location_details_copy", [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}))
+        /* TOW/repair template branch moved here 2026-09-25, when the automatic send
+           on reaching this step was removed. It used to live in that auto-send (added
+           2026-09-17: "TOW tickets get the tow wording, which asks for the drop
+           location as well; sending the wrong one gives the customer the wrong
+           instructions"), while this button always sent the repair wording because it
+           was only ever a resend. It is now the only send, so it needs the branch or
+           every TOW customer gets repair instructions. */
+        const locTemplate = String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
+          ? "tow_confirm_customer_location_details" : "confirm_customer_location_details_copy";
+        sendWhatsAppTemplate(r.Phone_Number1, locTemplate, [], null, customerPageButtonPath(r, "location", {locationType:"breakdown"}))
           .then(function(ok){ toast(ok?"Location link sent to customer":"Saved, but the WhatsApp location-request message failed to send — check console", ok?"ok":"err"); });
       } },
     // Soft-test item #7 (2026-09-10): "the direct location-sharing page link
@@ -3520,13 +3555,32 @@ const STAGES = [
           // and one URL button variable, so the Customer Page path is the only
           // thing sent. The remaining-fee amount is shown on the page itself,
           // which is where the customer pays it.
-          const rfButtonPath = customerPageButtonPath(r, "remaining_payment", { bookingamount: String(r.Remaining_Fee||0) });
-          console.log("[Get-Rescue] Send_Payment_Link1: sending WhatsApp 'balance_payment_link' to", r.Phone_Number1, "| button_0_1:", rfButtonPath);
-          if(!rfButtonPath){
-            toast("Couldn't build the Customer Page link — WhatsApp message not sent","err");
+          /* SEND 11 added 2026-09-25 (LOGIC-REPAIR / LOGIC-TOW, "Agent entering on
+             behalf of vendor — Final Payment Collection page, on click BALANCE FEE
+             REQUEST"): SEND 11 when remaining fee = 0, SEND 11 AND then SEND 12 when
+             remaining fee > 0. Template 11 (mark_service_complete) takes no
+             parameters — its wording is fixed.
+
+             The SEND 12 call below is the existing balance_payment_link send,
+             unchanged in shape. What is new is the gate: it used to fire on every
+             click regardless of the amount, so a settled ticket sent the customer a
+             payment link for zero. The sheets say SEND 12 only when a balance is
+             actually owed. */
+          const remainingDue = Number(r.Remaining_Fee)||0;
+          sendWhatsAppTemplate(r.Phone_Number1, "mark_service_complete", [])
+            .then(function(ok){ if(!ok) toast("Saved, but the service-complete WhatsApp message failed to send — check console","err"); });
+          if(remainingDue <= 0){
+            console.log("[Get-Rescue] Send_Payment_Link1: remaining fee is 0 — SEND 11 only, no balance link (LOGIC sheets).");
+            toast("Service-complete message sent — no balance is owed, so no payment link was sent","ok");
           } else {
-            sendWhatsAppTemplate(r.Phone_Number1, "balance_payment_link", [], null, rfButtonPath)
-              .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
+            const rfButtonPath = customerPageButtonPath(r, "remaining_payment", { bookingamount: String(remainingDue) });
+            console.log("[Get-Rescue] Send_Payment_Link1: SEND 11 mark_service_complete, then SEND 12 balance_payment_link to", r.Phone_Number1, "| remaining:", remainingDue, "| button_0_1:", rfButtonPath);
+            if(!rfButtonPath){
+              toast("Couldn't build the Customer Page link — payment link not sent","err");
+            } else {
+              sendWhatsAppTemplate(r.Phone_Number1, "balance_payment_link", [], null, rfButtonPath)
+                .then(function(ok){ toast(ok?"Payment link sent to customer":"Saved, but the WhatsApp payment link message failed to send — check console", ok?"ok":"err"); });
+            }
           }
         });
         }); // end persistPromise.then — see the field-persist block at the top of this action
@@ -4994,7 +5048,83 @@ function sendRescuerEtaMessage(r){
   const rescuerPhone=(vendorRaw && vendorRaw[CONFIG.vendorPhoneField])||"-";
   const hrs=etaHoursText(r)||"-";
   console.log("[Get-Rescue] sendRescuerEtaMessage: template share_rescue_service_details_and_eta | rescuer:", rescuerName, "| phone:", rescuerPhone, "| eta(hrs):", hrs);
-  return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, hrs]);
+  /* SEND 8, then SEND 9 — "SEND 8 with vendor/mechanic name and number, AND then
+     send 9 after 5 minutes". SEND 9 goes immediately: see the vendor apps' own
+     matching comment for why the 5-minute gap needs a scheduled Deluge function
+     rather than a timer in a page that will be closed. The resolved value stays
+     SEND 8's own result so every existing caller behaves exactly as before. */
+  return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, hrs])
+    .then(function(ok8){
+      return sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", [])
+        .then(function(ok9){ if(!ok9) console.warn("[Get-Rescue] SEND 9 extra-charges advisory failed (non-blocking)"); return ok8; },
+              function(e){ console.warn("[Get-Rescue] SEND 9 threw (non-blocking)", e); return ok8; });
+    });
+}
+/* SEND 1 + SEND 2 — the opener pair, 2026-09-25. Both sheets open the same way:
+   "SEND 1, ON CLICK OF [cta] CONTINUE, SEND 2 AND THEN SEND 3" on the Booking Fee
+   page, and the same with SEND 4 on the Location page.
+
+   The CONTINUE gate is NOT implemented, because it cannot be: CONTINUE is a
+   quick-reply button on initiate_conversation, and knowing the customer tapped it
+   requires WhatsPortal posting an inbound event back to us. Nothing in this system
+   receives one. So 1 and 2 are sent in order and 3 (or 4) follows regardless.
+   The customer sees all three; what is lost is the pause waiting on their tap.
+
+   initiate_conversation is the only MARKETING template in the workspace and is
+   subject to marketing opt-out, so it is the one send here most likely to be
+   refused. Both are therefore best-effort and neither can stop 3 or 4 going out —
+   the fee and location requests are what the job actually depends on.
+
+   Called only from the two entry points the sheets name. The Locations step's own
+   "Send Breakdown Location Link" button is a resend of 4 alone and deliberately
+   does NOT call this, or a second click would repeat the opener. */
+async function sendOpenerMessages(r){
+  try{
+    const ok1 = await sendWhatsAppTemplate(r.Phone_Number1, "initiate_conversation", []);
+    if(!ok1) console.warn("[Get-Rescue] SEND 1 initiate_conversation failed (non-blocking) — the customer may have opted out of marketing messages.");
+    const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", []);
+    if(!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
+  }catch(e){ console.warn("[Get-Rescue] opener messages threw (non-blocking)", e); }
+}
+/* SEND 5 / 6 / 7 — 2026-09-25, from the LOGIC-REPAIR and LOGIC-TOW sheets.
+   Both sheets carry these two rows identically, so there is no RSR/TOW branch:
+     "On reaching READY status IF PREVIOUS STATUS is NOT SCHEDULED" -> SEND 5, then SEND 7
+     "On reaching SCHEDULED status"                                  -> SEND 6, then SEND 7
+
+   The spec says "READY"; this app's actual picklist value is "READY FOR
+   ASSIGNMENT" (renamed 2026-07-31 — see EARLY_STATUSES and the `locations`
+   stage's own status() which writes it). Matching on the real value, not the
+   spec's shorthand, or this would never fire.
+
+   Template 5 is send_confirmtaion_message — the misspelling is in the approved
+   template name itself (catalogue warns: "Use it exactly as written or the send
+   returns 404 template_not_found"), not a typo here.
+
+   Fires only on a real TRANSITION (prev !== next), so re-saving a step that
+   leaves Status unchanged sends nothing — the customer gets one confirmation per
+   ticket, not one per save. Best-effort throughout: a WhatsApp failure toasts but
+   never fails the save, the same rule syncInvites() already follows. */
+const MILESTONE_STATUS_READY = "READY FOR ASSIGNMENT";
+const MILESTONE_STATUS_SCHEDULED = "SCHEDULED";
+async function sendStatusMilestoneMessages(prevStatus, newStatus, r){
+  const prev = String(prevStatus||"").trim().toUpperCase();
+  const next = String(newStatus||"").trim().toUpperCase();
+  if(prev === next) return;
+  let first = "";
+  if(next === MILESTONE_STATUS_READY && prev !== MILESTONE_STATUS_SCHEDULED) first = "send_confirmtaion_message";
+  else if(next === MILESTONE_STATUS_SCHEDULED) first = "send_scheduled_confirmation";
+  if(!first) return;
+  // Templates 5 and 6 share the same two body variables: {{1}} service
+  // requested, {{2}} vehicle. A dash rather than a blank for either — the
+  // catalogue is explicit that an empty string does not count as a value and
+  // the send is rejected with 422 message_rejected.
+  const svcName = lookupNamesFor(r.Vehicle_Issue, OPTIONS.issues) || "-";
+  const vehName = lookupNamesFor(r[CONFIG.vehicleField], OPTIONS.vehicles) || "-";
+  console.log("[Get-Rescue] status milestone:", (prev||"(none)"), "->", next, "| SEND", (first==="send_scheduled_confirmation"?"6":"5"), first, "then SEND 7 | service:", svcName, "| vehicle:", vehName);
+  const ok1 = await sendWhatsAppTemplate(r.Phone_Number1, first, [svcName, vehName]);
+  if(!ok1) toast("Saved, but the confirmation WhatsApp message failed to send — check console","err");
+  const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "inform_customer_request_confirmed_no_cancellation_after_5_mins", []);
+  if(!ok2) toast("Saved, but the cancellation-policy WhatsApp message failed to send — check console","err");
 }
 /* Customer Page (2026-09-02, new customerPage widget) — the public, no-login
    page customers land on when sent a Booking Payment / Remaining Payment /
@@ -5630,11 +5760,49 @@ function isPendingOpsApproval(r){
 // same ID-first/label-fallback + unwrapLookup() pattern already proven
 // elsewhere in this file (e.g. widget.html:4761-4762) for a freshly
 // fetched record where Assigned_Vendor may still be a raw Lookup object.
-function vendorRawForTicket(r){
+/* Email fallback added 2026-09-25 — user-reported live: every row in Vendor
+   Accounting read "(no vendor)" with "—" for Vendor ID, after completing a ticket
+   from the vendor app on a phone.
+
+   The cause is upstream. vendorTicket's acceptService() writes Assigned_Vendor
+   from currentVendorRecord, and when it cannot match the logged-in vendor to a
+   Vendors_Report row it leaves Assigned_Vendor BLANK on purpose rather than guess
+   (see its own warning at that call site). The very same accept still writes
+   Vendor_Email / Vendor_Email1 / Vendor_Email2, falling back to the login email —
+   so the vendor IS identified on the ticket, just not in the field read here.
+
+   Matching that email back to Vendors_Report recovers the vendor for display and
+   for the rate card, without changing how any ticket is written. This matters well
+   beyond the label: vendorRawForTicket() is what computeVendorFeeForTicket() reads
+   Base_Fee / Base_KM / KM_Rate / the KM slab from, so a ticket with no resolvable
+   vendor produced NO FEE AT ALL and could not be approved.
+
+   Tried only AFTER the existing id and label lookups, so every ticket that
+   resolves today keeps resolving exactly as it does now. */
+const VENDOR_EMAIL_FIELDS = ["Vendor_Email","Vendor_Email1","Vendor_Email2"];
+function vendorOptByEmail(r){
+  const list = OPTIONS.vendors || [];
+  for(const fld of VENDOR_EMAIL_FIELDS){
+    const em = String(r[fld]||"").trim().toLowerCase();
+    if(!em) continue;
+    const hit = list.find(function(o){
+      return String((o.raw && o.raw[CONFIG.vendorEmailField])||"").trim().toLowerCase() === em;
+    });
+    if(hit) return hit;
+  }
+  return null;
+}
+function vendorOptForTicket(r){
   const vid=unwrapLookup(r.Assigned_Vendor);
-  if(!vid) return null;
-  const vopt=OPTIONS.vendors.find(function(o){ return String(o.id)===String(vid); })
-    || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vid); });
+  if(vid){
+    const vopt=OPTIONS.vendors.find(function(o){ return String(o.id)===String(vid); })
+      || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vid); });
+    if(vopt) return vopt;
+  }
+  return vendorOptByEmail(r);
+}
+function vendorRawForTicket(r){
+  const vopt=vendorOptForTicket(r);
   return (vopt && vopt.raw) || null;
 }
 let VA_CASES=[], VA_OPEN_ID=null;
@@ -5660,10 +5828,10 @@ async function loadVendorAcct(){
 // always fell through to "(no vendor)" for those tickets specifically —
 // same root cause, same fix as vendorRawForTicket()'s own matching pattern.
 function vaVendorDisplayName(r){
-  const vid=unwrapLookup(r.Assigned_Vendor);
-  if(!vid) return "(no vendor)";
-  const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===String(vid); })
-    || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vid); });
+  // One resolver for the name, the Fleet ID and the rate card — see
+  // vendorOptForTicket()'s own comment. Previously this had its own copy of the
+  // id/label lookup, which is how it and the fee math could disagree.
+  const vopt = vendorOptForTicket(r);
   return (vopt && vopt.v) || "(no vendor)";
 }
 /* ---------------------------------------------------------------------
@@ -9911,38 +10079,25 @@ function renderWizard(){
       state.record.Rescue_Charge=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Client_Charge)||0)-(Number(state.record.Booking_Fee)||0);
     }
   }
-  // Auto-send the location-request WhatsApp message the moment the agent
-  // reaches this step (2026-08-10, user request — "customer automatically
-  // receives location link"), instead of waiting on a manual button click.
-  // Guarded on the field's own flag so this fires ONCE per ticket, not on
-  // every re-render of this step (typing in the lat/long paste box, etc.) —
-  // the button itself stays enabled afterward (repeatable:true, see its own
-  // field comment) purely so the agent can still resend by hand if needed;
-  // it no longer needs to be clicked for the first send to go out.
-  if(step.key==="locations" && !state.record.Send_Link_For_The_Breakdown_Location && !breakdownLocationAlreadyCaptured(state.record)){
-    state.record.Send_Link_For_The_Breakdown_Location=true;
-    // Real bug fixed 2026-09-15. This auto-send passed only
-    // state.record.Customer_Name as {{1}}, but the "location" template's {{1}}
-    // is the LINK itself - "please click this secure link: {{1}}" - so the
-    // message every customer received on reaching this step read "please click
-    // this secure link: Rahul." with no link in it at all. And because this
-    // fires automatically on arriving at the step, it is the location message
-    // customers actually get; the manual button below is only ever a resend.
-    //
-    // Now uses customerNameWithPageLink() - the exact same helper the manual
-    // Send_Link_For_The_Breakdown_Location button already passes (see its own
-    // call site), with the same "breakdown" locationType - so the automatic
-    // send and the manual resend produce an identical message instead of two
-    // different ones. No new helper, no change to either template.
-    // Template switched 2026-09-17 — "location" no longer exists in the
-    // workspace. TOW tickets get the tow wording (which asks for the drop
-    // location as well), repairs get the repair wording; sending the wrong one
-    // gives the customer the wrong instructions.
-    const autoLocTemplate = String(state.record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"
-      ? "tow_confirm_customer_location_details" : "confirm_customer_location_details_copy";
-    sendWhatsAppTemplate(state.record.Phone_Number1, autoLocTemplate, [], null, customerPageButtonPath(state.record, "location", {locationType:"breakdown"}))
-      .then(function(ok){ toast(ok?"Location link sent to customer":"Couldn't send the WhatsApp location-request message — check console", ok?"ok":"err"); });
-  }
+  /* Auto-send of the breakdown location link REMOVED 2026-09-25 (user request:
+     "don't share automatically location link in this"). Reaching the Locations
+     step used to fire the WhatsApp location-request message on its own; it now
+     goes out only when the agent clicks "Send Breakdown Location Link to
+     Customer".
+
+     Nothing else changed. The manual button (Send_Link_For_The_Breakdown_Location,
+     see its own field entry above) already sent the identical message through the
+     same sendWhatsAppTemplate() call, with the same TOW/repair template choice and
+     the same customerPageButtonPath() — so the customer receives exactly what they
+     received before, on a click instead of on arrival. The drop-location button for
+     TOW tickets was never automatic and is untouched.
+
+     This block also used to set Send_Link_For_The_Breakdown_Location=true in memory.
+     Not setting it is the correct behaviour now: the button reads "Send Breakdown
+     Location Link to Customer" on a ticket where nothing has actually been sent,
+     instead of claiming "Location Link Sent". breakdownLocationAlreadyCaptured()
+     (defined above) was this block's only caller and is now inert; left in place
+     rather than deleted, same convention as apRowText(). */
   // fields
   // Create step's own heading hidden (2026-08-05, user request, reapplied
   // after it was somehow lost from an earlier pass) — "Create Service
@@ -11992,6 +12147,9 @@ async function saveStep(advance){
   // back missing (confirms the field doesn't exist in Zoho) or something
   // else is going on.
   if("Acceptance_Mode" in payload) console.log("[Get-Rescue] saving step: Acceptance_Mode ->", JSON.stringify(payload.Acceptance_Mode));
+  // Captured BEFORE the save so sendStatusMilestoneMessages() below can tell a
+  // real status transition from a re-save at the same status (2026-09-25).
+  const prevStatusForMilestone = String(state.record[CONFIG.stageField]||"");
   $("saveBtn").disabled=true;
   try{
     if(!state.recordId){
@@ -12050,6 +12208,11 @@ async function saveStep(advance){
     // sees the true, just-persisted Status — exactly like reopening the
     // ticket fresh from Zoho would show, without needing to actually reopen it.
     state.record[CONFIG.stageField]=payload[CONFIG.stageField];
+    // SEND 5/6 + SEND 7 (LOGIC-REPAIR / LOGIC-TOW). Placed here, immediately
+    // after the just-saved Status is synced onto state.record, so the compare
+    // uses the value Zoho actually accepted. Non-blocking by construction.
+    try{ await sendStatusMilestoneMessages(prevStatusForMilestone, payload[CONFIG.stageField], state.record); }
+    catch(e){ console.warn("[Get-Rescue] status milestone WhatsApp send failed (non-blocking)", e); }
     // Invites (2026-08-03) — one record per invited vendor, created right
     // after a successful Assignment-step save. Best-effort/non-blocking,
     // same pattern as the Task_Rejections log the field widgets already use.

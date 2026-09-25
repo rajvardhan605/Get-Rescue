@@ -1,0 +1,9 @@
+{
+  "service": "CREATOR",
+  "cspDomains": {
+    "connect-src": [],
+    "script-src": [],
+    "img-src": []
+  },
+  "config": []
+}

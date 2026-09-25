@@ -72,10 +72,20 @@ img,svg{max-width:100%}
 .ascreen-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
 .back-x{border:0;background:var(--worktop);width:34px;height:34px;border-radius:9px;cursor:pointer;color:var(--muted);display:grid;place-items:center;flex:none}
 .ascreen-top h2{font-family:var(--f-disp);font-size:19px;font-weight:900;flex:1}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;margin-bottom:6px}
+/* minmax(0,1fr) + wrapping, 2026-09-25 — client-reported: the vehicle name showed
+   correctly on iPhone but was clipped or missing on Android.
+   Not a data difference: both devices receive the same name. A grid column sized
+   plain `1fr` keeps min-width:auto, so the track REFUSES to shrink below its
+   content's min-content width. A long unbroken value ("OTHER TWO WHEELER",
+   "PUNCTURE-TUBELESS TYRE") therefore pushes the column wider than the card and
+   overflows instead of wrapping. iOS Safari and Android Chrome differ in viewport
+   width and font metrics, so the same layout clips on one and fits on the other.
+   minmax(0,1fr) lets the track shrink and the wrap rules below let the text break,
+   which is additive: nothing that fits today renders any differently. */
+.info-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px 14px;margin-bottom:6px}
 .info-grid .full{grid-column:1/-1}
 .info-grid .k{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:2px}
-.info-grid .v{font-size:14px;font-weight:600}
+.info-grid .v{font-size:14px;font-weight:600;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .nav-link{display:flex;align-items:center;justify-content:center;gap:9px;background:var(--info-soft);color:#1d5fc0;border-radius:11px;padding:12px;font-family:var(--f-disp);font-weight:800;font-size:14px;text-decoration:none;margin:6px 0}
 
 /* ---------- photo grid (multi-capture with min/max) ---------- */
@@ -945,7 +955,16 @@ function renderTicketInfo(){
   // WhatsApp sending) for the tel: URI, visible text unchanged.
   $("ticketInfo").innerHTML = rows.map(function(p){
     const valueHtml = (p[0]==="Phone")
-      ? `<a class="v" href="tel:${esc(formatIndianPhone(p[1]))}" style="color:inherit;text-decoration:underline">${esc(p[1])}</a>`
+      /* target="_top" added 2026-09-25 — client-reported: tapping the number did
+         not open the dialler on Android. The tel: URI itself was already correct
+         (formatIndianPhone produces +91XXXXXXXXXX, no spaces). The problem is the
+         frame: this widget runs in a cross-origin iframe, and Android Chrome
+         blocks an iframe navigating itself to an external scheme, while iOS
+         intercepts tel: at the OS level regardless — which is exactly why it
+         worked on iPhone and not on Android. Navigating the TOP frame is allowed
+         with user activation, and the OS takes over before any page loads, so the
+         widget is never actually unloaded. */
+      ? `<a class="v" href="tel:${esc(formatIndianPhone(p[1]))}" target="_top" rel="noopener" style="color:inherit;text-decoration:underline">${esc(p[1])}</a>`
       : `<span class="v">${esc(p[1])}</span>`;
     return `<div><span class="k">${esc(p[0])}</span>${valueHtml}</div>`;
   }).join("");
@@ -1059,7 +1078,23 @@ async function acceptService(){
        converted from minutes to hours (sending 45 would otherwise read
        "45 Hrs"); and empty strings are rejected with 422 message_rejected, so
        every missing value is sent as "-" instead. */
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_TECH_NAME||"-", MY_TECH_PHONE||"-", (dist&&dist.etaMins)?String(Math.round((dist.etaMins/60)*10)/10):"-"]);
+    /* SEND 8, then SEND 9 — LOGIC-REPAIR / LOGIC-TOW: "SEND 8 with vendor/mechanic
+       name and number, AND then send 9 after 5 minutes".
+
+       SEND 9 goes out immediately rather than 5 minutes later. A widget cannot
+       hold a 5-minute timer — the app is closed or the screen locked long before
+       it fires, and the message would simply never arrive. Honouring the gap needs
+       a scheduled Deluge function sweeping a due-time field on the ticket, which
+       is new Zoho infrastructure; delivered-now beats delivered-never until that
+       exists. Chained after SEND 8 so the order the customer sees is still right.
+
+       Template 9 takes no parameters. Failures are logged, never toasted: SEND 8
+       already reports its own outcome and this must not turn one failure into two
+       error messages on the vendor's screen. */
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_TECH_NAME||"-", MY_TECH_PHONE||"-", (dist&&dist.etaMins)?String(Math.round((dist.etaMins/60)*10)/10):"-"])
+      .then(function(){ return sendWhatsAppTemplate(r[CONFIG.phoneField], "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []); })
+      .then(function(ok9){ if(!ok9) console.warn("[GR] SEND 9 extra-charges advisory failed (non-blocking) for ticket", r.ID); })
+      .catch(function(e){ console.warn("[GR] SEND 8/9 chain threw (non-blocking)", e); });
     // Navigates straight to "Reach Breakdown Location" per the flow spec —
     // see goToStatus()'s own comment.
     goToStatus("RSP ON THE WAY");
@@ -1337,6 +1372,23 @@ async function workCompleted(){
     console.log("[Get-Rescue] workCompleted payload:", JSON.stringify(payload));
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
+    /* SEND 11 added 2026-09-25 — LOGIC-REPAIR "Mechanic/Driver app - WIP page, on
+       click COMPLETE" and LOGIC-TOW "Unloading and Handover, on click DROPPED".
+       Both sheets send template 11 (mark_service_complete) whether or not a
+       balance is owed, so there is no remaining-fee gate on THIS message.
+
+       Deliberately NOT also sending SEND 12 (balance_payment_link) here, although
+       the sheets pair them when remaining fee > 0: this screen already has its own
+       "Send Payment Link" button that sends exactly that, so firing it
+       automatically would deliver the customer two identical payment links. Raised
+       with the user rather than guessed at.
+
+       Best-effort: awaited so ordering is right, but wrapped so a WhatsApp failure
+       can never roll back a completion that has already been saved. */
+    try{
+      const okComplete = await sendWhatsAppTemplate(r.Phone_Number1||r.Phone_Number, "mark_service_complete", []);
+      if(!okComplete) console.warn("[GR] SEND 11 mark_service_complete failed (non-blocking) for ticket", r.ID);
+    }catch(e){ console.warn("[GR] SEND 11 mark_service_complete threw (non-blocking)", e); }
     toast("Marked as completed","ok");
     goToStatus("REMAINING FEE DUE");
   }catch(e){ console.error("[Get-Rescue] workCompleted error:", e); toast((e&&e.message)||"Could not save","err"); }
@@ -1379,6 +1431,24 @@ function renderPaymentScreen(){
   // opened, bypassing the mandatory-photo gate). Payment_received is only
   // ever written by this exact confirmPaymentReceived() action.
   const alreadySuccess=r.Payment_received==="Yes";
+  /* Payment Method now reflects what the ticket ALREADY holds (2026-09-25,
+     user-reported live: a gateway-settled ticket still showed "Cash"). The five
+     options used to be hardcoded with Cash pre-selected, so reopening this screen
+     after paymentWebhook.deluge had written "Payment Gateway" showed Cash, and
+     confirmPaymentReceived() then wrote that Cash straight back. That is a money
+     bug, not a display one: getRescueTicket cashCollectedForTicket() deducts the
+     Remaining Fee from the vendor payout whenever this field reads "Cash", so a
+     mislabelled gateway payment underpays the vendor by money they never held. */
+  const PAY_METHOD_OPTIONS=["Cash","UPI","Card","Net Banking","Payment Gateway"];
+  const storedPayMethod=String(r.Payment_Method_Final||"").trim();
+  const selectedPayMethod=PAY_METHOD_OPTIONS.indexOf(storedPayMethod)>=0?storedPayMethod:"";
+  /* No method is pre-selected (2026-09-25, user request): Cash used to be the
+     pre-picked option, so a vendor who never touched the dropdown recorded Cash
+     whatever they were actually paid. The placeholder is disabled so it cannot
+     be chosen back once a real method is picked. */
+  const payMethodOptionsHtml='<option value=""'+(selectedPayMethod?'':' selected')+' disabled>— Select payment method —</option>'+PAY_METHOD_OPTIONS.map(function(m){
+    return '<option value="'+m+'"'+(m===selectedPayMethod?' selected':'')+'>'+m+'</option>';
+  }).join("");
   // Payment_Method_Final's real options confirmed 2026-08-03 (user's own Zoho
   // field screenshot): Cash / UPI / Card / Net Banking — replaces the
   // earlier guessed "Payment Gateway / Direct / Cash" list. None of these
@@ -1394,11 +1464,7 @@ function renderPaymentScreen(){
       <div class="fld"><label>Remaining Fee</label><input type="text" value="₹ ${esc(remaining)}" readonly></div>
       <div class="fld"><label>Payment Method</label>
         <select id="Payment_Method_Final">
-          <option value="Cash" selected>Cash</option>
-          <option value="UPI">UPI</option>
-          <option value="Card">Card</option>
-          <option value="Net Banking">Net Banking</option>
-          <option value="Payment Gateway">Payment Gateway</option>
+          ${payMethodOptionsHtml}
         </select>
       </div>
       <div id="qrBlock" style="text-align:center;margin:10px 0;display:none">
@@ -1421,7 +1487,11 @@ function renderPaymentScreen(){
   function refreshPayButton(){
     const gateway=methodEl.value==="Payment Gateway";
     const receiptOk=effectivePhotoCount("Upload_Photo_of_receipt")>=1;
-    const success = alreadySuccess || (!gateway && receiptOk);
+    /* The button now also waits for a method to be chosen, since nothing is
+       pre-selected. alreadySuccess (the gateway already settled it) and
+       remaining<=0 (nothing to collect) still bypass it exactly as before. */
+    const methodChosen = PAY_METHOD_OPTIONS.indexOf(methodEl.value)>=0;
+    const success = alreadySuccess || (methodChosen && !gateway && receiptOk);
     $("paymentStatusDisplay").value = success ? "PAID" : "PENDING";
     $("paymentReceivedBtn").disabled = !(remaining<=0 || success);
   }
@@ -1445,7 +1515,16 @@ async function confirmPaymentReceived(){
     // only ever runs when the technician genuinely clicks "Payment
     // Received", so no extra guard is needed — same reasoning
     // Payment_received:"Yes" above already relies on.
-    const payload={ Payment_Method_Final: $("Payment_Method_Final").value, Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
+    /* Payment_Method_Final is deliberately NOT written back over a payment the
+       gateway already settled (2026-09-25). paymentWebhook.deluge sets it to
+       "Payment Gateway"; this screen has nothing to add, and writing its dropdown
+       value could only ever downgrade a real gateway payment to Cash. Every other
+       field is written exactly as before, so a normal cash/UPI/card close is
+       unchanged. */
+    const gatewaySettled=String(r.Payment_Method_Final||"").trim()==="Payment Gateway" && String(r.Payment_received||"").trim()==="Yes";
+    const payload={ Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
+    const chosenMethod=($("Payment_Method_Final") && $("Payment_Method_Final").value)||"";
+    if(!gatewaySettled && chosenMethod) payload.Payment_Method_Final = chosenMethod;
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
     console.log("[Get-Rescue] confirmPaymentReceived payload:", JSON.stringify(payload));
     // Real bug fixed 2026-09-11 — see vendorTicket's own matching comment

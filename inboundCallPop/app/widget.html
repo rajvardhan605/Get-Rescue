@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get-Rescue — Incoming Call</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+  :root{
+    --paper:#ffffff;
+    --ground:#f7f5f3;
+    --ink:#17130f;
+    --body:#433c37;
+    --muted:#7b726b;
+    --line:#e6e0da;
+    --line-soft:#f0ebe6;
+    --signal:#e8531c;
+    --signal-soft:#fdf0ea;
+    --ok:#1d6b4f;
+    --ok-soft:#e9f5ef;
+    --warn:#9a5b06;
+    --warn-soft:#fdf4e6;
+    --f-body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --f-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--ground);
+    color:var(--body);
+    font-family:var(--f-body);
+    font-size:13.5px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{padding:14px;max-width:760px;margin:0 auto}
+
+  .head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .ring{width:34px;height:34px;border-radius:50%;background:var(--signal-soft);display:grid;place-items:center;flex:none}
+  .ring svg{width:17px;height:17px;stroke:var(--signal);fill:none;stroke-width:2;stroke-linejoin:round}
+  .head .who{min-width:0;flex:1}
+  .head .lbl{font-family:var(--f-mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+  .head .num{font-size:19px;font-weight:600;color:var(--ink);letter-spacing:-.01em;word-break:break-all;line-height:1.25}
+  .head .meta{font-family:var(--f-mono);font-size:10.5px;color:var(--muted);margin-top:1px}
+
+  .state{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px;text-align:center;color:var(--muted)}
+  .state.new{background:var(--warn-soft);border-color:#f0dcb4;color:var(--warn);text-align:left}
+  .state.new b{display:block;color:var(--ink);font-size:14px;margin-bottom:2px}
+  .state.err{background:var(--signal-soft);border-color:#f5cdb9;color:var(--signal);text-align:left}
+
+  .spin{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--signal);border-radius:50%;
+    animation:sp .7s linear infinite;margin:0 auto 8px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){ .spin{animation:none} }
+
+  .count{font-family:var(--f-mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    margin:0 0 7px 2px}
+
+  .list{display:flex;flex-direction:column;gap:8px}
+  .tk{display:block;width:100%;text-align:left;background:var(--paper);border:1px solid var(--line);
+    border-left:3px solid var(--line);border-radius:9px;padding:11px 13px;text-decoration:none;color:inherit;
+    transition:border-color .12s,box-shadow .12s}
+  .tk:hover,.tk:focus-visible{border-color:var(--signal);border-left-color:var(--signal);
+    box-shadow:0 1px 6px rgba(232,83,28,.13);outline:none}
+  .tk.live{border-left-color:var(--ok)}
+  .tk .r1{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .tk .cid{font-family:var(--f-mono);font-size:11.5px;color:var(--muted);letter-spacing:.02em}
+  .tk .nm{font-weight:600;color:var(--ink);font-size:14px}
+  .tk .r2{margin-top:3px;font-size:12.5px;color:var(--body)}
+  .tk .r3{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+  .pill{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+    padding:2.5px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .pill.svc{border-color:var(--signal);color:var(--signal)}
+  .pill.live{border-color:var(--ok);color:var(--ok);background:var(--ok-soft)}
+  .pill.done{border-color:var(--line);color:var(--muted)}
+
+  .foot{margin-top:11px;font-family:var(--f-mono);font-size:10px;color:var(--muted);text-align:center}
+  .foot a{color:var(--signal)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <span class="ring" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M6.5 3h3l1.5 4.5-2 1.5a12 12 0 0 0 6 6l1.5-2L21 14.5v3a2 2 0 0 1-2.2 2A17 17 0 0 1 4 5.2 2 2 0 0 1 6 3Z"/></svg>
+    </span>
+    <span class="who">
+      <span class="lbl">Incoming call</span>
+      <div class="num" id="num">&hellip;</div>
+      <div class="meta" id="meta"></div>
+    </span>
+  </div>
+  <div id="body">
+    <div class="state"><div class="spin"></div>Looking up this number&hellip;</div>
+  </div>
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+/* =====================================================================
+   GET-RESCUE — INBOUND CALL SCREEN-POP  (public page: InboundCall)
+   =====================================================================
+   Why this widget exists as a SEPARATE, cut-down copy of callCenter's own
+   screen-pop rather than reusing it:
+
+   Ozonetel's CloudAgent shows the ScreenPop URL inside its own "Pop CRM"
+   iframe. Zoho Creator's normal app/portal pages refuse to be framed by a
+   third party (X-Frame-Options / frame-ancestors), so pointing ScreenPop at
+   the agent dashboard rendered an empty grey panel — confirmed live. Zoho's
+   PUBLIC pages (creatorapp.zohopublic.in) are the ones designed to be
+   embedded, which is why this lives on its own public page instead.
+
+   That choice has one hard consequence: a public page has NO logged-in Zoho
+   session, so the widget cannot call getRecords() on Agent_Ticket_Report the
+   way callCenter does. Every read has to go through a Custom API carrying its
+   own PublicKey — the identical constraint customerPage already works under,
+   and the reason getInboundCallerInfo exists.
+
+   Deliberately NOT done here: writing a Call_Log row. callCenter already logs
+   agent-placed calls, and getCallbackStatus creates a row for any call it
+   cannot match when Ozonetel pushes the end-of-call record. Logging from here
+   too would race those two and produce duplicates for the same call.
+   ===================================================================== */
+
+/* The phone number can arrive under any of these, because the exact token
+   Ozonetel substitutes into a ScreenPop URL is not confirmed. Same list as
+   callCenter's own screen-pop, kept in step deliberately: if one widget
+   learns the real parameter name, the other should already accept it. */
+var PHONE_KEYS = ["phone","Phone","callerId","callerID","CallerID","caller","Caller","mobile","Mobile",
+                  "number","Number","from","From","customerNumber","CustomerNumber","ani","ANI","did","DID"];
+var UCID_KEYS  = ["ucid","UCID","monitorUCID","monitorUcid","callId","callID","CallID","uuid"];
+var TYPE_KEYS  = ["type","Type","callType","CallType","direction","Direction"];
+
+/* PublicKey auth. A Custom API called from a page with no logged-in user is
+   rejected with {code: 9370, "invalid public key"} unless the key is passed
+   explicitly — the exact failure customerPage hit before this was added.
+   ⚠ Fill this in from getInboundCallerInfo's own endpoint URL in Zoho
+   (Developer Space -> Custom API -> getInboundCallerInfo -> the publickey in
+   its Endpoint URL). Until it is set, every lookup will fail with 9370 and
+   the panel says so rather than showing an empty result. */
+var API_PUBLIC_KEYS = {
+  getInboundCallerInfo: "MQFkKVv4ENDyrre5Mtr8jgY7j"
+};
+
+/* Where "open this ticket" sends the agent. The agent dashboard cannot be
+   framed (see the header comment), so these links open in a NEW TAB via
+   target="_blank" — inside Ozonetel's panel there is nowhere else for them
+   to go. */
+var CRM_PAGE_URL = "https://getrescued.zohocreatorportal.in/#Page:Dashboard_2";
+
+/* A ticket still being worked, so the agent can tell "this caller has a live
+   job" from "this caller has history". Mirrors callCenter's own popIsActive():
+   anything closed, cancelled or rejected is finished; everything else is not. */
+var DONE_STATUSES = ["CLOSED","RSP CLOSED","RSP CANCELLED","CX REJECT"];
+
+var $ = function(id){ return document.getElementById(id); };
+function esc(t){
+  return String(t == null ? "" : t)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function sdkReady(){
+  return new Promise(function(resolve){
+    if(window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.init){
+      ZOHO.CREATOR.init().then(function(){ resolve(true); }).catch(function(){ resolve(false); });
+    } else { resolve(false); }
+  });
+}
+function resolve(method){
+  var roots = [window.ZOHO && ZOHO.CREATOR, window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.API,
+               window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL];
+  for(var i=0;i<roots.length;i++){
+    var r = roots[i];
+    if(r && typeof r[method] === "function") return r[method].bind(r);
+  }
+  return null;
+}
+
+/* Reads page parameters exactly the way customerPage's getPageParams() does,
+   and for the same reason: a Creator page routes its query string AFTER the
+   page's own #hash, so plain window.location.search never sees it. The SDK
+   helper is preferred; the two manual parses are fallbacks so the page still
+   works when opened directly for testing. */
+async function readParams(){
+  var out = {};
+  var fn = resolve("getQueryParams");
+  if(fn){
+    try{
+      var res = await fn();
+      if(res && typeof res === "object") Object.assign(out, res);
+    }catch(e){ console.warn("[GR-InboundPop] getQueryParams failed", e); }
+  }
+  if(window.location.hash){
+    var hq = window.location.hash.split("?")[1];
+    if(hq) new URLSearchParams(hq).forEach(function(v,k){ if(!(k in out)) out[k] = v; });
+  }
+  if(window.location.search){
+    new URLSearchParams(window.location.search).forEach(function(v,k){ if(!(k in out)) out[k] = v; });
+  }
+  return out;
+}
+function pick(params, keys){
+  for(var i=0;i<keys.length;i++){
+    var v = params[keys[i]];
+    if(v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
+function last10(v){
+  var d = String(v || "").replace(/\D/g, "");
+  return d.length > 10 ? d.slice(-10) : d;
+}
+function isLive(t){
+  var st = String(t.status || "").trim().toUpperCase();
+  if(DONE_STATUSES.indexOf(st) >= 0) return false;
+  var cs = String(t.closureStatus || "").trim();
+  return cs === "";
+}
+
+async function callApi(name, payload){
+  var fn = resolve("invokeCustomApi");
+  if(!fn) throw new Error("The Zoho widget SDK did not load, so the lookup could not run.");
+  var cfg = { api_name:name, workspace_name:"getrescued", http_method:"POST",
+              content_type:"application/json", payload:payload };
+  var key = API_PUBLIC_KEYS[name];
+  if(key) cfg.public_key = key;
+  else console.warn("[GR-InboundPop] " + name + " has no public_key set — on a public page this will fail with 9370. Fill in API_PUBLIC_KEYS near the top of this file.");
+  console.log("[GR-InboundPop] calling", name, "| payload:", payload, "| public_key attached:", !!key);
+  var res = await fn(cfg);
+  var data = res;
+  if(data && typeof data.result === "string"){
+    try{ data = JSON.parse(data.result); }
+    catch(e){ throw new Error("The lookup replied with something that was not JSON. Check this Custom API's execution log."); }
+  }
+  return data;
+}
+
+function ticketHtml(t){
+  var live = isLive(t);
+  var bits = [];
+  if(t.vehicle) bits.push(esc(t.vehicle));
+  if(t.status)  bits.push(esc(t.status));
+  var href = CRM_PAGE_URL;
+  return '<a class="tk' + (live ? " live" : "") + '" href="' + esc(href) + '" target="_blank" rel="noopener">' +
+    '<div class="r1">' +
+      '<span class="cid">' + esc(t.caseId || ("#" + (t.id || ""))) + '</span>' +
+      '<span class="nm">' + esc(t.customerName || "(no name)") + '</span>' +
+    '</div>' +
+    (bits.length ? '<div class="r2">' + bits.join(" &middot; ") + '</div>' : "") +
+    '<div class="r3">' +
+      (t.serviceType ? '<span class="pill svc">' + esc(t.serviceType) + '</span>' : "") +
+      (live ? '<span class="pill live">Open job</span>' : '<span class="pill done">' + esc(t.closureStatus || "Closed") + '</span>') +
+      (t.addedTime ? '<span class="pill">' + esc(t.addedTime) + '</span>' : "") +
+    '</div>' +
+  '</a>';
+}
+
+function renderTickets(data, phone){
+  var list = Array.isArray(data.tickets) ? data.tickets : [];
+  if(!list.length){
+    $("body").innerHTML =
+      '<div class="state new"><b>New customer</b>No existing ticket carries this number. Create a ticket in the CRM.</div>';
+    $("foot").innerHTML = '<a href="' + esc(CRM_PAGE_URL) + '" target="_blank" rel="noopener">Open Get-Rescue &rarr;</a>';
+    return;
+  }
+  var liveCount = list.filter(isLive).length;
+  $("body").innerHTML =
+    '<div class="count">' + list.length + ' ticket' + (list.length === 1 ? "" : "s") +
+      (liveCount ? " &middot; " + liveCount + " open" : "") + '</div>' +
+    '<div class="list">' + list.map(ticketHtml).join("") + '</div>';
+  $("foot").innerHTML = '<a href="' + esc(CRM_PAGE_URL) + '" target="_blank" rel="noopener">Open Get-Rescue &rarr;</a>';
+}
+
+function renderError(msg){
+  $("body").innerHTML = '<div class="state err">' + esc(msg) + '</div>';
+}
+
+async function boot(){
+  await sdkReady();
+  var params = await readParams();
+  console.log("[GR-InboundPop] " + Object.keys(params).length + " page parameter(s):", JSON.stringify(params));
+
+  var rawPhone = pick(params, PHONE_KEYS);
+  var ucid     = pick(params, UCID_KEYS);
+  var type     = pick(params, TYPE_KEYS) || "Inbound";
+
+  if(!rawPhone){
+    $("num").textContent = "No number received";
+    renderError("The calling system did not send a phone number. The parameters that did arrive are listed in this page's browser console — if the number comes under a different name, add that name to PHONE_KEYS in this widget.");
+    return;
+  }
+
+  var phone = last10(rawPhone);
+  $("num").textContent = rawPhone;
+  $("meta").textContent = type + (ucid ? (" · UCID " + ucid) : "");
+
+  /* Guard against an un-substituted token. Ozonetel's URL to Push was proven
+     to pass $data$ / $UCID$ through as literal text, so the same can happen
+     here — six digits is a threshold no real Indian number fails and no
+     placeholder passes. Without this the panel would show "$CallerID$" and
+     run a lookup that can only ever match nothing. */
+  if(phone.length < 6){
+    renderError("The number arrived as “" + rawPhone + "”, which contains no usable digits. That usually means the calling system opened this URL without replacing its own placeholder token — a setting on their side, not something this page can work around.");
+    return;
+  }
+
+  try{
+    var data = await callApi("getInboundCallerInfo", { phone: phone });
+    console.log("[GR-InboundPop] lookup result:", data);
+    if(!data || data.code === "ERROR"){
+      renderError((data && data.message) || "The lookup failed. Check getInboundCallerInfo's execution log in Zoho.");
+      return;
+    }
+    renderTickets(data, phone);
+  }catch(e){
+    console.warn("[GR-InboundPop] lookup failed", e);
+    renderError(e && e.message ? e.message : "The lookup could not be completed.");
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
