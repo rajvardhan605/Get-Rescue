@@ -508,6 +508,52 @@ async function popFindTickets(phone10){
     return hits;
   }catch(e){ console.warn("[GR-CallCenter] popFindTickets failed", e); return []; }
 }
+/* AGENT_PORTAL_PAGE_URL — 2026-09-25, ETA sheet item 7: the screen-pop must offer
+   a New Case / Old Case choice, opening the matched ticket or a pre-filled Create
+   Service Ticket page with the call linked.
+
+   ⚠ BLANK until you paste the agent portal page URL here — the page that hosts the
+   getRescueTicket widget, e.g.
+     "https://getrescued.zohocreatorportal.in/#Page:Dashboard"
+   While it is blank the two actions simply do not render and the pop behaves
+   exactly as it did before. Deliberately not guessed: pointing these buttons at
+   the wrong page would send an agent somewhere unexpected mid-call, which is worse
+   than not offering the button. Same honest-degradation pattern, and the same
+   reason, as CUSTOMER_PAGE_BASE_URL in getRescueTicket.
+
+   Navigation is target="_top" rather than a plain link because this widget runs in
+   a cross-origin iframe — the same constraint that made the Android tel: links
+   need it. Creator reads a page parameter after the hash (#Page:Name?key=value),
+   which is the form popPortalUrl() builds. */
+const AGENT_PORTAL_PAGE_URL = "";
+function popPortalUrl(params){
+  const base = String(AGENT_PORTAL_PAGE_URL||"").trim();
+  if(!base) return "";
+  const qs = Object.keys(params)
+    .filter(function(k){ return params[k]!=null && String(params[k]).trim()!==""; })
+    .map(function(k){ return encodeURIComponent(k)+"="+encodeURIComponent(String(params[k])); })
+    .join("&");
+  if(!qs) return base;
+  return base + (base.indexOf("?")>=0 ? "&" : "?") + qs;
+}
+/* OLD CASE — one per matched ticket. Hands the record id over; getRescueTicket
+   fetches it fresh and opens it on whichever step its Status belongs to, exactly
+   as clicking that ticket on the dashboard would. */
+function popOpenTicketLink(t){
+  const url = popPortalUrl({ ccOpenTicket: t.ID });
+  if(!url) return "";
+  return ' <a class="btn ghost sm" href="'+esc(url)+'" target="_top" rel="noopener" style="text-decoration:none;flex:none;margin-left:8px">Open</a>';
+}
+/* NEW CASE — carries the caller number and the UCID so the new ticket starts with
+   the phone already filled in and the call identifiable against it. */
+function popActionsHtml(phone10, ucid){
+  const url = popPortalUrl({ ccNewTicket: "1", ccPhone: phone10, ccUcid: ucid });
+  if(!url){
+    console.log("[GR-CallCenter] screen-pop: AGENT_PORTAL_PAGE_URL is not set, so the New Case / Open Ticket actions are hidden. Paste the agent portal page URL into that constant at the top of this widget to enable them.");
+    return "";
+  }
+  return '<div style="margin-top:12px"><a class="btn primary" href="'+esc(url)+'" target="_top" rel="noopener" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">➕ Create New Case</a></div>';
+}
 function popTicketHtml(t){
   const veh = popVehicleName(t.Vehicle);
   const bits=[
@@ -520,6 +566,7 @@ function popTicketHtml(t){
   return `<div class="cc-detail-row" style="align-items:flex-start">
     <span class="k">${activeMark}${esc(t.Case_ID||("#"+(t.ID||"")))}</span>
     <span class="v">${esc(t.Customer_Name||"(no name)")}${bits.length?(" — "+esc(bits.join(" · "))):""}</span>
+    ${popOpenTicketLink(t)}
   </div>`;
 }
 /* override added 2026-09-24. This used to read the page URL and nothing else,
@@ -678,6 +725,7 @@ async function renderIncomingCallPop(override){
     </div>
     <div class="hint" style="margin-bottom:10px">${esc(popType)}${popUcid?(" · UCID "+esc(popUcid)):""} · matched on the last 10 digits (${esc(phone10)})</div>
     ${body}
+    ${popActionsHtml(phone10, popUcid)}
     <div class="hint" style="margin-top:10px" id="popLogNote">Logging this call…</div>`;
   $("popDismissBtn").onclick = function(){ card.hidden = true; };
   /* Log the inbound call straight away, through this widget's OWN existing

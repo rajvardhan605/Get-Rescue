@@ -3057,6 +3057,12 @@ async function pingCurrentLocation(){
     const payload={};
     payload[CONFIG.availabilityCurrentLatField]=pos.lat;
     payload[CONFIG.availabilityCurrentLonField]=pos.lon;
+    /* Location_Last_Updated_At stamped here 2026-09-25 — the field was created in
+       Zoho on 2026-08-17 but nothing had ever written to it, so the assignment
+       popup and the Ops Map had no way to tell a fix from thirty seconds ago from
+       one left over from yesterday. Written in the SAME update as the coordinates,
+       so the timestamp can never disagree with the position it describes. */
+    payload["Location_Last_Updated_At"]=fmtDateTime(new Date());
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.availabilityReport, id:currentAvailabilityRecord.id, payload:{data:payload} });
   }catch(e){ console.warn("[GR-Vendor] pingCurrentLocation failed (non-fatal, retries next tick):", e); }
 }
@@ -3075,6 +3081,12 @@ async function onToggleClick(){
   try{
     const fn=resolve("updateRecordById"); if(!fn) throw new Error("unavailable");
     const payload={}; payload[CONFIG.availabilityStatusField]=wantOnline?"Online":"Offline";
+    /* Last_Online_At stamped on going ONLINE only, 2026-09-25 — same story as
+       Location_Last_Updated_At: created in Zoho 2026-08-17, never written. Not
+       touched when going offline, because the field records when someone last came
+       online, and overwriting it on sign-off would turn it into "last toggled"
+       and lose that. */
+    if(wantOnline) payload["Last_Online_At"]=fmtDateTime(new Date());
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.availabilityReport, id:currentAvailabilityRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
     if(wantOnline) startLocationHeartbeat(); else stopLocationHeartbeat();

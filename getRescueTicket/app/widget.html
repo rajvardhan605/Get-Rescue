@@ -68,6 +68,12 @@ img,svg{max-width:100%}
   text-transform:uppercase;letter-spacing:.03em;padding:3px 8px 3px 5px;border-radius:999px;background:var(--worktop);color:var(--muted-2);flex:none}
 .vopt .flag svg{width:12px;height:12px;flex:none}
 .vopt .flag.on{background:var(--ok-soft);color:var(--ok)}
+/* App Status / Login Status stack (2026-09-25, ETA item 24 — the assignment popup
+   asks for both columns). Stacked rather than side by side: the row is already
+   tight with name, priority, distance and phone, and two chips in a line pushed
+   the name into an ellipsis on a narrow window. */
+.vopt .vstat{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex:none}
+.vopt .vstat .lbl{font-family:var(--f-mono);font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted-2)}
 .btn{border:0;cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:14.5px;letter-spacing:.02em;
   padding:12px 18px;border-radius:11px;display:inline-flex;align-items:center;gap:8px;transition:.15s;white-space:nowrap}
 .btn svg{width:17px;height:17px}
@@ -525,12 +531,21 @@ img,svg{max-width:100%}
       <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       Accounts Payable
     </button>
+    <!-- GST export — 2026-09-25, ETA sheet item 26 ("Export capability for GST
+         reporting"). Same IS_OPS_MANAGER gate and hidden-by-default pattern as the
+         three ops buttons above; no other agent ever sees it. -->
+    <button class="btn primary" id="gstExportBtn" type="button" style="display:none">
+      <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      Export GST
+    </button>
     <button class="btn primary" id="newBtn" type="button">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
       Create Ticket
     </button>
   </div>
 
+  <!-- GST export output — hidden until the button is used. -->
+  <div id="gstExportBox" class="card" hidden style="margin:14px 0"></div>
   <div class="demo-note" id="demoNote">Couldn't connect to Zoho Creator — open this widget inside a Creator page and reload.</div>
 
   <!-- DASHBOARD -->
@@ -7195,12 +7210,34 @@ function vendorOptionHtml(o){
   if(v.distanceKm!=null) meta.push(v.distanceKm+" km"+(v.locationSource==="live"?" (live)":""));
   if(v.phone) meta.push(v.phone);
   const statusLabel=v.statusKnown?(v.online?"Online":"Offline"):"Unknown";
+  /* App Status and Login Status, 2026-09-25 — ETA sheet item 24 lists both as
+     columns of the assignment popup.
+
+     ⚠ BOTH read the SAME field, Availability_Status, per explicit user decision.
+     That field is the vendor's own Online/Offline toggle, so App Status is its
+     natural meaning; Login Status is shown from it too because no separate
+     sign-in/sign-out record exists anywhere in this project to derive a real one
+     from. They will therefore always agree. If a genuine login/logout session log
+     is built later, only loginLabel below needs repointing — the column is already
+     in place and nothing else has to move.
+
+     Worded differently on purpose: a column headed "Login Status" reading "Online"
+     invites the reader to think it is a second, independent signal. "Logged In"
+     against "Online" at least reads as the same fact said twice, which is what it
+     is. Unknown stays Unknown rather than defaulting to logged out — a vendor whose
+     status was never set is not the same as one known to be signed out. */
+  const loginLabel=v.statusKnown?(v.online?"Logged In":"Logged Out"):"Unknown";
   return `<div class="vopt">
     <div style="min-width:0">
       <div class="vnm">${esc(v.name)}</div>
       ${meta.length?`<div class="vmeta">${esc(meta.join(" · "))}</div>`:""}
     </div>
-    <span class="flag ${v.online?"on":""}">${v.online?FLAG_ON:FLAG_OFF}${esc(statusLabel)}</span>
+    <span class="vstat">
+      <span class="lbl">App</span>
+      <span class="flag ${v.online?"on":""}">${v.online?FLAG_ON:FLAG_OFF}${esc(statusLabel)}</span>
+      <span class="lbl">Login</span>
+      <span class="flag ${v.online?"on":""}">${esc(loginLabel)}</span>
+    </span>
   </div>`;
 }
 /* formatVendorForSave() (the old "[priority] Name | Phone | Status" composite
@@ -12841,6 +12878,7 @@ $("vaViewToggle").onclick=function(){
   renderVendorAcctList();
 };
 $("accountsPayableBtn").onclick=loadAccountsPayable;
+$("gstExportBtn").onclick=exportGstCsv;
 $("accountsPayableBack").onclick=function(){ showView("dashboard"); loadDashboard(); };
 $("wizClose").onclick=cancelWizard;
 $("prevBtn").onclick=prevStep;
@@ -12894,6 +12932,173 @@ $("q").addEventListener("input",onSearchInput);
 $("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
 $("clearSearch").onclick=()=>{ $("q").value=""; $("clearSearch").style.display="none"; closeSearchDropdown(); };
 
+/* Call-centre handoff — 2026-09-25, ETA sheet item 7: the incoming-call pop must
+   offer a New Case / Old Case choice. callCenter renders those two actions and
+   navigates here with a page parameter; this is the receiving half.
+
+     ccOpenTicket=<record id>            -> OLD CASE: open that ticket
+     ccNewTicket=1&ccPhone=<10 digits>   -> NEW CASE: fresh ticket, phone pre-filled
+
+   Read through the SDK's getQueryParams(), not the page URL: this widget runs on
+   a different origin to the page hosting it, so window.parent.location cannot be
+   read at all (see callCenter popReadParams() for the same constraint).
+
+   Old Case goes through openTicketOrClosure(), the exact path a dashboard row
+   click already takes, so a closed ticket opens read-only on Agent Closure and an
+   open one lands on whichever step its Status belongs to — no separate routing to
+   drift out of step. The record is fetched fresh by id rather than trusting a
+   dashboard copy, which is what openTicket() already does internally anyway.
+
+   Does nothing at all when neither parameter is present, which is every normal
+   open of this page. Fails soft throughout: a deleted ticket toasts and leaves the
+   agent on the dashboard rather than on a broken wizard. */
+/* GST export — 2026-09-25, ETA sheet item 26: "Export capability for GST
+   reporting". One CSV of every closed ticket for the accountant to filter and file
+   from. Read-only: nothing is written, created or sent anywhere.
+
+   The tax split uses computeGstBreakup(), the SAME function that produces the
+   figures already written to On_Demand_Invoicing and sent to Zoho Books — so an
+   exported row and the invoice raised for that ticket cannot disagree. It is an
+   18% INCLUSIVE split: Total_Service_Fee is what the customer paid, taxable value
+   is that over 1.18, CGST and SGST are 9% each of the taxable value, and any
+   rounding residue sits in its own column rather than hidden inside a tax figure.
+
+   Delivered two ways on purpose. A widget runs in a sandboxed iframe and a Blob
+   download can be silently blocked there depending on the host page flags, with no
+   error the page can catch. So the CSV is also shown in a selectable box with a
+   Copy button — if the download does nothing, the data is still right there. */
+function gstCsvCell(v){
+  const t = String(v==null ? "" : v);
+  // Quote whenever the value could break the column layout, doubling any quote
+  // inside it — the RFC 4180 rule Excel and Tally both expect.
+  // The quote character is built with fromCharCode so this line carries no
+  // literal quote of its own — it is the one place in this file where a stray
+  // one would be easy to mis-escape and hard to spot.
+  const q = String.fromCharCode(34);
+  return /[",\r\n]/.test(t) ? (q + t.split(q).join(q+q) + q) : t;
+}
+function gstClosureDateText(r){
+  const raw = r.Agent_Closure_Time || r.RSP_Closure_Time || r.RSP_Completion_Time || r.Added_Time || "";
+  const d = parseAnyDateTime(raw);
+  if(!d) return String(raw||"");
+  const p = function(n){ return (n<10?"0":"")+n; };
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate());
+}
+function buildGstCsv(rows){
+  const head = ["Case ID","Closure Date","Customer","Phone","Service Type",
+                "B2B GST Invoice","GST Number","Total Fee (incl. GST)","Taxable Value",
+                "CGST 9%","SGST 9%","Round Off","Closure Status","Books Invoice ID"];
+  const lines = [head.map(gstCsvCell).join(",")];
+  rows.forEach(function(r){
+    const total = Number(r.Total_Service_Fee)||0;
+    const g = computeGstBreakup(total);
+    lines.push([
+      r[CONFIG.caseIdField]||r.ID,
+      gstClosureDateText(r),
+      r.Customer_Name||"",
+      r.Phone_Number1||r[CONFIG.phoneField]||"",
+      r[CONFIG.serviceTypeField]||"",
+      r.B2B_GST_Invoice_Required||"No",
+      r.GST_Number||"",
+      total.toFixed(2),
+      g.serviceCharges.toFixed(2),
+      g.cgst.toFixed(2),
+      g.sgst.toFixed(2),
+      g.roundOff.toFixed(2),
+      r.Closure_Status||"",
+      r.Zoho_Books_Invoice_ID||""
+    ].map(gstCsvCell).join(","));
+  });
+  return lines.join("\r\n");
+}
+async function exportGstCsv(){
+  const btn = $("gstExportBtn");
+  const restore = btn.innerHTML;
+  btn.disabled = true; btn.textContent = "Preparing…";
+  try{
+    const all = await getTickets(null);
+    // Closed only. A ticket still in flight has no final fee to report, and an
+    // unclosed row in a GST return is a figure that will change after filing.
+    const rows = all.filter(function(r){
+      const st = String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase();
+      const cs = String(r.Closure_Status||"").trim();
+      return st==="CLOSED" || st==="RSP CLOSED" || cs==="Completed";
+    });
+    if(!rows.length){ toast("No closed tickets to export yet","err"); return; }
+    sortTicketsNewestFirst(rows);
+    const csv = buildGstCsv(rows);
+    const now = new Date();
+    const p = function(n){ return (n<10?"0":"")+n; };
+    const name = "GetRescue_GST_"+now.getFullYear()+"-"+p(now.getMonth()+1)+"-"+p(now.getDate())+".csv";
+    console.log("[Get-Rescue] GST export:", rows.length, "closed ticket(s),", csv.length, "bytes");
+    let downloadTried = false;
+    try{
+      // BOM so Excel opens it as UTF-8 and does not mangle a non-ASCII name.
+      const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8;"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = name; a.style.display = "none";
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 4000);
+      downloadTried = true;
+    }catch(e){ console.warn("[Get-Rescue] GST export: Blob download failed, using the copy box only", e); }
+    showGstCsvBox(csv, rows.length, name, downloadTried);
+  }catch(e){
+    console.warn("[Get-Rescue] GST export failed", e);
+    toast((e&&e.message)||"Could not build the GST export","err");
+  }finally{ btn.disabled = false; btn.innerHTML = restore; }
+}
+function showGstCsvBox(csv, count, name, downloadTried){
+  const box = $("gstExportBox");
+  if(!box) return;
+  box.hidden = false;
+  const note = downloadTried
+    ? " · the download should have started; if nothing happened, copy the text below."
+    : " · the browser blocked the download, so copy the text below.";
+  box.innerHTML =
+    '<div class="sec-head" style="margin-top:0"><h2>GST Export</h2><span class="spacer"></span>' +
+    '<button type="button" id="gstCopyBtn" class="btn ghost sm">Copy CSV</button>' +
+    '<button type="button" id="gstCloseBtn" class="btn ghost sm">Close</button></div>' +
+    '<div class="hint" style="margin-bottom:8px">' + count + " closed ticket(s) · " + esc(name) + note + '</div>' +
+    '<textarea id="gstCsvText" readonly style="width:100%;height:220px;font-family:var(--f-mono);font-size:11px;border:1.5px solid var(--line-strong);border-radius:10px;padding:10px;white-space:pre"></textarea>';
+  $("gstCsvText").value = csv;
+  $("gstCopyBtn").onclick = function(){
+    const ta = $("gstCsvText"); ta.select(); ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try{ ok = document.execCommand("copy"); }catch(e){ ok = false; }
+    toast(ok ? "CSV copied" : "Press Ctrl+C to copy the selected text", ok ? "ok" : "err");
+  };
+  $("gstCloseBtn").onclick = function(){ box.hidden = true; box.innerHTML = ""; };
+}
+async function handleCallCenterHandoff(){
+  const fn = resolve("getQueryParams");
+  if(!fn) return;
+  let p = {};
+  try{ p = (await fn()) || {}; }
+  catch(e){ console.warn("[Get-Rescue] call-centre handoff: getQueryParams() threw (non-blocking)", e); return; }
+  const openId  = String(p.ccOpenTicket||"").trim();
+  const wantNew = String(p.ccNewTicket||"").trim();
+  const phone   = String(p.ccPhone||"").replace(/D/g,"").slice(-10);
+  if(openId){
+    console.log("[Get-Rescue] call-centre handoff: opening ticket", openId);
+    const rec = await apiGetById(openId);
+    if(rec){ openTicketOrClosure(rec); }
+    else { toast("Couldn't open that ticket from the call pop — it may have been deleted","err"); }
+    return;
+  }
+  if(wantNew){
+    console.log("[Get-Rescue] call-centre handoff: new ticket for caller", phone||"(no number)");
+    newTicket();
+    if(phone){
+      // Both names written, the same pair every other create path in this file
+      // sets: Phone_Number1 is the field the form shows, CONFIG.phoneField is the
+      // one Agent_Ticket_Report actually searches on.
+      state.record.Phone_Number1 = phone;
+      state.record[CONFIG.phoneField] = phone;
+      renderWizard();
+    }
+  }
+}
 async function boot(){
   // LOGIN_EMAIL (2026-08-03): needed to attribute new Remarks entries to
   // whoever actually added them (see wireField's "remarks" branch) — this
@@ -12941,7 +13146,13 @@ async function boot(){
   $("vendorAcctBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // Vendor Accounting Level 2 (2026-09-04) — same gate as Level 1 above.
   $("accountsPayableBtn").style.display = IS_OPS_MANAGER ? "" : "none";
+  // GST export (2026-09-25) — same gate as the three ops buttons above.
+  $("gstExportBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   loadDashboard();
+  // Last, so it can take over the view that loadDashboard() just showed. Its own
+  // first line already ran synchronously above, so nothing here races it.
+  try{ await handleCallCenterHandoff(); }
+  catch(e){ console.warn("[Get-Rescue] call-centre handoff failed (non-blocking — the dashboard is unaffected)", e); }
 }
 // No more demo-data fallback (2026-08-04, per user request) — every detail
 // now comes from the live Zoho API only. If the Creator SDK never becomes

@@ -19,7 +19,11 @@ string recordRingingCall(string callerID, string ucid, string type, string agent
 		if(last10.length() < 6)
 		{
 			info "  NO USABLE NUMBER - nothing recorded.";
-			return "{\"code\": \"SUCCESS\", \"result\": \"NO_PHONE\", \"created\": false, \"message\": \"No usable caller number arrived, so no ringing row was recorded. If callerID reads like an unsubstituted placeholder such as $CallerID$, the calling system opened the URL without replacing its own token.\"}";
+			echoCaller = ifnull(callerID,"(null)").toString().replaceAll("\"","'");
+			echoUcid = ifnull(ucid,"(null)").toString().replaceAll("\"","'");
+			echoType = ifnull(type,"(null)").toString().replaceAll("\"","'");
+			echoAgent = ifnull(agentID,"(null)").toString().replaceAll("\"","'");
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_PHONE\", \"created\": false, \"received_callerID\": \"" + echoCaller + "\", \"received_ucid\": \"" + echoUcid + "\", \"received_type\": \"" + echoType + "\", \"received_agentID\": \"" + echoAgent + "\", \"digits_found\": \"" + digitsOnly + "\", \"message\": \"No usable caller number arrived, so no ringing row was recorded. The received_* fields above show exactly what each parameter arrived as. (null) means the parameter never reached this function at all - it is either not registered on the Custom API setup screen, or the caller did not send it. A literal placeholder such as $CallerID$ means the calling system opened the URL without substituting its own token.\"}";
 		}
 		resolvedUcid = ifnull(ucid,"").trim();
 		if(resolvedUcid.contains("$"))

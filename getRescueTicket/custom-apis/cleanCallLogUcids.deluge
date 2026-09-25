@@ -1,0 +1,67 @@
+string cleanCallLogUcids(string commit)
+{
+	try
+	{
+		doWrite = false;
+		commitText = ifnull(commit,"").trim().toLowerCase();
+		if(commitText == "yes")
+		{
+			doWrite = true;
+		}
+		info "========== CALL_LOG UCID CLEANUP ==========";
+		info "  time  = " + zoho.currenttime;
+		if(doWrite)
+		{
+			info "  MODE  = COMMIT - rows WILL be updated.";
+		}
+		else
+		{
+			info "  MODE  = DRY RUN - nothing will be written. Pass commit=yes to apply.";
+		}
+		checkedCount = 0;
+		dirtyCount = 0;
+		fixedCount = 0;
+		emptyCount = 0;
+		for each logRow in Call_Log[ID != 0]
+		{
+			checkedCount = checkedCount + 1;
+			rawUcid = ifnull(logRow.UCID,"").toString().trim();
+			if(rawUcid != "")
+			{
+				cleanUcid = rawUcid.replaceAll("[^0-9]","");
+				if(cleanUcid != rawUcid)
+				{
+					dirtyCount = dirtyCount + 1;
+					if(cleanUcid == "")
+					{
+						emptyCount = emptyCount + 1;
+						info "  SKIP Call_Log " + logRow.ID + ": [" + rawUcid + "] has no digits at all - left untouched rather than blanked.";
+					}
+					else
+					{
+						info "  Call_Log " + logRow.ID + ": [" + rawUcid + "] -> [" + cleanUcid + "]";
+						if(doWrite)
+						{
+							logRow.UCID = cleanUcid;
+							fixedCount = fixedCount + 1;
+						}
+					}
+				}
+			}
+		}
+		info "  checked " + checkedCount + " row(s), " + dirtyCount + " carried non-digit characters, " + fixedCount + " updated, " + emptyCount + " skipped as digit-free.";
+		info "===========================================";
+		modeText = "DRY_RUN";
+		if(doWrite)
+		{
+			modeText = "COMMITTED";
+		}
+		return "{\"code\": \"SUCCESS\", \"mode\": \"" + modeText + "\", \"checked\": " + checkedCount + ", \"dirty\": " + dirtyCount + ", \"updated\": " + fixedCount + ", \"skipped_no_digits\": " + emptyCount + ", \"message\": \"A UCID from Ozonetel is always digits only, so every non-digit character is parsing residue. Dry run lists every change in the execution log without writing; pass commit=yes to apply them.\"}";
+	}
+	catch (e)
+	{
+		info "cleanCallLogUcids threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"" + e.toString().replaceAll("\"","'") + "\"}";
+	}
+	return "{\"code\": \"ERROR\", \"message\": \"The script finished without reaching any known outcome.\"}";
+}

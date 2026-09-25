@@ -161,6 +161,54 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 					valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
 				}
 			}
+			/* Repeat strip, added 2026-09-25 — user-reported live: UCID stored as
+			   :"93361501267909269 across 55 Call_Log rows.
+			
+			   The passes above each run ONCE, in a fixed order: leading ":", leading "=",
+			   trailing "}", trailing "]", leading quote, trailing quote. A value arriving
+			   with two junk characters at the front loses the colon on the first pass, but
+			   the quote pass has already been reached by then and never runs again, so the
+			   remaining quote is stored. Order-dependence was the whole bug.
+			
+			   This repeats the strip until nothing junk is left at either end, six passes
+			   being far more than any real payload needs. Deluge has no while loop (it is a
+			   compile error, confirmed live), hence the fixed pass list.
+			
+			   Purely additive: it runs AFTER the existing chain, so a value that chain
+			   already cleaned begins with a digit or a letter, matches nothing here, and is
+			   left exactly as it is today. No real value in this payload — a UCID, a
+			   timestamp, an agent name, a recording URL — legitimately starts or ends with
+			   any of these characters. */
+			dqCh = "\"";
+			bsCh = "\\";
+			leadJunk = ":=," + dqCh + "'" + bsCh + " ";
+			trailJunk = "}]," + dqCh + "'" + bsCh + " ";
+			stripPasses = List();
+			stripPasses.add(1);
+			stripPasses.add(2);
+			stripPasses.add(3);
+			stripPasses.add(4);
+			stripPasses.add(5);
+			stripPasses.add(6);
+			for each stripPass in stripPasses
+			{
+				if(valueFound != "")
+				{
+					leadCh = valueFound.subText(0,1);
+					if(leadJunk.contains(leadCh))
+					{
+						valueFound = valueFound.subText(1).trim();
+					}
+				}
+				if(valueFound != "")
+				{
+					tailCh = valueFound.subText(valueFound.length() - 1);
+					if(trailJunk.contains(tailCh))
+					{
+						valueFound = valueFound.subText(0,valueFound.length() - 1).trim();
+					}
+				}
+			}
 			if(valueFound != "")
 			{
 				extracted.put(wantedKey,valueFound);

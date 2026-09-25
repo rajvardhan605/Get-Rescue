@@ -320,7 +320,102 @@ function computeStats(tickets, range){
   }).filter(function(v){ return v!=null && v>=0; });
   const avgAssignMins = withBoth.length ? Math.round(withBoth.reduce(function(a,b){ return a+b; },0)/withBoth.length/60000) : null;
 
-  return { newCount, completed, cancelled, notConverted, revRSR, revTOW, avgAssignMins };
+  /* SLA adherence, 2026-09-25 — ETA sheet item 25: "response time (Case Created
+     to RSP Accepted), service time (Accepted to Completed)". Every timestamp this
+     needs was already being captured; nothing new is stored.
+
+     Accept time is split RSR/TOW the same way every other paired field in this
+     project is, and falls back to the other branch before giving up — so a ticket
+     whose Service_Type changed after acceptance still reports its real accept time
+     rather than dropping out of the average.
+
+     Measured over completedList, the same set the Completed tile and the revenue
+     figures use, so all four can never disagree about which tickets counted. A
+     ticket missing either stamp is excluded rather than counted as zero, and a
+     negative span (clock skew, or a stamp edited by hand) is dropped for the same
+     reason — one bad row must not drag the average. Null when nothing qualifies,
+     which renders as an em dash rather than a misleading 0. */
+  const acceptTimeOf = function(r){
+    const svc = String(r[CONFIG.serviceTypeField]||"").toUpperCase();
+    const primary = svc==="TOW" ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
+    return primary || r.Service_Acceptance || r.Service_Acceptance_For_Tow || "";
+  };
+  const avgSpanMins = function(list, fromOf, toOf){
+    const spans = list.map(function(r){
+      const a = parseAnyDateTime(fromOf(r)), b = parseAnyDateTime(toOf(r));
+      if(!a || !b) return null;
+      const ms = b.getTime() - a.getTime();
+      return ms >= 0 ? ms : null;
+    }).filter(function(v){ return v != null; });
+    if(!spans.length) return null;
+    return Math.round(spans.reduce(function(x,y){ return x+y; }, 0) / spans.length / 60000);
+  };
+  /* Collections, 2026-09-25 — ETA sheet item 26: "Financial reports: Revenue
+     tracking, payment collections, outstanding". Revenue already existed above;
+     these are the other two.
+
+     Measured over completedList, the same basis revenue already uses, so every
+     financial figure on this page agrees about which tickets counted. Collections
+     on a ticket still in flight are deliberately not counted here: a booking fee
+     taken today against a job finishing next week would otherwise make Collected
+     exceed Billed for the period and Outstanding go negative.
+
+     The two fee stages carry separate settlement flags, and each is only counted
+     once its own flag says the money actually arrived:
+       Booking fee   -> Payment_Status  = "PAID"  (the BF Payment Status field)
+       Remaining fee -> Payment_received = "Yes"   (written only by the payment step)
+     Billed is Total_Service_Fee, which is the agreed price, not the sum of the two
+     parts - they can differ where a fee was revised after the booking fee was
+     taken, and the agreed price is what the customer owes.
+
+     Outstanding is floored at zero: an overpayment is a refund question, not a
+     negative receivable, and showing it as one would misstate the position. */
+  const bookingCollected = completedList.reduce(function(acc,r){
+    return acc + (String(r.Payment_Status||"").trim().toUpperCase()==="PAID" ? (Number(r.Booking_Fee)||0) : 0);
+  }, 0);
+  const remainingCollected = completedList.reduce(function(acc,r){
+    return acc + (String(r.Payment_received||"").trim()==="Yes" ? (Number(r.Remaining_Fee)||0) : 0);
+  }, 0);
+  const collected = bookingCollected + remainingCollected;
+
+  /* Collections by payment mode, 2026-09-25 — ETA sheet item 31: "Payment Modes
+     report: PG, UPI, Cash, Direct".
+
+     The mode names used are the real Payment_Method / Payment_Method_Final dropdown
+     options, not the sheet's shorthand: "PG" is "Payment Gateway" here, and there
+     is no "Direct" option on either field. Anything that does not match a known
+     option is bucketed as Other rather than dropped, so the breakdown can never
+     quietly lose money.
+
+     Each fee stage is attributed to ITS OWN mode field — a booking fee paid by
+     gateway and a remaining fee paid in cash on the same ticket land in different
+     buckets, which is what actually happened. Driven by the same two settlement
+     flags the Collected tile uses, so the buckets sum to that tile exactly rather
+     than being a second, independently-derived figure that could disagree. */
+  const PAY_MODES = ["Payment Gateway","Cash","UPI","Card","Net Banking"];
+  const modeTotals = { Other: 0 };
+  PAY_MODES.forEach(function(m){ modeTotals[m] = 0; });
+  const addToMode = function(rawMode, amount){
+    const amt = Number(amount)||0;
+    if(!(amt > 0)) return;
+    const m = String(rawMode||"").trim();
+    modeTotals[PAY_MODES.indexOf(m)>=0 ? m : "Other"] += amt;
+  };
+  completedList.forEach(function(r){
+    if(String(r.Payment_Status||"").trim().toUpperCase()==="PAID") addToMode(r.Payment_Method, r.Booking_Fee);
+    if(String(r.Payment_received||"").trim()==="Yes") addToMode(r.Payment_Method_Final, r.Remaining_Fee);
+  });
+  const modeRows = Object.keys(modeTotals)
+    .filter(function(k){ return modeTotals[k] > 0; })
+    .sort(function(a,b){ return modeTotals[b] - modeTotals[a]; })
+    .map(function(k){ return { mode: k, amount: modeTotals[k] }; });
+  const billed = sumFee(completedList);
+  const outstanding = Math.max(0, billed - collected);
+
+  const slaResponseMins = avgSpanMins(completedList, function(r){ return r.Added_Time; }, acceptTimeOf);
+  const slaServiceMins  = avgSpanMins(completedList, acceptTimeOf, function(r){ return r.RSP_Completion_Time || completionTime(r); });
+
+  return { newCount, completed, cancelled, notConverted, revRSR, revTOW, avgAssignMins, slaResponseMins, slaServiceMins, billed, collected, outstanding, modeRows };
 }
 
 const ICON_TICKET='<svg viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
@@ -333,6 +428,15 @@ function statCard(icon, value, label, na){
   return '<div class="card'+(na?" na":"")+'"><div class="ic">'+icon+'</div><div class="num'+(na?" na":"")+'">'+esc(value)+'</div><div class="lbl">'+esc(label)+'</div></div>';
 }
 function money(v){ return "₹"+Math.round(v).toLocaleString("en-IN"); }
+/* Minutes as "1h 25m" once past an hour — a service time of "312 min" is a number
+   the reader has to do arithmetic on before it means anything. Under an hour it
+   stays in plain minutes, which is how response times are actually discussed. */
+function hoursMins(mins){
+  const m = Math.max(0, Math.round(Number(mins)||0));
+  if(m < 60) return m+" min";
+  const h = Math.floor(m/60), rem = m%60;
+  return rem ? (h+"h "+rem+"m") : (h+"h");
+}
 
 function render(stats, callStats){
   const NA = "Not available";
@@ -363,6 +467,23 @@ function render(stats, callStats){
       ${statCard(ICON_MONEY, money(stats.revRSR), "On-Demand Revgen (RSR)")}
       ${statCard(ICON_MONEY, money(stats.revTOW), "On-Demand Revgen (TOW)")}
       ${stats.avgAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Time (Creation to Assignment)") : statCard(ICON_CLOCK, stats.avgAssignMins+" min", "Avg Time (Creation to Assignment)")}
+    </div>
+    <div class="section-title">Collections</div>
+    <div class="grid">
+      ${statCard(ICON_MONEY, money(stats.billed), "Total Billed")}
+      ${statCard(ICON_MONEY, money(stats.collected), "Collected")}
+      ${statCard(ICON_MONEY, money(stats.outstanding), "Outstanding")}
+    </div>
+    <div class="section-title">Collections by Payment Mode</div>
+    <div class="grid">
+      ${stats.modeRows.length
+        ? stats.modeRows.map(function(m){ return statCard(ICON_MONEY, money(m.amount), m.mode); }).join("")
+        : statCard(ICON_MONEY, money(0), "No collections in this period")}
+    </div>
+    <div class="section-title">SLA Adherence</div>
+    <div class="grid">
+      ${stats.slaResponseMins==null ? statCard(ICON_CLOCK, "—", "Avg Response Time (Created → Accepted)") : statCard(ICON_CLOCK, hoursMins(stats.slaResponseMins), "Avg Response Time (Created → Accepted)")}
+      ${stats.slaServiceMins==null ? statCard(ICON_CLOCK, "—", "Avg Service Time (Accepted → Completed)") : statCard(ICON_CLOCK, hoursMins(stats.slaServiceMins), "Avg Service Time (Accepted → Completed)")}
     </div>
   `;
 }
