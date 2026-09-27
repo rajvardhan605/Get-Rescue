@@ -6460,8 +6460,11 @@ async function saveVendorAcctApproval(r, vendorRaw){
      - Builds a REAL Zoho Books Bill + Vendor Payment (not Creator-fields-
        only) — bigger scope, new territory (Bills/Vendor Payments, not the
        Invoices already used for on-demand customer billing).
-     - GST is explicitly OUT OF SCOPE this round — no GST_Payable/GST_Paid
-       fields, no UI for them. Vendor_GST_Number stays unwired.
+     - GST was OUT OF SCOPE in that round — SUPERSEDED 2026-09-26, when the
+       user asked for the PDF's own "GST payable / GST paid" Level 2 rows to be
+       built. GST_Payable and GST_Paid are now written per case and
+       Vendor_GST_Number is wired as the applicability test. See
+       vendorGstApplicable()/vendorGstPayable() for the rules.
      - Batch payment model: Payment Date + UTR No are entered ONCE and
        shared across every selected case (one real bank transaction can
        cover several cases) — but each case's own Vendor_Amount_Paid is
@@ -6648,6 +6651,8 @@ function apVendorRaw(vendorId){
 function renderAccountsPayableList(){
   const vendorRaw = apVendorRaw($("apVendor").value);
   const tdsPercent = Number(vendorRaw && vendorRaw.TDS_Percentage)||0;
+  // GST applies only to a vendor with a GSTIN on file — see vendorGstApplicable().
+  const apGstApplicable = vendorGstApplicable(vendorRaw);
   if(!AP_CASES.length){
     $("apResults").innerHTML = `<div class="rlist-empty">No payable cases found for this vendor and date range</div>`;
     return;
@@ -6703,6 +6708,8 @@ function renderAccountsPayableList(){
       <td class="num" id="apBal_${id}">${money(r.Vendor_Balance_Before_TDS)}</td>
       <td class="num" id="apPayable_${id}">${money(finalPayable)}</td>
       <td class="num" id="apPaid_${id}">—</td>
+      <td class="num" id="apGstPayable_${id}">${money(vendorGstPayable(netFee, apGstApplicable))}</td>
+      <td class="num" id="apGstPaid_${id}">—</td>
       <td><input type="text" class="ap-comments" data-id="${id}" value="${esc(r.Ops_Approval_Comments||"")}" placeholder="—"></td>
       <td>${esc(apPaymentStatusText(r))}</td>
     </tr>`;
@@ -6720,6 +6727,7 @@ function renderAccountsPayableList(){
           <th class="num">Kms Fee</th><th class="num">Gross Fee</th><th class="num">Extras</th><th class="num">Net Fee</th>
           <th class="num">TDS Rate</th><th class="num">TDS Amount</th><th class="num">Cash Collected</th>
           <th class="num">Balance</th><th class="num">Final Payable</th><th class="num">Amount Paid</th>
+          <th class="num">GST Payable</th><th class="num">GST Paid</th>
           <th>Comments</th><th>Payment Status</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -6730,6 +6738,12 @@ function renderAccountsPayableList(){
     <div class="va-fee-box" id="apTotals" style="margin-top:14px"></div>
     <div class="fld"><label>Transaction Date</label><input type="date" id="apPaymentDate"></div>
     <div class="fld"><label>UTR No.</label><input type="text" id="apUtrNo" placeholder="Bank transaction reference"></div>
+    <!-- GST Paid (2026-09-26) — "Accounts" per the Vendor Accounting PDF, so it is
+         typed, not calculated. Left blank it defaults to the full GST Payable for
+         the batch, which is the normal case; enter a figure only when what was
+         actually remitted differs. Deliberately NOT part of the Record Payment
+         readiness check — a vendor with no GSTIN has nothing to enter here. -->
+    <div class="fld"><label>GST Paid</label><input type="number" id="apGstPaid" placeholder="Leave blank to record the full GST Payable"></div>
     <button class="btn primary" id="apRecordBtn" type="button" disabled>Record Payment</button>
     <div class="va-hint" style="margin-top:6px">Both Transaction Date and UTR No. are required before a payment can be recorded, and both apply to every selected case as one entry.</div>
   `;
@@ -6803,6 +6817,9 @@ function renderAccountsPayableList(){
   };
   $("apPaymentDate").oninput=recalcAccountsPayableTotals;
   $("apUtrNo").oninput=recalcAccountsPayableTotals;
+  // GST Paid recalculates the same way, so the per-case column tracks whatever
+  // figure Accounts types rather than only updating on save (2026-09-26).
+  $("apGstPaid").oninput=recalcAccountsPayableTotals;
   $("apRecordBtn").onclick=recordVendorPayment;
   recalcAccountsPayableTotals();
 }
@@ -6829,21 +6846,23 @@ function renderAccountsPayableList(){
    Deliberately no Deluge change: recordVendorPayment.deluge is untouched, so the
    live Zoho Books integration - the part that has never been tested against the
    real API - carries no new risk from this fix. */
-function allocateBatchTds(netFees, tdsPercent){
+/* allocateProportional() — extracted from allocateBatchTds() 2026-09-26, when
+   vendor GST Paid needed the identical split. One allocator, two callers: a second
+   copy of largest-remainder logic is exactly how two money columns end up
+   disagreeing by a paisa and nobody can say which is right.
+
+   Splits `total` across `weights` so the parts sum to it EXACTLY. Each share is
+   floored to paise first (floors can only undershoot, never overshoot), then the
+   leftover paise go one at a time to the largest fractional claims. */
+function allocateProportional(weights, total){
   const r2=(n)=>Math.round(n*100)/100;
-  const rate=Number(tdsPercent)||0;
-  const fees=netFees.map(function(n){ return Number(n)||0; });
-  const total=fees.reduce(function(a,b){ return a+b; },0);
-  // Identical arithmetic to recordVendorPayment.deluge's own tdsAmount line.
-  const batchTds=r2(total*rate/100);
-  if(!(total>0) || !(batchTds>0)) return { batchTds:0, perCase:fees.map(function(){ return 0; }) };
-  // Exact proportional share, floored to paise; the floors always sum to at
-  // most the batch figure, never more.
-  const exact=fees.map(function(f){ return batchTds*f/total; });
+  const w=weights.map(function(n){ return Number(n)||0; });
+  const sum=w.reduce(function(a,b){ return a+b; },0);
+  const amount=r2(Number(total)||0);
+  if(!(sum>0) || !(amount>0)) return w.map(function(){ return 0; });
+  const exact=w.map(function(x){ return amount*x/sum; });
   const out=exact.map(function(v){ return Math.floor(v*100)/100; });
-  let remainingPaise=Math.round((batchTds - out.reduce(function(a,b){ return a+b; },0))*100);
-  // Largest remainder first - the standard fair way to distribute the leftover
-  // paise, so the case with the biggest fractional claim gets the first one.
+  let remainingPaise=Math.round((amount - out.reduce(function(a,b){ return a+b; },0))*100);
   const order=exact.map(function(v,i){ return { i:i, frac:v-Math.floor(v*100)/100 }; })
     .sort(function(a,b){ return b.frac-a.frac; });
   let k=0;
@@ -6852,7 +6871,38 @@ function allocateBatchTds(netFees, tdsPercent){
     out[target]=r2(out[target]+0.01);
     remainingPaise--; k++;
   }
-  return { batchTds:batchTds, perCase:out };
+  return out;
+}
+/* Vendor GST — 2026-09-26, "Zoho - Vendor Accounting.pdf" Level 2: "GST payable:
+   Calculated (if Applicable from Vendor Table)", worked example 1700 x 0.18 = 306.
+
+   Applicability is read as "this vendor has a GSTIN on file". Vendor_GST_Number
+   already exists on Vendors_Report (created 2026-08-17, unwired until now), and a
+   vendor who is GST-registered is precisely the vendor who can charge it — so no
+   separate yes/no flag was added that someone would then have to keep in step with
+   the GSTIN itself. A blank GSTIN gives GST Payable of zero, not a blank column,
+   so the figure always reconciles.
+
+   18% is the rate for roadside assistance, the same rate the customer-side
+   invoicing already applies. Unlike TDS this is NOT per-vendor: GST is set by the
+   service category, not negotiated per supplier. */
+const VENDOR_GST_RATE = 18;
+function vendorGstApplicable(vendorRaw){
+  return String((vendorRaw && vendorRaw.Vendor_GST_Number) || "").trim() !== "";
+}
+function vendorGstPayable(netFee, applicable){
+  if(!applicable) return 0;
+  return Math.round((Number(netFee)||0) * VENDOR_GST_RATE) / 100;
+}
+function allocateBatchTds(netFees, tdsPercent){
+  const r2=(n)=>Math.round(n*100)/100;
+  const rate=Number(tdsPercent)||0;
+  const fees=netFees.map(function(n){ return Number(n)||0; });
+  const total=fees.reduce(function(a,b){ return a+b; },0);
+  // Identical arithmetic to recordVendorPayment.deluge's own tdsAmount line.
+  const batchTds=r2(total*rate/100);
+  if(!(total>0) || !(batchTds>0)) return { batchTds:0, perCase:fees.map(function(){ return 0; }) };
+  return { batchTds:batchTds, perCase:allocateProportional(fees, batchTds) };
 }
 function apSelectedCasesWithFees(){
   const vendorRaw = apVendorRaw($("apVendor").value);
@@ -6864,11 +6914,15 @@ function apSelectedCasesWithFees(){
   // remain individually meaningful and, because the TDS shares sum exactly to
   // the batch total, their sum also matches what the Deluge pays.
   const alloc = allocateBatchTds(selected.map(function(r){ return Number(r.Vendor_Net_Fee)||0; }), tdsPercent);
+  // GST Payable per case (2026-09-26). Not deducted from Final Payable: it is a
+  // liability the vendor invoices on top, not a withholding like TDS.
+  const gstApplicable = vendorGstApplicable(vendorRaw);
   return selected.map(function(r, i){
     const netFee=Number(r.Vendor_Net_Fee)||0, cashCollected=Number(r.Cash_Collected)||0;
     const tdsAmount=alloc.perCase[i]||0;
     const finalPayable=Math.round((netFee-tdsAmount-cashCollected)*100)/100;
-    return { r, netFee, cashCollected, tdsAmount, finalPayable };
+    const gstPayable=vendorGstPayable(netFee, gstApplicable);
+    return { r, netFee, cashCollected, tdsAmount, finalPayable, gstPayable };
   });
 }
 // Shared row-text builder so the initial render and the per-selection refresh
@@ -6930,13 +6984,32 @@ function recalcAccountsPayableTotals(){
     }
   });
   const sum=(key)=>selected.reduce(function(acc,x){ return acc+x[key]; },0);
-  const totals = { netFee:sum("netFee"), tdsAmount:sum("tdsAmount"), cashCollected:sum("cashCollected"), finalPayable:sum("finalPayable") };
+  const totals = { netFee:sum("netFee"), tdsAmount:sum("tdsAmount"), cashCollected:sum("cashCollected"), finalPayable:sum("finalPayable"), gstPayable:sum("gstPayable") };
+  /* GST Paid cells (2026-09-26). Same rule as Amount Paid just above: blank until a
+     Transaction Date is entered, then it shows this case's share of whatever is
+     actually being remitted. The share is allocated proportionally to each case's
+     own GST Payable through allocateProportional(), so the column sums to the
+     figure typed in the GST Paid box exactly — no rounding drift, and no case
+     silently carrying someone else's paisa. A case already settled shows its own
+     recorded GST_Paid instead, which is the real historical figure. */
+  const gstPaidInput = $("apGstPaid");
+  const gstPaidTyped = gstPaidInput && String(gstPaidInput.value).trim()!=="" ? (Number(gstPaidInput.value)||0) : null;
+  const gstPaidTotal = gstPaidTyped==null ? totals.gstPayable : gstPaidTyped;
+  const gstShares = allocateProportional(selected.map(function(x){ return x.gstPayable; }), gstPaidTotal);
+  selected.forEach(function(x, i){
+    const cell = $("apGstPaid_"+x.r.ID);
+    if(!cell) return;
+    const already = Number(x.r.GST_Paid)||0;
+    if(already>0) cell.textContent = "₹"+already.toFixed(2);
+    else cell.textContent = txnDateEntered ? ("₹"+(gstShares[i]||0).toFixed(2)) : "—";
+  });
   $("apTotals").innerHTML = selected.length ? `
     <div class="va-fee-row"><span>Cases selected</span><span>${selected.length}</span></div>
     <div class="va-fee-row"><span>Total Net Fee</span><span>₹${totals.netFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Total TDS</span><span>₹${totals.tdsAmount.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Total Cash Collected</span><span>₹${totals.cashCollected.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Total Final Payable</span><span>₹${totals.finalPayable.toFixed(2)}</span></div>
+    <div class="va-fee-row"><span>Total GST Payable</span><span>₹${totals.gstPayable.toFixed(2)}</span></div>
   ` : `<div class="va-hint">Select at least one case to see totals</div>`;
   const ready = selected.length>0 && !!($("apPaymentDate").value) && !!($("apUtrNo").value.trim());
   $("apRecordBtn").disabled=!ready;
@@ -6998,6 +7071,15 @@ async function recordVendorPayment(){
     if(data.books_vendor_id && !vendorRaw.Zoho_Books_Vendor_ID){
       apiUpdateReport(CONFIG.optionReports.vendors.report, vendorId, { Zoho_Books_Vendor_ID: String(data.books_vendor_id) }).catch(function(e){ console.warn("[Get-Rescue] could not cache Zoho_Books_Vendor_ID", e); });
     }
+    /* One allocation for the whole batch, computed before the loop so every case
+       is written from the same split — recomputing inside the loop would risk the
+       shares not summing to what was actually paid. */
+    const gstPaidInputEl = $("apGstPaid");
+    const gstPaidTypedVal = gstPaidInputEl && String(gstPaidInputEl.value).trim()!=="" ? (Number(gstPaidInputEl.value)||0) : null;
+    const gstPayableTotal = selected.reduce(function(a,x){ return a+(x.gstPayable||0); }, 0);
+    const gstPaidShares = allocateProportional(selected.map(function(x){ return x.gstPayable; }),
+                                               gstPaidTypedVal==null ? gstPayableTotal : gstPaidTypedVal);
+    console.log("[Get-Rescue] recordVendorPayment: GST payable total", gstPayableTotal, "| GST paid total", (gstPaidTypedVal==null?gstPayableTotal:gstPaidTypedVal), "| per-case shares", gstPaidShares);
     for(const x of selected){
       await apiUpdate(x.r.ID, {
         // Extras / Vendor_Net_Fee / Vendor_Balance_Before_TDS written back
@@ -7013,6 +7095,12 @@ async function recordVendorPayment(){
         Vendor_Balance_Before_TDS: Math.round((x.netFee-x.cashCollected)*100)/100,
         TDS_Amount: x.tdsAmount,
         Final_Payable: x.finalPayable,
+        // Vendor GST (2026-09-26) — GST_Payable is calculated, GST_Paid is what
+        // Accounts actually remitted, split across the batch the same way TDS is.
+        // Both written even when zero, so a vendor without a GSTIN records an
+        // explicit nil rather than an empty field that reads as "not yet filled".
+        GST_Payable: x.gstPayable,
+        GST_Paid: gstPaidShares[selected.indexOf(x)]||0,
         Vendor_Amount_Paid: x.finalPayable,
         // Real bug fixed 2026-09-04, live-confirmed ("Enter a valid date
         // format for Vendor_Payment_Date"): a Zoho Creator Date field needs

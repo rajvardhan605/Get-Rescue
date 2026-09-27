@@ -81,6 +81,11 @@ img,svg{max-width:100%}
 .info-grid .full{grid-column:1/-1}
 .info-grid .k{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:2px}
 .info-grid .v{font-size:14px;font-weight:600;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.info-grid .tel-wrap{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.info-grid .tel-link{color:inherit;text-decoration:underline;word-break:break-word}
+.info-grid .tel-copy{border:1px solid var(--line-strong);background:var(--worktop);color:var(--muted);
+  font-family:var(--f-mono);font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  padding:3px 7px;border-radius:6px;cursor:pointer;flex:none}
 .nav-link{display:flex;align-items:center;justify-content:center;gap:9px;background:var(--info-soft);color:#1d5fc0;border-radius:11px;padding:12px;font-family:var(--f-disp);font-weight:800;font-size:14px;text-decoration:none;margin:6px 0}
 
 .photo-field{margin:12px 0}
@@ -535,9 +540,25 @@ function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,
 // Soft-test item #12 (2026-09-10) — see vendorTicket's own matching comment
 // (same geo: URI fix for Android, only branches for Android, iOS/desktop
 // keep the existing maps.google.com link untouched).
+/* REWRITTEN 2026-09-27 — the geo: branch above is gone.
+
+   geo: was introduced because a plain maps link was unreliable from a browser tab
+   on Android. Inside the Zoho Creator ANDROID APP it is worse than unreliable: that
+   WebView does not hand custom schemes to the OS at all, it tries to LOAD them, so
+   tapping Navigate produced "Webpage not available / ERR_UNKNOWN_URL_SCHEME". The
+   identical failure the tel: links hit on the same device, from the same cause.
+
+   https is the only scheme this WebView will carry. Android still opens the Maps
+   app from it, via the intent filter Google registers for google.com/maps URLs —
+   the hand-off happens on Google's side rather than needing the WebView to
+   understand a custom scheme.
+
+   Using the canonical ?api=1 form rather than the older maps.google.com/?q=: it is
+   the documented cross-platform URL, and it is the one Android's intent filter
+   matches most reliably. No platform branch any more — one URL that works on iOS,
+   Android and desktop, which is also one fewer thing to keep in step. */
 function buildNavUrl(lat, lon){
-  const isAndroid = /Android/i.test(navigator.userAgent||"");
-  return isAndroid ? ("geo:"+lat+","+lon+"?q="+lat+","+lon) : ("https://maps.google.com/?q="+lat+","+lon);
+  return "https://www.google.com/maps/search/?api=1&query="+lat+","+lon;
 }
 // Real bug fixed 2026-09-13 — same fix, same reason, as vendorTicket's own
 // matching function (repeats soft-test item #12, "NAVIGATE to Breakdown
@@ -591,11 +612,81 @@ async function loadVehicleNames(){
     }
   }catch(e){ console.warn("[Get-Rescue] loadVehicleNames failed", e); }
 }
+/* dialNumber() — 2026-09-27. See renderTicketInfo()'s own comment for why this is
+   a hidden iframe rather than a link or a top-frame navigation. The iframe is
+   removed shortly after; 1.5s is long enough for any platform that is going to act
+   on the scheme to have done so, and leaving it attached would stack one dead
+   iframe per tap. */
+function dialNumber(tel){
+  const num = String(tel||"").trim();
+  if(!num) return;
+  try{
+    const f = document.createElement("iframe");
+    f.style.display = "none";
+    f.src = "tel:" + num;
+    document.body.appendChild(f);
+    setTimeout(function(){ try{ f.remove(); }catch(e){} }, 1500);
+  }catch(e){
+    console.warn("[GR] dialNumber failed, the Copy button is the fallback", e);
+  }
+}
+function copyNumber(tel){
+  const num = String(tel||"").trim();
+  if(!num) return;
+  let ok = false;
+  try{
+    // A temporary textarea rather than navigator.clipboard: the clipboard API
+    // needs a secure context and a permission this WebView does not reliably
+    // grant, and execCommand still works where it does not.
+    const ta = document.createElement("textarea");
+    ta.value = num;
+    ta.setAttribute("readonly","");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, num.length);
+    ok = document.execCommand("copy");
+    ta.remove();
+  }catch(e){ ok = false; }
+  toast(ok ? ("Copied " + num) : num, ok ? "ok" : "");
+}
+function wireTelActions(){
+  document.querySelectorAll("#ticketInfo .tel-link").forEach(function(a){
+    a.onclick = function(ev){ ev.preventDefault(); dialNumber(a.getAttribute("data-tel")); };
+  });
+  document.querySelectorAll("#ticketInfo .tel-copy").forEach(function(b){
+    b.onclick = function(ev){ ev.preventDefault(); ev.stopPropagation(); copyNumber(b.getAttribute("data-tel")); };
+  });
+}
+/* vehicleDisplayFor() — fallback hardened 2026-09-27, client-reported: a vendor
+   saw "448881000000474018" where the vehicle name should be.
+
+   The lookup itself is unchanged. What changed is what happens when it misses: it
+   used to fall through to readVal() on the Vehicle field, which for a real Lookup
+   is the bare Vehicle Master record id. A 19-digit number tells a vendor nothing
+   and reads as corrupted data, which is worse than admitting the name is missing.
+
+   A value that is all digits and long enough to be a Zoho record id is therefore
+   suppressed. Anything else still shows: some tickets legitimately carry a typed
+   vehicle name rather than a Lookup, and a registration number like "KA01AB1234"
+   has letters in it, so neither is caught by this.
+
+   This is a display guard, not a fix for the miss. When it fires it also logs the
+   id, because on a phone there is no console to open after the fact and the log is
+   the only trace of which vehicle failed to resolve. */
 function vehicleDisplayFor(r){
   const raw=r?r[CONFIG.vehicleField]:null;
   const id=lookupId(raw);
   const name=id!=null ? VEHICLE_NAMES[String(id)] : null;
-  return name || readVal(r,CONFIG.vehicleField);
+  if(name) return name;
+  const fallback=String(readVal(r,CONFIG.vehicleField)||"").trim();
+  if(/^[0-9]{12,}$/.test(fallback)){
+    console.warn("[GR] vehicleDisplayFor: no name for vehicle id", fallback,
+      "— VEHICLE_NAMES holds", Object.keys(VEHICLE_NAMES).length, "entries.",
+      "Showing a placeholder rather than the raw record id.");
+    return "Vehicle details unavailable";
+  }
+  return fallback;
 }
 // Issue name lookup (2026-08-05) — see vendorTicket's own matching comment.
 let ISSUE_NAMES={};
@@ -898,19 +989,33 @@ function renderTicketInfo(){
   // WhatsApp sending) for the tel: URI, visible text unchanged.
   $("ticketInfo").innerHTML = rows.map(function(p){
     const valueHtml = (p[0]==="Phone")
-      /* target="_top" added 2026-09-25 — client-reported: tapping the number did
-         not open the dialler on Android. The tel: URI itself was already correct
-         (formatIndianPhone produces +91XXXXXXXXXX, no spaces). The problem is the
-         frame: this widget runs in a cross-origin iframe, and Android Chrome
-         blocks an iframe navigating itself to an external scheme, while iOS
-         intercepts tel: at the OS level regardless — which is exactly why it
-         worked on iPhone and not on Android. Navigating the TOP frame is allowed
-         with user activation, and the OS takes over before any page loads, so the
-         widget is never actually unloaded. */
-      ? `<a class="v" href="tel:${esc(formatIndianPhone(p[1]))}" target="_top" rel="noopener" style="color:inherit;text-decoration:underline">${esc(p[1])}</a>`
+      /* Dial handling, rewritten 2026-09-27.
+
+         The previous attempt used target="_top". That was wrong here: the Zoho
+         Creator Android app's WebView does not hand tel: to the OS, it tries to
+         LOAD it, so forcing a top-frame navigation replaced the whole app with
+         "Webpage not available / ERR_UNKNOWN_URL_SCHEME". Worse than doing nothing.
+
+         Now the tap goes through dialNumber(), which points a HIDDEN IFRAME at the
+         tel: URI. Where the platform handles the scheme (iOS, desktop, an Android
+         browser) the dialler opens exactly as before. Where it does not, the
+         failure is contained inside that throwaway iframe — the page the vendor is
+         looking at never navigates, so there is no error screen.
+
+         A Copy button sits beside the number because that containment cuts both
+         ways: on a WebView that refuses tel: entirely, nothing visible happens, and
+         the vendor needs a way to get the number into their dialler. Deliberately a
+         real button rather than guessing after a timeout whether the call started —
+         iOS shows a confirm dialog and leaves the page visible, so any such guess
+         fires a false "it did not work" on the platform where it did.
+
+         The href is kept on the anchor so a long-press still offers Call / Add to
+         contacts natively; the click handler prevents the default navigation. */
+      ? `<span class="v tel-wrap"><a class="tel-link" href="tel:${esc(formatIndianPhone(p[1]))}" data-tel="${esc(formatIndianPhone(p[1]))}">${esc(p[1])}</a></span>`
       : `<span class="v">${esc(p[1])}</span>`;
     return `<div><span class="k">${esc(p[0])}</span>${valueHtml}</div>`;
   }).join("");
+  wireTelActions();
 }
 
 function renderActionScreen(){
