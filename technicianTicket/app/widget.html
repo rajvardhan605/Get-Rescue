@@ -612,8 +612,182 @@ function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,
    the documented cross-platform URL, and it is the one Android's intent filter
    matches most reliably. No platform branch any more — one URL that works on iOS,
    Android and desktop, which is also one fewer thing to keep in step. */
+/* openMapUrl() + the delegated nav-link handler — 2026-09-27.
+
+   Third attempt at this, and the constraint is now fully mapped. The Zoho Creator
+   Android WebView refuses EVERY non-http scheme:
+     tel:    → ERR_UNKNOWN_URL_SCHEME
+     geo:    → ERR_UNKNOWN_URL_SCHEME
+     intent: → ERR_UNKNOWN_URL_SCHEME
+   The last one is not even ours. Our https URL loads correctly, and then Google’s
+   own mobile page redirects to intent://...package=com.google.android.apps.maps to
+   hand off to the Maps app. The WebView kills it there.
+
+   So the hand-off cannot happen inside this WebView, whatever URL we send. The only
+   remaining move is to get the page opened OUTSIDE it: window.open(url,"_blank")
+   asks the host to create a new window, which an Android WebView normally routes to
+   the system browser. Chrome then loads Google Maps and handles the intent://
+   redirect natively, because Chrome understands the scheme.
+
+   Taking the URL from a.href (the resolved property) rather than the href attribute
+   also sidesteps the &amp; problem for good: the property is already decoded, so an
+   ampersand survives intact no matter how the attribute was escaped.
+
+   Delegated from the document rather than wired per link: nav-links are rebuilt by
+   several different render paths, and one listener cannot go stale or be missed.
+   Capture phase so it runs before anything else can act on the click. */
+/* navigateParentURL() — added 2026-09-28, and this is the one avenue that is not a
+   WebView navigation at all.
+
+   Read straight out of the Creator widget SDK (widgetsdk-min.js v2.0):
+
+     navigateParentURL: function(a){
+       return a && a.action ? _.appSDK._sendEvent("PARENT_NAVIGATION", a, !0)
+                            : Promise.reject("Improper Configuration..!!")
+     }
+
+   It posts a PARENT_NAVIGATION event to the HOST. The Creator app handles that
+   natively, so it never becomes a URL load inside the WebView — which is what
+   defeated tel:, geo:, intent: and window.open alike. A native host can hand a URL
+   to the OS; a sandboxed WebView cannot.
+
+   The exact `action` vocabulary is not documented anywhere reachable — Zoho’s help
+   pages for it 404 — so rather than guess once and fail silently, the likely shapes
+   are tried in order and the first the host accepts wins. The SDK itself rejects
+   only when `action` is missing, so an unknown action is rejected by the host, and
+   a rejection here costs nothing but the next attempt. Every outcome is logged, so
+   one real tap tells us which shape this build of the app honours.
+
+   Falls through to window.open and then to a toast, so this is strictly additive:
+   the behaviour where things already worked (iPhone, desktop) is unchanged. */
+async function openViaParentNavigation(url){
+  const util = (window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL) || null;
+  if(!util || typeof util.navigateParentURL !== "function"){
+    console.warn("[GR] navigateParentURL is not available in this SDK build.");
+    return false;
+  }
+  const shapes = [
+    { action:"open", url:url, window:"new" },
+    { action:"open", url:url, window:"same" },
+    { action:"open", url:url }
+  ];
+  for(const cfg of shapes){
+    try{
+      const res = await util.navigateParentURL(cfg);
+      console.log("[GR] navigateParentURL ACCEPTED", JSON.stringify(cfg), "->", res);
+      return true;
+    }catch(e){
+      console.warn("[GR] navigateParentURL rejected", JSON.stringify(cfg), "->", e);
+    }
+  }
+  return false;
+}
+async function openMapUrl(url){
+  if(!url) return false;
+  // 1. Native host navigation — the only route that leaves the WebView.
+  try{ if(await openViaParentNavigation(url)) return true; }
+  catch(e){ console.warn("[GR] openMapUrl: parent navigation threw", e); }
+  // 2. A new window, which works on iPhone and desktop.
+  try{
+    const w = window.open(url, "_blank");
+    if(w) return true;
+  }catch(e){ console.warn("[GR] openMapUrl: window.open threw", e); }
+  // Deliberately NO fallback to window.location. Navigating this frame would
+  // replace the app with Google’s page, and on a device that cannot hand off it
+  // would land on the same error — having destroyed the vendor’s screen to do it.
+  console.warn("[GR] openMapUrl: every route refused for", url);
+  toast("Couldn't open the map — this device blocks it from inside the app");
+  return false;
+}
+document.addEventListener("click", function(ev){
+  const t = ev.target;
+  const a = (t && t.closest) ? t.closest("a.nav-link") : null;
+  if(!a) return;
+  const url = a.href || "";
+  if(url.indexOf("http") !== 0) return;   // leave anything non-http to the browser
+  ev.preventDefault();
+  openMapUrl(url).catch(function(e){ console.warn("[GR] openMapUrl failed", e); });
+}, true);
+/* Inline breakdown map — 2026-09-27, UNMOUNTED 2026-09-28 at the user’s request
+   ("hide google map inside the app; when click on the navigation button open
+   google map"). Nothing calls breakdownMapHtml() any more.
+
+   Kept rather than deleted: the tile maths is verified, the CSP entries for
+   tile.openstreetmap.org are already in the manifest, and re-mounting is one line
+   above any Navigate button. It was built because the Creator Android WebView
+   rejects tel:, geo: and intent: and blocks window.open, so the Maps hand-off is
+   not reachable from a widget there — that constraint has not changed, only the
+   decision about what to show instead.
+
+   Original note follows.
+
+   Inline breakdown map — 2026-09-27.
+
+   Built after four attempts to hand off to the Maps app all failed on Android: the
+   Zoho Creator WebView rejects tel:, geo: and intent: alike, and blocks
+   window.open. The hand-off is not reachable from a widget on that platform.
+
+   This needs no hand-off at all. OpenStreetMap raster tiles are plain <img> loads,
+   so nothing leaves the app and nothing can be blocked. Same code path on Android
+   and iPhone, so the two stop diverging.
+
+   Ported from getRescueTicket's own Ops Map (smLonToX/smLatToY and the tile grid),
+   cut down hard: one fixed pin, no pan, no zoom controls, no marker list. A vendor
+   needs to see where the breakdown is, not to browse a map.
+
+   Tiles come from tile.openstreetmap.org — free, no API key. The "© OpenStreetMap
+   contributors" credit is required by their licence and is not decoration. */
+const OSM_TILE_SIZE=256;
+function bmLonToX(lon,zoom){ return (lon+180)/360*OSM_TILE_SIZE*Math.pow(2,zoom); }
+function bmLatToY(lat,zoom){
+  const rad=lat*Math.PI/180;
+  return (1-Math.log(Math.tan(rad)+1/Math.cos(rad))/Math.PI)/2*OSM_TILE_SIZE*Math.pow(2,zoom);
+}
+function breakdownMapHtml(lat, lon){
+  const la=parseCoord(lat), lo=parseCoord(lon);
+  if(la==null || lo==null) return "";
+  // 15 shows roughly a neighbourhood — close enough to recognise the street,
+  // wide enough to place it against a landmark.
+  //
+  // The tile layer is a FIXED 768x256 block centred in the container, not sized to
+  // the container itself. The container is width:100%, and a widget cannot know how
+  // wide that is at render time — computing tiles for an assumed width left a bare
+  // strip on any phone wider than the guess. 768 covers every phone in portrait
+  // with room to spare, overflow:hidden crops the rest, and the pin sits at the
+  // centre of both boxes so it stays on the breakdown point whatever the crop.
+  const zoom=15, w=768, h=256;
+  const cx=bmLonToX(lo,zoom), cy=bmLatToY(la,zoom);
+  const originX=cx-w/2, originY=cy-h/2;
+  const maxTile=Math.pow(2,zoom);
+  const fx=Math.floor(originX/OSM_TILE_SIZE), lx=Math.floor((originX+w)/OSM_TILE_SIZE);
+  const fy=Math.floor(originY/OSM_TILE_SIZE), ly=Math.floor((originY+h)/OSM_TILE_SIZE);
+  let tiles="";
+  for(let ty=fy; ty<=ly; ty++){
+    if(ty<0 || ty>=maxTile) continue;   // Web Mercator does not wrap vertically
+    for(let tx=fx; tx<=lx; tx++){
+      const wx=((tx%maxTile)+maxTile)%maxTile;   // longitude does wrap
+      const sub="abc"[Math.abs(tx+ty)%3];
+      const left=Math.round(tx*OSM_TILE_SIZE-originX), top=Math.round(ty*OSM_TILE_SIZE-originY);
+      tiles+='<img src="https://'+sub+'.tile.openstreetmap.org/'+zoom+'/'+wx+'/'+ty+'.png" '+
+        'style="position:absolute;left:'+left+'px;top:'+top+'px;width:256px;height:256px;pointer-events:none" draggable="false" alt="">';
+    }
+  }
+  return '<div class="bmap" style="position:relative;width:100%;height:180px;overflow:hidden;border-radius:11px;border:1.5px solid var(--line-strong);margin:6px 0;background:var(--worktop)">'+
+    '<div style="position:absolute;left:50%;top:50%;width:768px;height:256px;margin:-128px 0 0 -384px">'+tiles+'</div>'+
+    '<div style="position:absolute;left:50%;top:50%;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;background:var(--signal);border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.45)"></div>'+
+    '<div style="position:absolute;right:4px;bottom:3px;font-size:9px;background:rgba(255,255,255,.8);padding:1px 5px;border-radius:3px;color:#444">© OpenStreetMap contributors</div>'+
+    '<div style="position:absolute;left:4px;bottom:3px;font-family:var(--f-mono);font-size:9.5px;background:rgba(255,255,255,.8);padding:1px 5px;border-radius:3px;color:#444">'+esc(la.toFixed(5)+", "+lo.toFixed(5))+'</div>'+
+  '</div>';
+}
 function buildNavUrl(lat, lon){
-  return "https://www.google.com/maps/search/?api=1&query="+lat+","+lon;
+  // PATH form, not a query string (2026-09-27). The ?api=1&query=... version was
+  // right by the documentation and wrong in practice: the URL goes into an href,
+  // esc() escapes the & to &amp; as correct HTML requires, and this WebView does
+  // not decode the entity back — so Google received a parameter called "amp;query"
+  // and ignored it. A URL with no & in it cannot be mis-escaped by anything.
+  // /maps/search/<lat>,<lon> drops a pin exactly as the old ?q= form did, and stays
+  // inside the google.com/maps path Android’s Maps intent filter matches.
+  return "https://www.google.com/maps/search/"+lat+","+lon;
 }
 // Real bug fixed 2026-09-13 — same fix, same reason, as vendorTicket's own
 // matching function (repeats soft-test item #12, "NAVIGATE to Breakdown

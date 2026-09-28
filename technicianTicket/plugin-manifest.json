@@ -1,8 +1,20 @@
 {
   "service": "CREATOR",
   "cspDomains": {
-    "connect-src": ["https://maps.googleapis.com"],
-    "script-src": ["https://maps.googleapis.com"]
+    "connect-src": [
+      "https://maps.googleapis.com",
+      "https://a.tile.openstreetmap.org",
+      "https://b.tile.openstreetmap.org",
+      "https://c.tile.openstreetmap.org"
+    ],
+    "script-src": [
+      "https://maps.googleapis.com"
+    ],
+    "img-src": [
+      "https://a.tile.openstreetmap.org",
+      "https://b.tile.openstreetmap.org",
+      "https://c.tile.openstreetmap.org"
+    ]
   },
   "config": []
 }
