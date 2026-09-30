@@ -274,6 +274,8 @@ One record per invited vendor **and** per assigned technician/driver, per ticket
 | `Vendor_GST_Number` | GST No. | Single Line | — | ✅ **Created 2026-08-17, wired 2026-09-26** — read by `vendorGstApplicable()` on the Accounts Payable screen; a non-blank value is what makes vendor GST applicable. New — the vendor's own GSTIN, for vendor-payment/Zoho Books purposes. Deliberately not named `GST_Number` — that name is already taken on `Create_Case` for the customer's own B2B invoice GST, a different concept |
 | `KM_Slab_Repair` / `KM_Slab_Tow_2W_FBT` / `KM_Slab_Tow_4W_FBT` / `KM_Slab_Tow_4W_MT` / `KM_Slab_Tow_2W_MT` | KM Slab – Repair / Tow 2W FBT / Tow 4W FBT / Tow 4W MT / Tow 2W MT | Number ×5 | — | 🟢 **Wired 2026-09-04** into the new Vendor Accounting Level 1 screen (`getRescueTicket`, `vendorKmSlabFieldFor()`/`computeVendorFeeForTicket()`) — per-vendor, per-vehicle-category distance-rate slabs for the vendor payout KM Fee. `KM_Slab_Tow_2W_MT` added later (2026-08-27, user-confirmed) than the other 4 (2026-08-17) — was previously missing here, corrected |
 | `Base_Fee` / `Base_KM` / `KM_Rate` | Base Fee / Base KM / KM Rate | Number ×3 | — | 🟢 **Created 2026-08-27 (user-confirmed), wired 2026-09-04** into the Vendor Accounting Level 1 screen. Per-vendor flat rate card (deliberate user decision: NOT per-vehicle-type, a different granularity from the `KM_Slab_*` fields above — see `getRescueTicket/app/widget.html`'s own "Vendor Accounting" comment block for the flagged inconsistency). Was previously missing from this file — only documented in `getRescueTicket/README.md`'s changelog |
+| **Day/Night rate card — 24 fields** (see the table below this one) | Base Pay / Base KMs / Extra KM × Day/Night × 4 categories | Number ×24 | — | ✅ **24 of 24 created and all 24 resolve** (verified 2026-09-30 against the real Vendors form definition). Casing differs by category — REPAIR uses `Base_Pay_Day_Repair`, TOW uses `BASE_PAY_DAY_TOW_4W_MT`; `apiNameCandidates()` accepts both. The rate card is fully wired. Per the client PDF *"FIELDS EXPLANATION for VENDOR ACCOUNTING"*. **Supersede `Base_Fee`/`Base_KM`/`KM_Rate` above**, which remain as the per-field fallback — see `computeVendorFeeForTicket()` |
+| `NIGHT_START_HOUR` / `NIGHT_END_HOUR` | NIGHT START HOUR / NIGHT END HOUR | **Time** ×2 (user-confirmed 2026-09-30) | — | ✅ **Created.** Created as Zoho **Time** fields, not Number, so they arrive as `"10:00:00 PM"`. `parseHourValue()` handles Time, 12h/24h and plain numbers alike — only the HOUR is used, per the PDF. Hour only, not a time. The PDF's rule is `HOUR OF ACCEPT TIME >= Night_Start_Hour` **OR** `< Night_End_Hour` — the OR is what lets the window cross midnight (22 → 6 means 22:00–05:59). One pair per vendor, not per category. **Both blank ⇒ every ticket is DAY**, which is what keeps this inert until configured |
 | `Vendor_Base_Location_Count` | Number of Base Locations | Number | — | 🟡 **Created in Zoho 2026-08-17 (user-confirmed)**, not yet wired into any widget. New — how many of the 5 `Base_Location_N_Lat`/`Lon` pairs below are actually populated for this vendor |
 | `Base_Location_1_Lat`/`_Lon` … `Base_Location_5_Lat`/`_Lon` | Base Location 1–5 Lat/Lon | Single Line ×10 | — | 🟡 **Created in Zoho 2026-08-17 (user-confirmed)**, not yet wired into any widget. New — capped-fixed-fields approach (not a Subform — this app has never used one, chosen as the lower-risk option 2026-08-17), one pair per fleet base location. `getRescueTicket`'s Closure step picks whichever populated pair is nearest (crow-flight) to the ticket's breakdown location as `Vendor_Fleet_Location_Lat`/`Lon` |
 | `Location_Last_Updated_At` | Location Last Updated | Date-Time | — | 🟡 **Created in Zoho 2026-08-17 (user-confirmed)**, not yet wired into any widget. New — intended to be stamped by `vendorTicket`'s own location heartbeat alongside `Current_Latitude`/`Longitude`; the heartbeat shipped last turn does **not** write this yet — a follow-up patch to `pingCurrentLocation()` is needed once the Operations Manager Map View work starts |
@@ -316,6 +318,47 @@ Covers both independent technicians/drivers who log in directly, and technicians
 | API Name | Label | Zoho Field Type | Notes |
 |---|---|---|---|
 | `Client_Name` | Client Name | Single Line | Display label |
+
+### Vendor day/night rate card — the 24 fields
+
+New 2026-09-30, from the client PDF *"FIELDS EXPLANATION for VENDOR ACCOUNTING"*. **The calculations did not change** — KM Fee, Gross, Net and Balance are computed exactly as before by `computeVendorFee()`. What changed is which vendor field supplies BASE FEE, BASE KM and KM RATE.
+
+Three filters pick the field. Two were already implemented: `vendorKmSlabFieldFor()` resolves Service Type + Issue + Vehicle Type into the four categories below, so it is reused rather than duplicated. The third, **Accept Time**, is new and reads `Service_Acceptance` (RSR) / `Service_Acceptance_For_Tow` (TOW).
+
+**SLAB KM is not part of this** — the PDF maps the same `KM_Slab_*` field for both day and night in all four categories, so the existing slab lookup is untouched.
+
+| Category | Slab field (existing) | Day fields | Night fields |
+|---|---|---|---|
+| REPAIR (2W and 4W) | `KM_Slab_Repair` | `Base_Pay_Day_Repair` ✅<br>`Base_KMS_Day_Repair` ✅<br>`Extra_KM_Day_Repair` ✅ | `Base_Pay_Night_Repair` ✅<br>`Base_KMS_Night_Repair` ✅<br>`Extra_KM_Night_Repair` ✅ |<br>**All six user-confirmed 2026-09-30 — this category is complete and testable end to end.**
+| TOW 2W FBT | `KM_Slab_Tow_2W_FBT` | `BASE_PAY_DAY_TOW_2W_FBT` ✅<br>`BASE_KMS_DAY_TOW_2W_FBT` ✅<br>`EXTRA_KM_DAY_TOW_2W_FBT` ✅ | `BASE_PAY_NIGHT_TOW_2W_FBT` ✅<br>`BASE_KMS_NIGHT_TOW_2W_FBT` ✅<br>`EXTRA_KM_NIGHT_TOW_2W_FBT` ✅ |
+| TOW 4W FBT | `KM_Slab_Tow_4W_FBT` | `BASE_PAY_DAY_TOW_4W_FBT` ✅<br>`BASE_KMS_DAY_TOW_4W_FBT` ✅<br>`EXTRA_KM_DAY_TOW_4W_FBT` ✅ | `BASE_PAY_NIGHT_TOW_4W_FBT` ✅<br>`BASE_KMS_NIGHT_TOW_4W_FBT` ✅<br>`EXTRA_KM_NIGHT_TOW_4W_FBT` ✅ |
+| TOW 4W MT | `KM_Slab_Tow_4W_MT` | `BASE_PAY_DAY_TOW_4W_MT` ✅<br>`BASE_KMS_DAY_TOW_4W_MT` ✅<br>`EXTRA_KM_DAY_TOW_4W_MT` ✅ | `BASE_PAY_NIGHT_TOW_4W_MT` ✅<br>`BASE_KMS_NIGHT_TOW_4W_MT` ✅<br>`EXTRA_KM_NIGHT_TOW_4W_MT` ✅ |
+
+Each maps to one calculation variable: **Base Pay → BASE FEE**, **Base KMs → BASE KM**, **Extra KM → KM RATE**. Note the deliberate `KMS` vs `KM` difference — it follows the PDF's own labels and is confirmed by `Base_KMS_Day_Repair` existing.
+
+✅ **`BASE PAY DAY - TOW 2W FBT` link name corrected 2026-09-30.** It was created as `Base_KM_Night_Repair` (a REPAIR field duplicated without renaming) and is now `BASE_PAY_DAY_TOW_2W_FBT`. Recorded because the old name sat one character from the real `Base_KMS_Night_Repair`, and a payout silently falling back to the flat rate is the kind of fault that leaves no trace on screen.
+
+**`Tow` vs `TOW` — answered 2026-09-30:** the real fields use ALL-CAPS `TOW` (`BASE_PAY_DAY_TOW_4W_MT`), while the older slab fields use title-case `Tow` (`KM_Slab_Tow_2W_FBT`). Both spellings are generated, so the mix is harmless.
+
+**✅ Live TOW issue catalogue confirmed 2026-09-30** (Vehicle_Issue_Report, Issue Type = TOW):
+
+| Issue Name | Vehicle Type | Maps to |
+|---|---|---|
+| `FBT` | 2W, 4W | `KM_Slab_Tow_2W_FBT` / `KM_Slab_Tow_4W_FBT` ✅ |
+| `MT` | 4W only | `KM_Slab_Tow_4W_MT` ✅ |
+| `ZERO DEGREE` | 4W | 🔴 **nothing — no vendor fee is computed** |
+
+The names are literally `FBT` and `MT`, which is what `vendorKmSlabFieldFor()` matches on exactly, so those four combinations work with no code change.
+
+**`KM_Slab_Tow_2W_MT` is unreachable, and that is correct.** `MT` is 4W-only in the catalogue, so a 2W MT ticket cannot exist. The PDF omitting 2W MT rates was right, and the stray slab field can be ignored.
+
+**🔴 `ZERO DEGREE` (4W TOW) has no rate mapping at all.** `vendorKmSlabFieldFor()` returns `null` for it, so `computeVendorFeeForTicket()` returns `null` and the vendor gets **no calculated fee whatsoever** — not a wrong figure, no figure. This predates the day/night work (the classifier has only ever known FBT and MT) and is not something the client PDF addresses. Needs a decision: either ZERO DEGREE gets its own six rates and a slab field, or it is declared equivalent to FBT or MT.
+
+**Missing fields degrade per-field, not all-or-nothing.** Each of the three reads falls back to its own flat field independently, so a half-configured vendor still gets the right figure for whatever is set. A blank or non-numeric value counts as absent — it never pays zero. This is why the code could ship before any of the fields existed.
+
+`computeVendorFeeForTicket()` logs the field it actually resolved for each of the three, so a wrong name shows as `(flat fallback)` in the console rather than failing silently.
+
+**Not built, worth considering:** a `Rate_Period_Applied` field on `Create_Case`. Which rate applied is currently only in the console, so ops approving a payout cannot see whether a figure came from day or night rates — and once a vendor edits their rate card, a past payout is no longer reproducible.
 
 ## Form 9 — `Rate_Master` (report: `Rate_Master_Report`)
 

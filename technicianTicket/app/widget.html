@@ -816,6 +816,15 @@ function unwrapLookup(v){
 function lookupId(v){ return (v && typeof v==="object") ? (v.ID||v.id) : v; }
 // Vehicle name lookup (2026-08-05) — see vendorTicket's own matching comment.
 let VEHICLE_NAMES={};
+const VEHICLE_DIAG={ read:null, named:null, apiCalled:false, apiResult:"", note:"" };
+/* getVehicleNames is registered with Public Key authentication, so the key has to
+   travel with the call — without it Creator answers 9370 "invalid public key".
+   Taken from the Custom API's own endpoint URL in Creator (user-provided
+   2026-09-29). Safe to ship in widget JavaScript: a public key is exactly that,
+   and this API is deliberately narrow — it returns vehicle id/name pairs and
+   nothing else. The refresh token that reads the report stays server-side in
+   getVehicleNames.deluge, which is the part that must never be in a widget. */
+const GET_VEHICLE_NAMES_KEY="CznxTFvv8M1q23dSrQZfzMeEn";
 // Real bug fixed 2026-08-21 — see vendorTicket's own matching comment (same
 // class of gap: a single unconfirmed field-name guess showed every vehicle's
 // raw id instead of a name).
@@ -823,6 +832,7 @@ const VEHICLE_NAME_CANDIDATES=[CONFIG.vehicleNameField,"Vehicle_Name","vehicle_n
 async function loadVehicleNames(){
   try{
     const recs=await apiGetReport(CONFIG.vehicleMasterReport, null, 1000);
+    VEHICLE_DIAG.read=recs.length;
     const map={};
     let missCount=0;
     recs.forEach(function(v){
@@ -832,32 +842,247 @@ async function loadVehicleNames(){
       map[String(v.ID)] = name;
     });
     VEHICLE_NAMES=map;
+    VEHICLE_DIAG.named=recs.length-missCount;
+    /* Fallback widened 2026-09-27, client-reported: a vendor saw the raw record id
+       on Android while the same account on iPhone showed the name.
+
+       The Custom API fallback used to fire in ONE case only — the direct read
+       returning zero records. The other two failure shapes just logged a warning
+       and carried on with an unusable map, which on a phone means no warning at
+       all because there is no console to read. Both now fall back as well:
+         · records came back but NONE carried a usable name
+         · the read threw outright (network, permissions, timeout)
+       Fixing these does not change any case that already worked — a read that
+       produced names still never calls the Custom API. */
     if(!recs.length){
-      console.warn("[Get-Rescue] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— vehicle name will keep showing as a raw id.");
+      console.warn("[Get-Rescue] loadVehicleNames: 0 records from", CONFIG.vehicleMasterReport, "— the direct read returned nothing. Most likely this portal profile lacks View on that report (Zoho answers {\"code\":2898,\"message\":\"Permission denied to view record(s).\"} and apiGetReport turns that into an empty array). Falling back to the getVehicleNames Custom API.");
+      await loadVehicleNamesViaCustomApi();
     } else if(missCount===recs.length){
-      console.warn("[Get-Rescue] loadVehicleNames: none of", VEHICLE_NAME_CANDIDATES, "produced a name for ANY of", recs.length, "records — first record's own keys:", Object.keys(recs[0]));
+      console.warn("[Get-Rescue] loadVehicleNames: none of", VEHICLE_NAME_CANDIDATES, "produced a name for ANY of", recs.length, "records. Falling back to the getVehicleNames Custom API. First record's own keys:", Object.keys(recs[0]));
+      await loadVehicleNamesViaCustomApi();
     } else if(missCount>0){
       console.warn("[Get-Rescue] loadVehicleNames:", missCount, "of", recs.length, "records had no name under any of", VEHICLE_NAME_CANDIDATES, "— those specific vehicles will show their raw id.");
     }
-  }catch(e){ console.warn("[Get-Rescue] loadVehicleNames failed", e); }
+  }catch(e){
+    VEHICLE_DIAG.note="direct read threw: "+(e&&e.message?e.message:String(e));
+    console.warn("[Get-Rescue] loadVehicleNames threw — falling back to the getVehicleNames Custom API", e);
+    try{ await loadVehicleNamesViaCustomApi(); }
+    catch(e2){ console.warn("[Get-Rescue] the Custom API fallback threw too; vehicle names stay unresolved", e2); }
+  }
 }
-/* dialNumber() — 2026-09-27. See renderTicketInfo()'s own comment for why this is
-   a hidden iframe rather than a link or a top-frame navigation. The iframe is
-   removed shortly after; 1.5s is long enough for any platform that is going to act
-   on the scheme to have done so, and leaving it attached would stack one dead
-   iframe per tap. */
-function dialNumber(tel){
-  const num = String(tel||"").trim();
-  if(!num) return;
+/* ensureVehicleNamesForLoadedTickets() — 2026-09-27, the third gap.
+
+   Even a read that succeeds can come back without the ONE vehicle a vendor is
+   actually looking at: a report filtered by profile permissions, or simply more
+   vehicles than the fetch returns. Neither of the two cases above notices that,
+   because from their point of view the load worked.
+
+   This checks the tickets actually on screen against the map, and repairs it only
+   if something a vendor can see is missing. Runs at most once per session — a
+   vehicle genuinely absent from Vehicle Master would otherwise re-fetch forever.
+   Returns true only when the map really gained entries, so the caller re-renders
+   only when there is something new to show. */
+let VEHICLE_NAMES_REPAIRED=false;
+async function ensureVehicleNamesForLoadedTickets(){
+  if(VEHICLE_NAMES_REPAIRED) return false;
+  const missing=[];
+  (state.tickets||[]).forEach(function(r){
+    const id=lookupId(r?r[CONFIG.vehicleField]:null);
+    if(id==null) return;
+    if(!VEHICLE_NAMES[String(id)] && missing.indexOf(String(id))<0) missing.push(String(id));
+  });
+  if(!missing.length) return false;
+  VEHICLE_NAMES_REPAIRED=true;
+  const before=Object.keys(VEHICLE_NAMES).length;
+  console.warn("[Get-Rescue] ensureVehicleNamesForLoadedTickets:", missing.length,
+    "vehicle id(s) on screen are not in VEHICLE_NAMES (", missing.join(", "),
+    ") — the map holds", before, "entries. Retrying through the getVehicleNames Custom API.");
+  try{ await loadVehicleNamesViaCustomApi(); }
+  catch(e){ console.warn("[Get-Rescue] ensureVehicleNamesForLoadedTickets: Custom API retry failed", e); return false; }
+  const gained=Object.keys(VEHICLE_NAMES).length>before;
+  console.warn("[Get-Rescue] ensureVehicleNamesForLoadedTickets: map now holds",
+    Object.keys(VEHICLE_NAMES).length, "entries —", gained?"re-rendering.":"no improvement, names stay unresolved.");
+  return gained;
+}
+/* loadVehicleNamesViaCustomApi() — 2026-09-18, user request ("whenever [we]
+   show the message Permission denied to view record(s), we can use the refresh
+   token and fetch the record like earlier").
+
+   Vendor/Technician/Driver portal profiles are refused Vehicle_Master_Report
+   with code 2898, so every ticket card showed a raw Lookup id. The getVehicleNames
+   Custom API reads that report server-side with the app owner's own OAuth
+   credentials — the same refresh-token mechanism already proven in
+   submitCustomerLocation.deluge and paymentWebhook.deluge for writes this same
+   portal identity was refused.
+
+   The credentials live in the Deluge, NOT here: widget JavaScript is downloaded
+   to every user's browser, so a refresh token placed in this file would hand
+   full Creator Data API access to anyone who opens the vendor app.
+
+   Called ONLY when the direct read came back empty, so on an account where the
+   permission is granted this never runs and boot is unchanged. It is a fallback,
+   not a replacement — granting the Vendor profile View on Vehicle_Master_Report
+   remains the simpler fix and needs no Custom API at all.
+
+   Fails soft: any problem leaves VEHICLE_NAMES as it was, which means vehicles
+   keep showing their raw id exactly as they do today. Never worse. */
+async function loadVehicleNamesViaCustomApi(){
+  const fn=resolve("invokeCustomApi");
+  VEHICLE_DIAG.apiCalled=true;
+  if(!fn){ VEHICLE_DIAG.apiResult="invokeCustomApi unavailable"; console.warn("[Get-Rescue] loadVehicleNamesViaCustomApi: invokeCustomApi unavailable — vehicle names stay as raw ids."); return; }
+  /* Several call shapes, tried in order (2026-09-29). The single hardcoded shape
+     this used to send was being refused outright:
+
+       {"code":9410,"message":"The Content-Type specified for this Custom API is invalid."}
+
+     A Custom API's method and Content-Type are fixed when it is REGISTERED in
+     Creator, not chosen by the caller, and getVehicleNames is evidently
+     registered differently from checkOperationsManagerPermission and
+     getTaskRejections — the two other zero-parameter APIs here, which the same
+     shape works for. That is a Creator-side setting this code cannot read.
+
+     So rather than encode one more guess about a registration nobody can see
+     from here, try the plausible shapes and let the one the API actually accepts
+     win. Same approach openViaParentNavigation() in this file already takes with
+     the undocumented PARENT_NAVIGATION vocabulary. The previously-used shape is
+     first, so a registration that is later corrected costs nothing extra, and the
+     shape that succeeded is recorded so the registration can simply be matched
+     to it and the rest dropped. */
+  /* Registration confirmed from the Custom API screen 2026-09-29:
+       Method GET · Authentication Public Key · Function has no arguments
+       key CznxTFvv8M1q23dSrQZfzMeEn
+
+     The old call got BOTH of those wrong. It sent POST with
+     content_type application/json, which is what Creator answered with
+     9410 "The Content-Type specified for this Custom API is invalid.", and
+     it never sent public_key at all, which would have failed with 9370
+     "invalid public key" the moment the method was corrected. Two faults
+     stacked, which is why fixing either one alone would have looked like
+     no progress.
+
+     No payload key on any shape, deliberately: this API takes no arguments,
+     and Zoho's widget SDK rejects a PRESENT-BUT-EMPTY payload object with
+     "Improper Configuration..!!" — a real bug already hit twice in this
+     project (serviceRequest 2026-09-10, checkOperationsManagerPermission
+     2026-08-31). No content_type either: a GET carries no request body.
+
+     The confirmed shape is first. The rest are kept as fallbacks so a later
+     re-registration cannot silently break this again, and the one that
+     succeeds is logged and shown in the on-screen diagnostic. */
+  const shapes=[
+    { http_method:"GET", public_key:GET_VEHICLE_NAMES_KEY },
+    { http_method:"GET" },
+    { http_method:"POST", content_type:"application/json", public_key:GET_VEHICLE_NAMES_KEY },
+    { http_method:"POST", content_type:"application/json" }
+  ];
+  const why=function(e){
+    if(!e) return "no response";
+    if(typeof e==="string") return e;
+    if(e.message) return String(e.message);
+    try{ return JSON.stringify(e).slice(0,160); }catch(x){ return String(e); }
+  };
+  let lastWhy="";
+  for(const shape of shapes){
+    const label=shape.http_method+(shape.content_type?("+"+shape.content_type):"")+(shape.public_key?"+key":"");
+    const config=Object.assign({ api_name:"getVehicleNames", workspace_name:"getrescued" }, shape);
+    let res;
+    try{
+      res=await fn(config);
+    }catch(e){
+      lastWhy=label+": "+why(e);
+      console.warn("[Get-Rescue] getVehicleNames refused shape", label, e);
+      continue;
+    }
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ lastWhy=label+": result was not JSON"; continue; }
+    }
+    if(!data || data.code!=="SUCCESS" || !Array.isArray(data.vehicles)){
+      lastWhy=label+": "+((data&&(data.message||data.code)) ? String(data.message||("code "+data.code)) : "no vehicles returned");
+      console.warn("[Get-Rescue] getVehicleNames shape", label, "returned no vehicles —", lastWhy, res);
+      continue;
+    }
+    const map={};
+    data.vehicles.forEach(function(v){ if(v && v.id) map[String(v.id)]=v.name||""; });
+    // Merge rather than replace, so anything the direct read DID manage to
+    // resolve is never lost by this fallback.
+    VEHICLE_NAMES=Object.assign({}, VEHICLE_NAMES, map);
+    VEHICLE_DIAG.apiResult="ok via "+label+" ("+data.vehicles.length+" names)";
+    console.log("[Get-Rescue] getVehicleNames: resolved", data.vehicles.length, "vehicle name(s) using shape", label, "— register the Custom API with this Content-Type and the other shapes become dead weight.");
+    // The dashboard may already be on screen by the time this lands — re-render
+    // so the names replace the raw ids without the vendor reloading.
+    if(typeof renderDashboard==="function" && state && state.view==="dashboard") renderDashboard();
+    return;
+  }
+  VEHICLE_DIAG.apiResult="all shapes refused — "+lastWhy;
+  console.warn("[Get-Rescue] getVehicleNames: every call shape was refused. Last reason:", lastWhy);
+}
+/* Android is the ONLY platform that needs the tap intercepted at all — see
+   wireTelActions() and dialNumber() below for what each platform does and why. */
+const IS_ANDROID = /Android/i.test((typeof navigator!=="undefined" && navigator.userAgent) || "");
+/* telViaIframe() — 2026-09-27, unchanged.
+ See renderTicketInfo()'s own comment for
+   why this is a hidden iframe rather than a link or a top-frame navigation. The
+   iframe is removed shortly after; 1.5s is long enough for any platform that is
+   going to act on the scheme to have done so, and leaving it attached would stack
+   one dead iframe per tap. */
+function telViaIframe(url){
   try{
     const f = document.createElement("iframe");
     f.style.display = "none";
-    f.src = "tel:" + num;
+    f.src = url;
     document.body.appendChild(f);
     setTimeout(function(){ try{ f.remove(); }catch(e){} }, 1500);
   }catch(e){
-    console.warn("[GR] dialNumber failed, the Copy button is the fallback", e);
+    console.warn("[GR] telViaIframe failed", e);
   }
+}
+/* dialNumber() — 2026-09-29, client-reported: "mobile number on vendor app needs to
+   be clickable to generate a call". It already is on iOS and desktop; on the Creator
+   ANDROID app the WebView refuses the tel: scheme outright and the tap does nothing
+   at all, with no error to catch.
+
+   Fixed by reusing openViaParentNavigation() — the host hand-off the map links were
+   already given for this identical problem. It posts PARENT_NAVIGATION to the
+   Creator app, which is native code and can pass a URL to the OS; the WebView
+   cannot. Nothing new is invented here, the same escape hatch is simply applied to
+   tel: as well as to maps.
+
+   GATED TO ANDROID ON PURPOSE. iOS and desktop work today and are left on exactly
+   the path they use now, byte for byte — this cannot regress them. Two reasons not
+   to make the host attempt universal: it is still unproven which action shape (if
+   any) the host honours, and a host that ACCEPTED the event without acting would
+   swallow the call silently on the one platform that currently works.
+
+   Deliberately NOT a timeout heuristic. renderTicketInfo()'s own comment records
+   why that was rejected: iOS shows a confirm dialog and leaves the page visible, so
+   "still visible after N ms" reads as failure on the platform where it succeeded.
+   Branching on the platform avoids having to guess at all.
+
+   Last resort is a toast rather than silence. The Copy button was removed at the
+   client's request, so with nothing else there the vendor gets no feedback
+   whatsoever when the tap fails. The href is still on the anchor, so long-press
+   really does offer Call natively — the toast points at that. */
+function dialNumber(tel){
+  const num = String(tel||"").trim();
+  if(!num) return;
+  const url = "tel:" + num;
+  /* Only ever reached on Android now — wireTelActions() lets every other platform
+     follow the anchor's own href instead of calling in here. Kept as a guard rather
+     than assumed, so this function stays correct if it is ever called from
+     somewhere else. */
+  if(!IS_ANDROID){ telViaIframe(url); return; }
+  Promise.resolve()
+    .then(function(){ return openViaParentNavigation(url); })
+    .catch(function(){ return false; })
+    .then(function(ok){
+      if(ok){ console.log("[GR] dialNumber: handed tel: to the Creator app"); return; }
+      // The host would not take it. Try the scheme anyway — harmless on a build
+      // that refuses it, and it still works on an Android browser outside the app.
+      telViaIframe(url);
+      toast("If the dialer did not open, press and hold the number to call", "");
+    });
 }
 function copyNumber(tel){
   const num = String(tel||"").trim();
@@ -881,7 +1106,31 @@ function copyNumber(tel){
 }
 function wireTelActions(){
   document.querySelectorAll("#ticketInfo .tel-link").forEach(function(a){
-    a.onclick = function(ev){ ev.preventDefault(); dialNumber(a.getAttribute("data-tel")); };
+    /* Real bug fixed 2026-09-29, client-reported: tapping the number on an iPhone
+       inside the Creator app did nothing whatsoever.
+
+       Root cause, and it was my own earlier change: this handler called
+       preventDefault() on EVERY platform and then routed the tap into a hidden
+       tel: iframe. WKWebView has not acted on a tel: iframe since iOS 9 — Apple
+       dropped it; the trick only ever worked in the old UIWebView. So on iPhone
+       this was cancelling the one thing that does work (the anchor's own href,
+       which WKWebView hands to the OS natively from a real link click) and
+       substituting the one thing iOS ignores. Silent failure, no error to see.
+
+       The two platforms want opposite treatment, which is why one code path could
+       never satisfy both:
+         iOS / desktop — let the href navigate. Native, no interception.
+         Android       — the href navigating is exactly what produced
+                         ERR_UNKNOWN_URL_SCHEME, so it MUST be cancelled and
+                         handed to the Creator host instead (see dialNumber).
+
+       Long-press still offers Call / Add to contacts on both, because the href is
+       on the anchor either way. */
+    a.onclick = function(ev){
+      if(!IS_ANDROID) return;            // iOS / desktop: the href does the work
+      ev.preventDefault();
+      dialNumber(a.getAttribute("data-tel"));
+    };
   });
   document.querySelectorAll("#ticketInfo .tel-copy").forEach(function(b){
     b.onclick = function(ev){ ev.preventDefault(); ev.stopPropagation(); copyNumber(b.getAttribute("data-tel")); };
@@ -910,6 +1159,13 @@ function vehicleDisplayFor(r){
   if(name) return name;
   const fallback=String(readVal(r,CONFIG.vehicleField)||"").trim();
   if(/^[0-9]{12,}$/.test(fallback)){
+    /* Registration number tried before giving up (2026-09-29). It lives on the
+       TICKET itself, not on Vehicle_Master, so it needs no lookup and is immune
+       to the permission gap that causes this branch in the first place. For a
+       vendor arriving at a breakdown, the plate is arguably the more useful of
+       the two anyway — it is what they match against the car in front of them. */
+    const reg=String(readVal(r,"Vehicle_Registration_Number")||"").trim();
+    if(reg) return reg;
     console.warn("[GR] vehicleDisplayFor: no name for vehicle id", fallback,
       "— VEHICLE_NAMES holds", Object.keys(VEHICLE_NAMES).length, "entries.",
       "Showing a placeholder rather than the raw record id.");
@@ -1116,6 +1372,10 @@ function startDashboardPollIfNeeded(){
 }
 async function pollForNewCases(){
   if(!isDashboardVisible()){ stopDashboardPoll(); return; }
+  // Piggy-backs on the poll that already runs every 30s while the list is on
+  // screen rather than adding a second timer. flushPhotoQueue() guards itself
+  // against overlapping runs and returns immediately when the queue is empty.
+  flushPhotoQueue();
   try{
     const fresh=await fetchMyTickets();
     const freshIds=new Set(fresh.map(function(r){ return String(r.ID); }));
@@ -1150,6 +1410,38 @@ const STATUS_PILL = {
   "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"},
   "RSP REJECT": {cls:"rej", label:"Rejected"}
 };
+/* One muted line under the list, shown ONLY when a ticket on screen could not
+   resolve its vehicle name (2026-09-29). This has now been reported three times
+   from an Android phone, where the console warnings this file writes cannot be
+   read, so each attempt at a fix has been guesswork about which of the three
+   possible causes actually fired. This makes the cause screenshot-able:
+     read   — how many rows the direct Vehicle_Master_Report read returned
+              (0 means the portal profile lacks View on that report)
+     named  — how many of those carried a usable name
+              (read>0 with named=0 means the name field is called something else)
+     api    — whether the getVehicleNames fallback ran, and what it said
+   All three at healthy values while a card still says unavailable means that ONE
+   vehicle is genuinely blank in Vehicle Master — a data fix, not a code one. */
+function renderVehicleDiagNote(){
+  const host=$("ticketList");
+  if(!host) return;
+  const unresolved=(state.tickets||[]).some(function(r){
+    const id=lookupId(r?r[CONFIG.vehicleField]:null);
+    return id!=null && !VEHICLE_NAMES[String(id)];
+  });
+  if(!unresolved) return;
+  const bits=[
+    "read "+(VEHICLE_DIAG.read==null?"?":VEHICLE_DIAG.read),
+    "named "+(VEHICLE_DIAG.named==null?"?":VEHICLE_DIAG.named),
+    "map "+Object.keys(VEHICLE_NAMES).length,
+    "api "+(VEHICLE_DIAG.apiCalled?(VEHICLE_DIAG.apiResult||"called"):"not called")
+  ];
+  if(VEHICLE_DIAG.note) bits.push(VEHICLE_DIAG.note);
+  const note=document.createElement("div");
+  note.style.cssText="margin:10px 2px 0;font-family:var(--f-mono);font-size:10px;line-height:1.5;color:var(--muted);opacity:.85";
+  note.textContent="Vehicle names unresolved — "+bits.join(" · ");
+  host.appendChild(note);
+}
 function renderDashboard(){
   $("ticketCount").textContent=state.tickets.length;
   if(!state.tickets.length){
@@ -1165,6 +1457,7 @@ function renderDashboard(){
       <div class="meta">${esc(issueNamesFor(r)||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
     </div>`;
   }).join("");
+  renderVehicleDiagNote();
   document.querySelectorAll(".tcard").forEach(function(el){
     el.onclick=function(){ openTicket(el.dataset.id); };
   });
@@ -1252,6 +1545,8 @@ function renderTicketInfo(){
 /* ---------- per-status action screen router ---------- */
 function renderActionScreen(){
   renderTicketInfo();
+  // Any screen change cancels the payment poll; renderPaymentScreen() restarts it.
+  stopPaymentPoll();
   const st=String(state.current[CONFIG.stageField]||"").trim().toUpperCase();
   if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance"; renderAcceptScreen(); }
   else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown Location"; renderReachScreen(); }
@@ -1696,7 +1991,54 @@ async function confirmCxReject(){
 }
 
 /* ===== Action 8: Final Payment Collection (shared RSR & TOW) ===== */
+/* Payment screen auto-refresh — 2026-09-28, client list item "Auto refresh on
+   PAYMENTS page for vendor app: success payment needs to show".
+
+   The remaining fee is settled by the CUSTOMER, on their own phone, through the
+   payment link. paymentWebhook.deluge then writes Payment_received / Payment_Status
+   onto the ticket. Nothing told this screen any of that had happened, so the vendor
+   sat looking at PENDING with the button disabled until they backed out and
+   reopened the ticket — exactly while standing next to a customer who has just paid.
+
+   Polls the vendor’s own ticket list, which is already fetched by fetchMyTickets()
+   for the dashboard, rather than adding a second data path. Only re-renders when a
+   settlement field actually changed: a silent re-render every 10s would fight the
+   vendor for focus on the receipt-photo input and the method dropdown.
+
+   Runs only while the payment screen is open. renderActionScreen() stops it on any
+   screen change, so it cannot outlive the screen or stack timers. */
+let PAYMENT_POLL_TIMER=null;
+const PAYMENT_POLL_MS=10000;
+function stopPaymentPoll(){ if(PAYMENT_POLL_TIMER){ clearInterval(PAYMENT_POLL_TIMER); PAYMENT_POLL_TIMER=null; } }
+function startPaymentPoll(){
+  stopPaymentPoll();
+  PAYMENT_POLL_TIMER=setInterval(pollPaymentReceived, PAYMENT_POLL_MS);
+}
+async function pollPaymentReceived(){
+  const cur=state.current;
+  if(!cur || !cur.ID){ stopPaymentPoll(); return; }
+  try{
+    const fresh=await fetchMyTickets();
+    const hit=(fresh||[]).find(function(x){ return String(x.ID)===String(cur.ID); });
+    if(!hit) return;   // dropped out of this vendor’s list — the dashboard poll handles that
+    const was=String(cur.Payment_received||"").trim()+"|"+String(cur.Payment_Status||"").trim()+"|"+String(cur.Payment_Method_Final||"").trim();
+    const now=String(hit.Payment_received||"").trim()+"|"+String(hit.Payment_Status||"").trim()+"|"+String(hit.Payment_Method_Final||"").trim();
+    if(was===now) return;
+    console.log("[Get-Rescue] pollPaymentReceived: settlement changed on ticket", cur.ID, "|", was, "->", now);
+    // Copy the settlement fields onto the in-memory record rather than replacing it
+    // wholesale: state.current carries unsaved screen state (a pending receipt
+    // photo, a chosen method) that a blanket overwrite would discard.
+    cur.Payment_received=hit.Payment_received;
+    cur.Payment_Status=hit.Payment_Status;
+    cur.Payment_Method_Final=hit.Payment_Method_Final;
+    cur.Remaining_Fee_Receipt_Time=hit.Remaining_Fee_Receipt_Time;
+    if(String(hit.Payment_received||"").trim()==="Yes") toast("Payment received","ok");
+    renderActionScreen();
+  }catch(e){ console.warn("[Get-Rescue] pollPaymentReceived failed (non-blocking)", e); }
+}
 function renderPaymentScreen(){
+  // Watch for the customer settling the remaining fee while this screen is open.
+  startPaymentPoll();
   const r=state.current;
   const remaining=Number(r.Remaining_Fee)||0;
   // Real bug fixed (2026-08-03, user-confirmed via the actual Zoho field
@@ -1746,9 +2088,12 @@ function renderPaymentScreen(){
           ${payMethodOptionsHtml}
         </select>
       </div>
+      <!-- The striped square that used to sit here was a CSS placeholder, not a real
+           code. It looked scannable and was not, and a customer WILL try to scan it.
+           This app has no payment-link generation (only vendorTicket does), so there
+           is nothing to encode — hence a plain instruction instead of a fake code. -->
       <div id="qrBlock" style="text-align:center;margin:10px 0;display:none">
-        <div style="border:2px solid #111;border-radius:12px;width:120px;height:120px;margin:0 auto 8px;background:repeating-linear-gradient(45deg,#111 0 4px,#fff 4px 8px)"></div>
-        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">Scan to pay — status updates automatically</span>
+        <div style="font-family:var(--f-mono);font-size:11px;color:var(--muted);padding:14px;border:1.5px dashed var(--line-strong);border-radius:12px">Ask the call centre to send the customer a payment link.<br>This screen updates itself once the payment lands.</div>
       </div>
       <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
       <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
@@ -1895,10 +2240,23 @@ function renderPhotoGrid(fieldName,max){
     html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
   });
   if((alreadyCount+files.length)<max){
-    // Two explicit add tiles (2026-08-03, user-requested) — live camera
-    // capture (with GPS/time watermark) and a plain gallery picker.
-    html+=`<div class="photo-slot add" id="pf_${fieldName}_addCam" title="Take Photo">📷</div>`;
-    html+=`<div class="photo-slot add" id="pf_${fieldName}_addGal" title="Choose from Gallery">🖼️</div>`;
+    // Was TWO add tiles (2026-08-03) — live in-app camera capture and a
+    // gallery picker. The camera tile is HIDDEN as of 2026-09-28 (user
+    // request: the field apps should offer the file option only).
+    //
+    // Removed from the RENDER only — openCamera() itself is deliberately
+    // left in place and untouched, so restoring the tile is putting this
+    // one line back. Its click-wiring below is already null-guarded
+    // ($("...addCam") simply returns null now), so nothing else changes.
+    //
+    // KNOWN CONSEQUENCE, not an oversight: the in-app camera was the only
+    // path that stamped a GPS + timestamp watermark onto the photo
+    // (shootPhoto()); the gallery picker only compresses. Vendors can
+    // still TAKE a photo — galleryInput carries no `capture` attribute, so
+    // the OS sheet still offers Camera next to Files — but photos arriving
+    // this way have no watermark. Applied to vendorTicket, technicianTicket
+    // and driverTicket together — all three field apps behave identically.
+    html+=`<div class="photo-slot add" id="pf_${fieldName}_addGal" title="Choose a File">🖼️</div>`;
   }
   grid.innerHTML=html;
   if(alreadyCount>0) hydrateAlreadyUploadedThumbs(fieldName, alreadyRaw);
@@ -1921,17 +2279,171 @@ async function uploadPendingPhotos(recordId){
       // uploadPhotoNow, 2026-08-04 — "auto save at the time of upload, don't
       // need to click save") — skip those here to avoid uploading twice.
       if(state.uploadedPhotoFiles.has(files[i])) continue;
-      await apiUpload(recordId, fieldName, files[i]);
+      // Same return-value fix as uploadPhotoNow(): a save-time failure used to
+      // be discarded silently here too.
+      const saved=await apiUpload(recordId, fieldName, files[i]);
+      if(saved) state.uploadedPhotoFiles.add(files[i]);
+      else await queuePhotoOffline(recordId, fieldName, files[i]);
     }
   }
 }
 // Fire-and-forget upload the moment a photo is captured/picked — see
 // vendorTicket's own matching comment, not repeated here.
+/* ============================================================================
+   OFFLINE PHOTO QUEUE — 2026-09-30
+   Client list item: "Ability to save photos and data when offline — currently
+   photos and data not stored temporarily when app does not have internet".
+
+   A REAL BUG WAS FOUND WHILE BUILDING THIS, and it is the larger half of the
+   problem. apiUpload() RETURNS false on failure, it does not throw. So
+   uploadPhotoNow()'s catch never fired, the failed file was added to
+   uploadedPhotoFiles as though it had succeeded, uploadPendingPhotos() then
+   SKIPPED it at save time, and the "!" badge never appeared. A photo lost to a
+   two-second signal drop vanished silently, with the grid showing a cheerful
+   tick. That is fixed below by honouring the return value — and it matters even
+   for a vendor who is never fully offline.
+
+   SCOPE, stated plainly: this is "never lose a photo", not "run the whole app
+   offline". Photos that fail to upload are kept in IndexedDB and retried until
+   they land. Browsing tickets, changing status and closing a job still need a
+   connection. Full offline operation would need an action queue and conflict
+   resolution for status transitions — a different and much larger piece of work,
+   and not what the client's wording asks for.
+
+   IndexedDB rather than localStorage: these are JPEGs, and localStorage is a
+   ~5MB string store that would need base64 (a 33% size penalty) on top. Every
+   entry point degrades to today's behaviour if IndexedDB is unavailable — a
+   WebView that blocks it loses nothing it would not have lost anyway.
+   ========================================================================= */
+const PHOTO_DB_NAME="gr_technician_photo_queue", PHOTO_STORE="pending";
+let PHOTO_DB_PROMISE=null, PHOTO_FLUSH_RUNNING=false, PHOTO_QUEUE_COUNT=0;
+/* Resolves to null rather than rejecting on every failure path, so no caller
+   ever needs a try/catch around storage being absent. */
+function photoDb(){
+  if(PHOTO_DB_PROMISE) return PHOTO_DB_PROMISE;
+  PHOTO_DB_PROMISE=new Promise(function(resolve){
+    try{
+      if(!window.indexedDB){ console.warn("[Get-Rescue] IndexedDB unavailable — photos cannot be queued offline."); resolve(null); return; }
+      const req=window.indexedDB.open(PHOTO_DB_NAME,1);
+      req.onupgradeneeded=function(){
+        const db=req.result;
+        if(!db.objectStoreNames.contains(PHOTO_STORE)) db.createObjectStore(PHOTO_STORE,{keyPath:"key",autoIncrement:true});
+      };
+      req.onsuccess=function(){ resolve(req.result); };
+      req.onerror=function(){ console.warn("[Get-Rescue] could not open the photo queue database", req.error); resolve(null); };
+    }catch(e){ console.warn("[Get-Rescue] IndexedDB threw on open", e); resolve(null); }
+  });
+  return PHOTO_DB_PROMISE;
+}
+function photoTx(db, mode){ return db.transaction(PHOTO_STORE, mode).objectStore(PHOTO_STORE); }
+function photoQueueAll(){
+  return photoDb().then(function(db){
+    if(!db) return [];
+    return new Promise(function(resolve){
+      try{ const req=photoTx(db,"readonly").getAll();
+        req.onsuccess=function(){ resolve(req.result||[]); };
+        req.onerror=function(){ resolve([]); };
+      }catch(e){ resolve([]); }
+    });
+  });
+}
+function photoQueueDelete(key){
+  return photoDb().then(function(db){
+    if(!db) return;
+    return new Promise(function(resolve){
+      try{ const req=photoTx(db,"readwrite").delete(key); req.onsuccess=function(){ resolve(); }; req.onerror=function(){ resolve(); }; }
+      catch(e){ resolve(); }
+    });
+  });
+}
+/* Stores the File itself. Name and type are kept alongside because a Blob read
+   back out of IndexedDB can lose them, and uploadFile needs a real File. */
+function queuePhotoOffline(ticketId, fieldName, file){
+  return photoDb().then(function(db){
+    if(!db || !file) return false;
+    return new Promise(function(resolve){
+      try{
+        const req=photoTx(db,"readwrite").put({
+          ticketId:String(ticketId), fieldName:fieldName,
+          name:(file.name||"photo.jpg"), type:(file.type||"image/jpeg"),
+          blob:file, addedAt:Date.now(), tries:0
+        });
+        req.onsuccess=function(){
+          console.log("[Get-Rescue] photo queued for later upload —", fieldName, "on ticket", ticketId);
+          resolve(true);
+        };
+        req.onerror=function(){ console.warn("[Get-Rescue] could not queue the photo", req.error); resolve(false); };
+      }catch(e){ console.warn("[Get-Rescue] queuePhotoOffline threw", e); resolve(false); }
+    });
+  });
+}
+/* Retries everything queued. A row is deleted ONLY on a confirmed success —
+   never on failure, which is the whole point: a photo that cannot upload yet
+   must still be there after the app is closed and reopened. `tries` is recorded
+   for diagnosis, deliberately without a cap that discards anything. */
+async function flushPhotoQueue(){
+  if(PHOTO_FLUSH_RUNNING) return;
+  PHOTO_FLUSH_RUNNING=true;
+  try{
+    const items=await photoQueueAll();
+    PHOTO_QUEUE_COUNT=items.length;
+    if(!items.length){ renderPhotoQueueNote(); return; }
+    if(typeof navigator!=="undefined" && navigator.onLine===false){
+      console.log("[Get-Rescue] photo queue:", items.length, "waiting — still offline, not retrying.");
+      renderPhotoQueueNote(); return;
+    }
+    let sent=0;
+    for(const it of items){
+      let file=it.blob;
+      // A Blob read back from IndexedDB is not always a File any more; uploadFile
+      // needs a name, so rebuild one when necessary.
+      try{ if(!(file instanceof File)) file=new File([it.blob], it.name||"photo.jpg", {type:it.type||"image/jpeg"}); }
+      catch(e){ /* File constructor unavailable — send the Blob as-is */ }
+      const ok=await apiUpload(it.ticketId, it.fieldName, file);
+      if(ok){ await photoQueueDelete(it.key); sent++; }
+    }
+    PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+    if(sent) console.log("[Get-Rescue] photo queue: uploaded", sent, "—", PHOTO_QUEUE_COUNT, "still waiting.");
+    if(sent && typeof toast==="function") toast(sent+" saved photo"+(sent===1?"":"s")+" uploaded","ok");
+    renderPhotoQueueNote();
+  }catch(e){
+    console.warn("[Get-Rescue] flushPhotoQueue failed (non-blocking)", e);
+  }finally{
+    PHOTO_FLUSH_RUNNING=false;
+  }
+}
+/* One muted line under the ticket list, and only when something is actually
+   waiting. Appended to the existing list rather than added to the markup, so no
+   layout changes and nothing to clean up when the queue empties. */
+function renderPhotoQueueNote(){
+  const host=$("ticketList"); if(!host) return;
+  const old=document.getElementById("photoQueueNote"); if(old) old.remove();
+  if(!PHOTO_QUEUE_COUNT) return;
+  const n=document.createElement("div");
+  n.id="photoQueueNote";
+  n.style.cssText="margin:10px 2px 0;font-family:var(--f-mono);font-size:10.5px;line-height:1.5;color:var(--muted)";
+  n.textContent=PHOTO_QUEUE_COUNT+" photo"+(PHOTO_QUEUE_COUNT===1?"":"s")+" saved on this phone, waiting for signal \u2014 they upload on their own once you are back online.";
+  host.appendChild(n);
+}
 async function uploadPhotoNow(fieldName, file, max){
   const r=state.current; if(!r || r.ID==null) return;
-  try{ await apiUpload(r.ID, fieldName, file); state.uploadedPhotoFiles.add(file); }
-  catch(e){ console.warn("[Get-Rescue] immediate upload failed for "+fieldName+" — will retry on save", e); state.failedPhotoFiles.add(file); }
-  renderPhotoGrid(fieldName, max);
+  /* apiUpload() returns false on failure and does NOT throw, so the old
+     try/catch here never fired and every failed upload was recorded as a
+     success. Checking the return value is what makes the "!" badge and the
+     save-time retry work at all. */
+  let ok=false;
+  try{ ok=await apiUpload(r.ID, fieldName, file); }
+  catch(e){ ok=false; console.warn("[Get-Rescue] immediate upload threw for "+fieldName, e); }
+  if(ok){ state.uploadedPhotoFiles.add(file); }
+  else{
+    state.failedPhotoFiles.add(file);
+    // Kept on the device so it survives the app being closed — see the queue's
+    // own header. Awaited so the badge below reflects the real queue length.
+    await queuePhotoOffline(r.ID, fieldName, file);
+    PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+    renderPhotoQueueNote();
+  }
+  renderPhotoGrid(fieldName, max); // refresh this slot's badge either way
 }
 
 /* ---------- camera modal: capture -> canvas GPS/timestamp watermark ---------- */
@@ -2260,6 +2772,23 @@ async function boot(){
   await loadVehicleNames();
   await loadIssueNames();
   await loadDashboard();
+  // Repair pass: only does anything when a vehicle this user can actually
+  // see failed to resolve, and only re-renders when the retry genuinely helped.
+  /* Anything left over from a previous session goes up now (2026-09-30). Not
+     awaited: a queued photo must never delay the app opening, and flushPhotoQueue()
+     re-renders its own badge when it finishes. */
+  flushPhotoQueue();
+  /* Retry the moment the device says it is back online. Cheap, and it is the
+     difference between a photo landing when the technician walks out of a basement
+     and it sitting there until they happen to reopen the app. */
+  if(typeof window!=="undefined" && window.addEventListener){
+    window.addEventListener("online", function(){
+      console.log("[Get-Rescue] back online — retrying any queued photos.");
+      flushPhotoQueue();
+    });
+  }
+  try{ if(await ensureVehicleNamesForLoadedTickets()) await loadDashboard(); }
+  catch(e){ console.warn("[GR] vehicle-name repair pass failed (non-blocking)", e); }
 }
 function waitForSDK(attempt){
   attempt=attempt||0;

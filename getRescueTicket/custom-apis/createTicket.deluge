@@ -1,4 +1,4 @@
-string createTicket(string customerName, string mobile, string email, string vehicle, string issue, string recordId)
+string createTicket(string customerName, string mobile, string email, string vehicle, string issue, string recordId, string callerID, string ucid)
 {
 	returnstring = "";
 	try
@@ -64,63 +64,53 @@ string createTicket(string customerName, string mobile, string email, string veh
 		{
 			hasIssue = true;
 		}
-		if(isUpdate)
+		/* callerID / UCID added 2026-09-28 so a ticket raised from an incoming call
+		   carries the call that produced it, and searchTickets can find it by either.
+
+		   Both are OPTIONAL and purely additive: every existing caller sends neither,
+		   they arrive null, and the ticket is written exactly as it was before.
+
+		   A value still holding a placeholder such as $CallerID$ is treated as absent.
+		   That is a real failure mode, not a hypothetical one - Ozonetel's ScreenPop
+		   sends its own token unsubstituted when misconfigured, and storing that
+		   literal text would make the ticket look like it came from a call it did not.
+		   Same guard recordRingingCall.deluge already applies. */
+		callerIdText = ifnull(callerID,"").trim();
+		if(callerIdText.contains("$"))
 		{
-			anySupplied = false;
-			if(hasName)
-			{
-				anySupplied = true;
-			}
-			if(hasMobile)
-			{
-				anySupplied = true;
-			}
-			if(hasEmail)
-			{
-				anySupplied = true;
-			}
-			if(hasVehicle)
-			{
-				anySupplied = true;
-			}
-			if(hasIssue)
-			{
-				anySupplied = true;
-			}
-			if(anySupplied == false)
-			{
-				result.put("code","ERROR");
-				result.put("message","recordId " + targetId + " was found, but no field was supplied to change. Send at least one of customerName, mobile, email, vehicle or issue.");
-				return result.toString();
-			}
+			callerIdText = "";
 		}
-		else
+		ucidText = ifnull(ucid,"").trim();
+		if(ucidText.contains("$"))
 		{
-			if(hasName == false)
-			{
-				result.put("code","ERROR");
-				result.put("message","Customer Name is required");
-				return result.toString();
-			}
-			if(hasMobile == false)
-			{
-				result.put("code","ERROR");
-				result.put("message","Mobile is required");
-				return result.toString();
-			}
-			if(hasVehicle == false)
-			{
-				result.put("code","ERROR");
-				result.put("message","Vehicle is required");
-				return result.toString();
-			}
-			if(hasIssue == false)
-			{
-				result.put("code","ERROR");
-				result.put("message","Issue is required");
-				return result.toString();
-			}
+			ucidText = "";
 		}
+		hasCallerId = false;
+		if(callerIdText != "")
+		{
+			hasCallerId = true;
+		}
+		hasUcid = false;
+		if(ucidText != "")
+		{
+			hasUcid = true;
+		}
+		/* The "at least one field must be supplied" gate on UPDATE was removed
+		   2026-09-29 (user request). An update that sends only a recordId now
+		   succeeds as a no-op instead of returning ERROR: the record is found,
+		   nothing is written, and the reply comes back SUCCESS / mode "updated"
+		   with an empty updatedFields, which tells the caller plainly that no
+		   field changed.
+		
+		   Deliberately only the UPDATE path. The create-side required checks in
+		   the else branch below (Customer Name, Mobile, Vehicle, Issue) are
+		   untouched — a NEW ticket with no customer or vehicle would be broken
+		   data, not a harmless no-op.
+		
+		   Still guarded above, and unchanged: a recordId that matches no
+		   Create_Case record is still rejected outright, so a bad ID can never
+		   be mistaken for a successful no-op. */
+	
 		resolvedVehicleId = 0;
 		if(hasVehicle)
 		{
@@ -277,6 +267,16 @@ string createTicket(string customerName, string mobile, string email, string veh
 				updateRec.Service_Type = serviceType;
 				changedFields = changedFields + "Vehicle_Issue Service_Type ";
 			}
+			if(hasCallerId)
+			{
+				updateRec.callerID = callerIdText;
+				changedFields = changedFields + "callerID ";
+			}
+			if(hasUcid)
+			{
+				updateRec.UCID = ucidText;
+				changedFields = changedFields + "UCID ";
+			}
 			result.put("code","SUCCESS");
 			result.put("mode","updated");
 			result.put("message","Service request updated");
@@ -310,6 +310,8 @@ string createTicket(string customerName, string mobile, string email, string veh
 				Lead_Source="Whatsapp"
 				Status="SERVICE FEE QUOTE"
 				Added_User=zoho.loginuser
+				callerID=callerIdText
+				UCID=ucidText
 			];
 			caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
 			updateRec = Create_Case[ID == newId];
@@ -320,6 +322,10 @@ string createTicket(string customerName, string mobile, string email, string veh
 			result.put("recordId",newId);
 			result.put("caseId",caseId);
 			result.put("serviceType",serviceType);
+			// Echoed back so the caller can see what was actually stored - a blank here
+			// after sending a value means the placeholder guard above rejected it.
+			result.put("callerID",callerIdText);
+			result.put("ucid",ucidText);
 			if(unmatchedIssues != "")
 			{
 				result.put("unmatchedIssues",unmatchedIssues);

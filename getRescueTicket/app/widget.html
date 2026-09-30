@@ -182,6 +182,8 @@ img,svg{max-width:100%}
 .va-inline .fld,.va-inline .crow-ro{margin-bottom:10px}
 .va-fee-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--line)}
 .va-fee-row:last-child{border-bottom:none;font-weight:800}
+.inviteaudit{display:none} /* 2026-09-30, REJECT/ACCEPT table — same show/hide pattern and same IS_OPS_MANAGER gate as .vendoracct/.accountspayable. */
+.inviteaudit.on{display:block}
 .accountspayable{display:none} /* 2026-09-04, Vendor Accounting Level 2 (Accounts Payable) — same show/hide pattern as .vendoracct above, same IS_OPS_MANAGER gate */
 .accountspayable.on{display:block}
 #apBody .fld{margin-bottom:10px}
@@ -502,7 +504,7 @@ img,svg{max-width:100%}
     </div>
     <label class="search">
       <button class="search-ic" id="searchBtn" type="button" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
-      <input id="q" type="text" inputmode="search" autocomplete="off" placeholder="Search by phone, Case ID, vehicle reg. no. or client tracking ID…" aria-label="Search">
+      <input id="q" type="text" inputmode="search" autocomplete="off" placeholder="Search by phone, Case ID, vehicle reg. no., client tracking ID, caller ID or UCID…" aria-label="Search">
       <button class="x" id="clearSearch" type="button" aria-label="Clear"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
       <div class="search-dropdown" id="searchDropdown"></div>
     </label>
@@ -537,6 +539,16 @@ img,svg{max-width:100%}
     <button class="btn primary" id="gstExportBtn" type="button" style="display:none">
       <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
       Export GST
+    </button>
+    <!-- REJECT/ACCEPT table — 2026-09-30, client list item "table containing the
+         accept/reject status of various mechanics linked to ticket IDs". The per-
+         TICKET view already existed (Rejection History inside one closure) and the
+         per-VENDOR view exists in vendorPerformance; what was missing is the
+         cross-ticket grid. Same IS_OPS_MANAGER gate and hidden-by-default pattern
+         as the three ops buttons above. -->
+    <button class="btn primary" id="inviteAuditBtn" type="button" style="display:none">
+      <svg viewBox="0 0 24 24"><path d="M9 11l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+      Accept / Reject
     </button>
     <button class="btn primary" id="newBtn" type="button">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
@@ -589,6 +601,17 @@ img,svg{max-width:100%}
       <button class="btn ghost sm" id="vendorAcctBack" type="button">Back to Dashboard</button></div>
     <div class="hint" style="margin:0 0 10px" id="vaListHint">Completed cases (RSP Closed / Closed) that haven't been Operations-approved yet. Click a case to expand its details below it. Approving a case locks its fee fields and moves it out of this list.</div>
     <div class="report-lists" id="vaListColumns"></div>
+  </div>
+
+  <!-- REJECT/ACCEPT table — 2026-09-30, Operations Manager role only -->
+  <div class="inviteaudit" id="inviteAuditView">
+    <div class="sec-head"><h2>Accept / Reject</h2><span class="sub" id="iaSub">every invite sent to a mechanic, across all tickets</span><span class="spacer"></span>
+      <button class="btn ghost sm" id="inviteAuditRefresh" type="button">Refresh</button>
+      <button class="btn ghost sm" id="inviteAuditBack" type="button">Back to Dashboard</button></div>
+    <div class="fld" style="margin:0 0 10px">
+      <input type="text" id="iaFilter" placeholder="Filter by ticket, mechanic or status…">
+    </div>
+    <div id="iaBody"></div>
   </div>
 
   <!-- VENDOR ACCOUNTING — Level 2 (Accounts Payable), 2026-09-04, Operations Manager role only -->
@@ -724,6 +747,19 @@ const CONFIG = {
   reportName:   "Agent_Ticket_Report",  // read / update / search here — user-confirmed 2026-07-28 (was Create_Case_Report)
   phoneField:   "Phone_Number",         // primary global search field — real Create_Case field name (confirmed live); the form shows "Phone_Number1" but mirrors into this one via the create stage's extra() hook, and that's the field Agent_Ticket_Report actually searches on
   searchTextFields: ["Case_ID","Vehicle_Registration_Number","Client_Tracking_Id"], // additional fields the topbar search box also matches against (OR'd with phoneField)
+  /* callerID / UCID added to the topbar search 2026-09-28. Deliberately in their
+     OWN lists rather than appended to searchTextFields above: those three are
+     proven to work as report criteria, these two are brand-new fields on
+     Create_Case and it is not established that Agent_Ticket_Report exposes them
+     to a criteria query. Keeping them separate lets runSearch() fall back to the
+     exact criteria it uses today if the extended one returns nothing, so a field
+     the report cannot query degrades to the old behaviour instead of breaking
+     every search in the app.
+
+     UCID is matched as TYPED (a 17-digit call id), callerID on DIGITS ONLY -
+     Ozonetel stores it as "+917210036790" while an agent types the bare ten. */
+  searchExtraTextFields:  ["UCID"],
+  searchExtraDigitFields: ["callerID"],
   stageField:   "Status",               // text field on Create_Case that holds the current stage
   caseIdField:  "Case_ID",
   serviceTypeField: "Service_Type",      // "RSR" | "TOW" drives the branch
@@ -4018,46 +4054,77 @@ const CLOSURE_FIELDS=[
      matters because the extended fields only populate once the new Call_Log
      fields exist and a callback has actually landed — until then this looks
      exactly as it always has. */
-  { n:"__CallHistoryDisplay", l:"Call History", t:"computed", full:true,
-    compute:(r)=>{
+  /* Rendered as a real table with inline audio players (2026-09-29, user
+     request: "call history show in tabular form and agent also can listen the
+     audio recorded"). Was t:"computed", which meant every value was crammed
+     into a single-line <input readonly> and clipped at the panel edge — the
+     recording URLs in particular were present but unreachable.
+
+     Column set mirrors callCenter's own renderHistoryTable() so the two
+     screens stay recognisably the same thing, minus its per-row refresh
+     button (that re-polls Ozonetel, which belongs on the call-centre screen,
+     not on closure). The table scrolls horizontally inside its own container
+     rather than widening the page.
+
+     preload="none" is deliberate: without it every recording on the ticket
+     would start downloading the moment the closure page opened. The player is
+     paired with a plain link so a codec the browser cannot play, or a URL that
+     needs a separate login, is still reachable rather than silently dead. */
+  { n:"__CallHistoryDisplay", l:"Call History", t:"htmlblock", full:true,
+    html:(r)=>{
       const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
       if(!logs.length) return "";
-      const join=(parts)=>parts.filter(Boolean).join(" · ");
-      return logs.map(function(c){
-        const lines=[];
-        // Headline — what the old single line showed, unchanged.
-        lines.push("• "+join([
-          String(c.Call_Direction||"Outbound"),
-          c.Phone_Number||"",
-          c.Call_Status||"",
-          c.Added_Time||""
-        ]));
-        const agentLine=join([
-          c.Agent_Name ? ("Agent: "+c.Agent_Name) : "",
-          c.Call_Duration ? ("Talk: "+c.Call_Duration) : "",
-          c.Total_Duration ? ("Total: "+c.Total_Duration) : "",
-          c.Time_To_Answer ? ("Answered in: "+c.Time_To_Answer) : ""
-        ]);
-        if(agentLine) lines.push("    "+agentLine);
-        const timeLine=join([
-          c.Call_Start_Time ? ("Start: "+c.Call_Start_Time) : "",
-          c.Call_End_Time ? ("End: "+c.Call_End_Time) : ""
-        ]);
-        if(timeLine) lines.push("    "+timeLine);
-        const outcomeLine=join([
-          c.Call_Outcome ? ("Outcome: "+c.Call_Outcome) : "",
-          c.Transferred_To ? ("Transferred to: "+c.Transferred_To) : "",
-          c.Conference_Duration ? ("Conference: "+c.Conference_Duration) : ""
-        ]);
-        if(outcomeLine) lines.push("    "+outcomeLine);
-        // Recording links are printed in full rather than shortened — an agent
-        // needs to be able to copy one out, and a truncated URL is useless.
-        if(c.Audio_File_URL) lines.push("    Recording: "+c.Audio_File_URL);
-        if(c.Conference_Audio_URL) lines.push("    Conference recording: "+c.Conference_Audio_URL);
-        if(c.Call_Flow) lines.push("    Flow: "+c.Call_Flow);
-        if(c.UCID) lines.push("    UCID: "+c.UCID);
-        return lines.join("\n");
-      }).join("\n\n");
+      const TH='style="text-align:left;padding:7px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--worktop);border-bottom:1px solid var(--line)"';
+      const TD='style="padding:7px 10px;white-space:nowrap;border-bottom:1px solid var(--line);vertical-align:middle"';
+      const cell=(v)=>{
+        const t=(v==null?"":String(v)).trim();
+        return t ? esc(t) : `<span style="color:var(--muted)">—</span>`;
+      };
+      const player=(url)=>{
+        const u=(url==null?"":String(url)).trim();
+        if(!u) return `<span style="color:var(--muted)">—</span>`;
+        return `<audio controls preload="none" src="${esc(u)}" style="height:30px;width:190px;vertical-align:middle"></audio>`+
+          ` <a href="${esc(u)}" target="_blank" rel="noopener" style="font-size:11px">open</a>`;
+      };
+      // Only non-linked rows explain themselves — a call already linked to
+      // this ticket needs no justification for being here.
+      const matched=(c)=> (c._matchedBy && c._matchedBy!=="linked")
+        ? `<span style="font-family:var(--f-mono);font-size:10px;color:var(--muted)">${esc(c._matchedBy)}</span>`
+        : `<span style="font-family:var(--f-mono);font-size:10px;color:var(--ok)">linked</span>`;
+      const head=["When","Direction","Phone","Status","Agent","Answered In","Talk",
+                  "Total","Outcome","Transferred To","Conf. Dur.","Recording",
+                  "Conf. Recording","Call Flow","UCID","Matched"]
+        .map(function(h){ return "<th "+TH+">"+esc(h)+"</th>"; }).join("");
+      const body=logs.map(function(c){
+        return "<tr>"+[
+          cell(c.Added_Time||c.Call_Start_Time),
+          cell(c.Call_Direction||"Outbound"),
+          cell(c.Phone_Number),
+          cell(c.Call_Status),
+          cell(c.Agent_Name),
+          cell(c.Time_To_Answer),
+          cell(c.Call_Duration),
+          cell(c.Total_Duration),
+          cell(c.Call_Outcome),
+          cell(c.Transferred_To),
+          cell(c.Conference_Duration),
+          player(c.Audio_File_URL),
+          player(c.Conference_Audio_URL),
+          cell(c.Call_Flow),
+          cell(c.UCID),
+          matched(c)
+        ].map(function(v){ return "<td "+TD+">"+v+"</td>"; }).join("")+"</tr>";
+      }).join("");
+      // Only ever set when phone matches were capped — see
+      // CALL_LOG_PHONE_MATCH_MAX. Said plainly so a truncated list never
+      // reads as the complete one.
+      const hidden = logs.__phoneTruncated || 0;
+      const note = hidden
+        ? `<div class="hint" style="display:block;margin-top:8px">${hidden} older call${hidden===1?"":"s"} from this phone number ${hidden===1?"is":"are"} not shown.</div>`
+        : "";
+      return `<div style="overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)">`+
+        `<table style="border-collapse:collapse;width:100%;font-size:12px">`+
+        `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${note}`;
     },
     emptyHint:"No calls recorded for this ticket." },
   { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
@@ -4906,6 +4973,36 @@ async function legDistanceKm(points){
    failure (missing vendor, no base location on file, Google API down) just
    leaves the affected field(s) blank rather than blocking the actual ticket
    close — mutates `record` in place, doesn't throw. */
+/* Which of the PDF's two distance sources applies (2026-09-30, "FIELDS
+   EXPLANATION for VENDOR ACCOUNTING"). It gives DIFFERENT origins for the same
+   number depending on who actually worked the ticket:
+     "Tasks run by vendor on app"        -> the vendor's own captured GPS
+     "Tickets run by agent on behalf"    -> nearest vendor location on the table
+   Only that second case was implemented, so a vendor who was 2 km from the
+   breakdown but whose registered base is 15 km away was paid on 15 km.
+
+   Acceptance_Mode already carries the distinction ("Vendor Accepting via App"
+   vs "Agent Entering on Behalf of Vendor"), so no new field is needed.
+
+   Anything that is not recognisably the vendor-app mode returns false, which
+   keeps the existing nearest-base behaviour. A blank Acceptance_Mode on an old
+   ticket therefore computes exactly as it does today. */
+function vendorRanTicketInApp(record){
+  const mode=String((record&&record.Acceptance_Mode)||"").toLowerCase();
+  if(!mode) return false;
+  if(mode.indexOf("behalf")!==-1) return false;   // "Agent Entering on Behalf of Vendor"
+  return mode.indexOf("app")!==-1;                // "Vendor Accepting via App"
+}
+/* The point a distance is measured FROM, and the label for the log. Falls back
+   to `base` whenever the vendor-app GPS is missing — a vendor app that never got
+   a fix must not collapse the distance to nothing. */
+function vendorOriginFor(record, base){
+  if(vendorRanTicketInApp(record)){
+    const lat=parseCoord(record.RSP_Start_Latitude), lon=parseCoord(record.RSP_Start_Longitude);
+    if(lat!=null && lon!=null) return { lat:lat, lon:lon, source:"vendor start GPS (RSP_Start_*)" };
+  }
+  return base ? { lat:base.lat, lon:base.lon, source:"nearest base location" } : null;
+}
 async function runClosureDistanceCalculations(record){
   try{
     const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
@@ -4946,15 +5043,43 @@ async function runClosureDistanceCalculations(record){
             const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
             let legs=null;
             if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null) legs=[base,{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},base];
-            else if(record.Closure_Status==="Cancelled - Billable") legs=[base,{lat:bLat,lon:bLon},base];
+            else if(record.Closure_Status==="Cancelled - Billable"){
+              /* PDF "Vendor Roundtrip KM", the CANCEL cases. The two differ only
+                 in the middle point:
+                   vendor cancelled in the app -> the vendor's CANCEL location
+                   agent cancelled on behalf   -> the customer breakdown location
+                 The origin and the return leg stay "(A) nearest vendor location"
+                 in BOTH cases — that is what the PDF says, and it is why `base`
+                 is deliberately unchanged here.
+
+                 Falls back to the breakdown location whenever the cancel GPS is
+                 missing, so this is exactly today's behaviour plus a better
+                 middle point when one was actually recorded. */
+              let mid={lat:bLat,lon:bLon}, midSource="breakdown location";
+              if(vendorRanTicketInApp(record)){
+                const cLat=parseCoord(record.Cancel_Location_Lat), cLon=parseCoord(record.Cancel_Location_Lon);
+                if(cLat!=null && cLon!=null){ mid={lat:cLat,lon:cLon}; midSource="vendor cancel GPS (Cancel_Location_*)"; }
+              }
+              console.log("[Get-Rescue] TOW cancel round-trip mid-point:", midSource, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
+              legs=[base,mid,base];
+            }
             if(legs){ const km=await legDistanceKm(legs); if(km!=null) record.Vendor_Round_Trip_Distance=km; }
           }
         } else {
           // Vendor_Round_Trip_Distance is TOW's own field — forced null for Repair, per spec ("make VENDOR ROUND TRIP DISTANCE NULL, ONLY UPDATE THE VENDOR FLEET LOCATION").
           record.Vendor_Round_Trip_Distance=null;
           if((record.Vendor_Distance==null || record.Vendor_Distance==="") && record.Closure_Status==="Completed"){
-            const km=await legDistanceKm([base,{lat:bLat,lon:bLon}]);
-            if(km!=null) record.Vendor_Distance=km;
+            /* PDF "Actual KM (for REPAIR tickets only)": the origin is the
+               VENDOR START LOCATION when the vendor ran the task in the app, and
+               the nearest vendor location only when an agent ran it on their
+               behalf. vendorOriginFor() returns the latter unless the former is
+               genuinely available, so this can only ever become MORE accurate. */
+            const origin=vendorOriginFor(record, base);
+            if(origin){
+              console.log("[Get-Rescue] Vendor_Distance origin:", origin.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
+              const km=await legDistanceKm([origin,{lat:bLat,lon:bLon}]);
+              if(km!=null) record.Vendor_Distance=km;
+            }
           }
         }
       }
@@ -5706,6 +5831,167 @@ function cashCollectedForTicket(r){
   if(String(r.Payment_received||"").trim()!=="Yes") return 0;
   return Number(r.Remaining_Fee)||0;
 }
+/* ============================================================================
+   DAY / NIGHT VENDOR RATE LOOKUP — 2026-09-30
+   Client PDF: "FIELDS EXPLANATION for VENDOR ACCOUNTING"
+
+   THE CALCULATIONS ARE UNCHANGED. computeVendorFee() is not touched: KM Fee,
+   Gross Fee, Net Fee and Balance are computed exactly as before, from the same
+   four inputs — BASE FEE, BASE KM, KM RATE, SLAB KM. All that changes is WHICH
+   vendor-table field each of the first three is read from.
+
+   The PDF selects that field on three filters. Two of them were already being
+   handled: vendorKmSlabFieldFor() above resolves Service Type + Issue + Vehicle
+   into exactly the four categories the PDF lists (REPAIR / TOW 2W FBT /
+   TOW 4W FBT / TOW 4W MT), which is why it is reused here rather than a second
+   classifier being written. The third filter, ACCEPT TIME, is new.
+
+   SLAB KM is deliberately NOT part of this. The PDF maps the same KM_Slab_*
+   field for both day and night in all four categories, so the existing slab
+   lookup stands untouched.
+
+   NIGHT RULE, verbatim from the PDF:
+     HOUR OF ACCEPT TIME >= NIGHT START HOUR   OR
+     HOUR OF ACCEPT TIME <  NIGHT END HOUR
+   Both hours come from the vendor table, so a vendor whose night window differs
+   is handled without a code change. The OR (not AND) is what makes a window
+   wrapping midnight work: start 22, end 6 means 22:00-05:59 is night.
+
+   ⚠ THE 26 VENDOR FIELDS THIS NEEDS DO NOT EXIST IN ZOHO YET. Until they are
+   created, every lookup below misses and the code falls back to the existing
+   flat Base_Fee / Base_KM / KM_Rate — i.e. today's behaviour exactly, with no
+   change to any figure. That fallback is the whole safety property here: this
+   can be deployed before the fields exist and nothing moves.
+
+   Field names are GUESSED from the PDF's labels, because the real Zoho API
+   names cannot be read from here. Several spellings are tried per field and the
+   one that resolved is logged, so a wrong guess is a one-line correction in
+   apiNameCandidates() rather than a redesign. Confirm them against the Vendors
+   form and tell me which spelling is real.
+   ========================================================================= */
+// Maps the slab field the existing classifier returns onto the PDF's own
+// category wording. KM_Slab_Tow_2W_MT is deliberately absent: the PDF defines no
+// day/night rates for 2W MT, so that combination keeps using the flat fields.
+const VENDOR_RATE_CATEGORY_LABEL={
+  KM_Slab_Repair:     "REPAIR",
+  KM_Slab_Tow_2W_FBT: "TOW 2W FBT",
+  KM_Slab_Tow_4W_FBT: "TOW 4W FBT",
+  KM_Slab_Tow_4W_MT:  "TOW 4W MT"
+};
+// The PDF's own label stems, mapped to the calculation variable each one feeds.
+const VENDOR_RATE_LABEL_STEM={ baseFee:"BASE PAY", baseKm:"BASE KMS", kmRate:"EXTRA KM" };
+/* Zoho derives a field's API name from its label, and the exact transform is not
+   something this code can see. These are the plausible spellings of a label like
+   "BASE PAY DAY - REPAIR", most likely first. Add to this list if the real name
+   turns out to be none of them — it is the single place that needs changing. */
+function apiNameCandidates(label){
+  /* Zoho's label->API-name transform cannot be read from here, and the sensible
+     spellings genuinely differ ("BASE KMS" could become Base_KMS, Base_Kms or
+     BASE_KMS). Rather than bet on one, generate the realistic variants and let
+     readVendorNumber() use whichever actually exists on the record. Getting this
+     wrong costs a silent fall back to the flat rate, so breadth beats precision.
+
+     An earlier version treated any word of 3 letters or fewer as an acronym,
+     which turned PAY and DAY into PAY_DAY. Only genuine codes are upper-cased
+     now, and the all-Title variant covers the case where Zoho lower-cases them
+     anyway. */
+  const ACRONYM=/^(?:FBT|MT|TOW|KM|KMS|\d+W)$/i;
+  const words=label.replace(/\s*-\s*/g," ").replace(/\s+/g," ").trim().split(" ");
+  const titleWord=function(w){ return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase(); };
+  const keepAcronyms=words.map(function(w){ return ACRONYM.test(w) ? w.toUpperCase() : titleWord(w); }).join("_");
+  const allTitle=words.map(function(w){ return /\d/.test(w) ? w.toUpperCase() : titleWord(w); }).join("_");
+  const allUpper=words.join("_").toUpperCase();
+  const dashed=label.replace(/\s+/g,"_").replace(/-/g,"_");
+  return [keepAcronyms, allTitle, allUpper, dashed.toUpperCase(), dashed]
+    .filter(function(v,i,a){ return v && a.indexOf(v)===i; });
+}
+function vendorRateFieldNames(varKey, isNight, slabField){
+  const cat=VENDOR_RATE_CATEGORY_LABEL[slabField];
+  const stem=VENDOR_RATE_LABEL_STEM[varKey];
+  if(!cat || !stem) return [];
+  return apiNameCandidates(stem+" "+(isNight?"NIGHT":"DAY")+" - "+cat);
+}
+/* Returns {value, field} for the first candidate that holds a real number, or
+   null. A blank or non-numeric field counts as absent, so a half-configured
+   vendor falls back rather than silently paying zero. */
+function readVendorNumber(vendorRaw, names){
+  for(let i=0;i<names.length;i++){
+    const raw=vendorRaw ? vendorRaw[names[i]] : null;
+    if(raw==null || String(raw).trim()==="") continue;
+    const v=Number(raw);
+    if(!isNaN(v)) return { value:v, field:names[i] };
+  }
+  return null;
+}
+/* Reads an HOUR out of whatever shape the field turns out to be (2026-09-30).
+
+   NIGHT_START_HOUR / NIGHT_END_HOUR were created in Zoho as TIME fields, not
+   Number, so they come back as "22:00:00" or "10:00:00 PM". The first version of
+   this code ran Number() over that, got NaN, read it as "not configured", and
+   would have left every ticket on day rates without a single error to show for
+   it — the worst kind of failure, because the screen looks fine and the payouts
+   are quietly wrong.
+
+   Handled here rather than by asking for the fields to be rebuilt as Numbers: a
+   time picker is the better control for this anyway, and a plain number still
+   works if any vendor record holds one. Only the HOUR is used, per the PDF —
+   minutes are ignored deliberately, its rule compares whole hours. */
+function parseHourValue(raw){
+  if(raw==null) return null;
+  const s=String(raw).trim();
+  if(s==="") return null;
+  if(/^\d{1,2}$/.test(s)){                       // plain number: "22"
+    const n=Number(s);
+    return (n>=0 && n<=23) ? n : null;
+  }
+  const m=s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/);
+  if(m){                                         // time: "22:00:00", "10:00 PM"
+    let h=Number(m[1]);
+    const ap=(m[4]||"").toLowerCase();
+    if(ap==="pm" && h<12) h+=12;
+    if(ap==="am" && h===12) h=0;
+    return (h>=0 && h<=23) ? h : null;
+  }
+  const d=parseAnyDateTime(s);                   // anything date-shaped
+  return d ? d.getHours() : null;
+}
+function readVendorHour(vendorRaw, names){
+  for(let i=0;i<names.length;i++){
+    const h=parseHourValue(vendorRaw ? vendorRaw[names[i]] : null);
+    if(h!=null) return { value:h, field:names[i] };
+  }
+  return null;
+}
+function vendorNightWindow(vendorRaw){
+  const start=readVendorHour(vendorRaw, ["NIGHT_START_HOUR","Night_Start_Hour","Night_Start","NIGHT_START"]);
+  const end=readVendorHour(vendorRaw, ["NIGHT_END_HOUR","Night_End_Hour","Night_End","NIGHT_END"]);
+  if(!start || !end){
+    // Said out loud: a half-configured window is the one case that looks
+    // configured but silently pays day rates all night.
+    if(start || end) console.warn("[Get-Rescue] vendor night window ignored — only one of NIGHT_START_HOUR / NIGHT_END_HOUR has a usable value (start:", start&&start.value, "end:", end&&end.value, "). Both are required; every ticket for this vendor will use DAY rates until the other is set.");
+    return null;
+  }
+  return { start:start.value, end:end.value };
+}
+/* ACCEPT TIME per the PDF ("Date&TIME (Acceptance date-time)"). TOW and RSR
+   stamp different fields, so both are read with the ticket's own service type
+   deciding which takes precedence — and each falls back to the other, because a
+   ticket that switched type mid-flow can carry the wrong one. */
+function vendorAcceptHour(record){
+  const svc=String(record[CONFIG.serviceTypeField]||"").toUpperCase();
+  const raw = svc==="TOW"
+    ? (record.Service_Acceptance_For_Tow || record.Service_Acceptance)
+    : (record.Service_Acceptance || record.Service_Acceptance_For_Tow);
+  const d=parseAnyDateTime(raw);
+  return d ? d.getHours() : null;
+}
+function isNightAcceptance(record, vendorRaw){
+  const win=vendorNightWindow(vendorRaw);
+  if(!win) return false;
+  const h=vendorAcceptHour(record);
+  if(h==null) return false;   // no usable accept time -> day, never a guess
+  return h>=win.start || h<win.end;
+}
 function computeVendorFeeForTicket(record, vendorRaw){
   if(!vendorRaw) return null;
   const svc=String(record[CONFIG.serviceTypeField]||"").toUpperCase();
@@ -5713,11 +5999,20 @@ function computeVendorFeeForTicket(record, vendorRaw){
   const slabField=vendorKmSlabFieldFor(record);
   if(!slabField) return null;
   const slabKm=Number(vendorRaw[slabField])||0;
+  /* Each of the three reads falls back to its flat field independently. That is
+     deliberate rather than all-or-nothing: a vendor with only some of the new
+     fields filled in still gets the right figure for the ones that are set,
+     instead of the whole rate card silently reverting. */
+  const night=isNightAcceptance(record, vendorRaw);
+  const feeHit =readVendorNumber(vendorRaw, vendorRateFieldNames("baseFee", night, slabField));
+  const kmHit  =readVendorNumber(vendorRaw, vendorRateFieldNames("baseKm",  night, slabField));
+  const rateHit=readVendorNumber(vendorRaw, vendorRateFieldNames("kmRate",  night, slabField));
+  console.log("[Get-Rescue] vendor rate lookup — "+(VENDOR_RATE_CATEGORY_LABEL[slabField]||slabField)+    " / "+(night?"NIGHT":"DAY")+" | base fee: "+(feeHit?feeHit.field:"Base_Fee (flat fallback)")+    " | base km: "+(kmHit?kmHit.field:"Base_KM (flat fallback)")+    " | km rate: "+(rateHit?rateHit.field:"KM_Rate (flat fallback)")+    " | slab: "+slabField);
   return computeVendorFee({
-    baseFee: vendorRaw.Base_Fee,
+    baseFee: feeHit ? feeHit.value : vendorRaw.Base_Fee,
     actualKm: actualKm,
-    baseKm: vendorRaw.Base_KM,
-    kmRate: vendorRaw.KM_Rate,
+    baseKm: kmHit ? kmHit.value : vendorRaw.Base_KM,
+    kmRate: rateHit ? rateHit.value : vendorRaw.KM_Rate,
     slabKm: slabKm,
     extras: record.Extras,
     // Derived, not read from the stored field (2026-09-14) — see
@@ -8527,15 +8822,78 @@ async function logCallAttempt(recordId, data){
     return "";
   }
 }
-async function loadCallLogsForTicket(recordId){
+/* Last 10 digits, so "+91 72100 36790", "917210036790" and "7210036790" all
+   compare equal. Returns "" for anything shorter than 10 digits, and "" never
+   matches — without that guard a 3-digit fragment would pull half the call log
+   onto a ticket. */
+function callLogPhoneKey(v){
+  const d=String(v==null?"":v).replace(/\D/g,"");
+  return d.length>=10 ? d.slice(-10) : "";
+}
+/* Linked and UCID-matched calls are never capped — those are unambiguously
+   this ticket's. A phone match is looser: a corporate client whose whole fleet
+   calls from one switchboard number would otherwise pull hundreds of unrelated
+   calls onto every single ticket. */
+const CALL_LOG_PHONE_MATCH_MAX = 20;
+async function loadCallLogsForTicket(recordId, record){
   if(!recordId) return [];
+  // `record` is optional so both existing call sites keep working untouched.
+  // It falls back to state.record ONLY when that is genuinely this ticket —
+  // reading a different ticket's phone/UCID here would attach the wrong calls,
+  // which is worse than showing none.
+  let rec = record;
+  if(!rec && typeof state!=="undefined" && state.record && String(state.record.ID||"")===String(recordId)) rec = state.record;
+  rec = rec || {};
   try{
     // Same "fetch the report, filter client-side on the unwrapped lookup id"
     // pattern every other Lookup-backed report read in this file uses (Invites,
     // Task_Rejections, On_Demand_Invoicing) rather than guessing Zoho's own
     // server-side Lookup criteria syntax, which has bitten this project before.
     const all=await apiGetReport(CONFIG.callLogReport, null, 500);
-    const mine=all.filter(function(c){ return String(unwrapLookup(c.Create_Case)||"")===String(recordId); });
+    /* Matching widened 2026-09-29 (user request: call history on the closure
+       page by phone number or UCID). This used to match ONLY the Create_Case
+       lookup, which meant an INBOUND call could never appear: recordRingingCall
+       .deluge writes its row the moment the phone rings, before any ticket
+       exists to link it to — so the call that PRODUCED the ticket was the one
+       call this page could never show.
+
+       Three rules, in priority order. The Create_Case link still wins and is
+       unchanged, so every call that shows today still shows, identically —
+       this only ever ADDS rows that were previously invisible. */
+    const wantUcid = String(rec.UCID==null?"":rec.UCID).trim();
+    const phoneKeys = [];
+    [rec.Phone_Number1, rec.Phone_Number, rec.callerID].forEach(function(v){
+      const k=callLogPhoneKey(v);
+      if(k && phoneKeys.indexOf(k)===-1) phoneKeys.push(k);
+    });
+    const linked=[], byUcid=[], byPhone=[];
+    const seen={};
+    all.forEach(function(c){
+      const id=String(c.ID||"");
+      if(!id || seen[id]) return; // one row can satisfy several rules — count it once
+      if(String(unwrapLookup(c.Create_Case)||"")===String(recordId)){
+        seen[id]=1; c._matchedBy="linked"; linked.push(c); return;
+      }
+      const rowUcid=String(c.UCID==null?"":c.UCID).trim();
+      if(wantUcid && rowUcid && rowUcid===wantUcid){
+        seen[id]=1; c._matchedBy="UCID"; byUcid.push(c); return;
+      }
+      const rowPhone=callLogPhoneKey(c.Phone_Number);
+      if(rowPhone && phoneKeys.indexOf(rowPhone)!==-1){
+        seen[id]=1; c._matchedBy="phone"; byPhone.push(c); return;
+      }
+    });
+    // Newest-first before the cap, so a capped list keeps the RECENT calls.
+    byPhone.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+    const phoneTotal=byPhone.length;
+    const phoneKept=byPhone.slice(0, CALL_LOG_PHONE_MATCH_MAX);
+    const mine=linked.concat(byUcid, phoneKept);
+    // Chronological overall — the report's own order stops meaning anything
+    // once rows from three different rules are merged. Record IDs increase
+    // monotonically, the same recency proxy loadDashboard() already relies on.
+    mine.sort(function(a,b){ return String(a.ID).localeCompare(String(b.ID), undefined, {numeric:true}); });
+    if(phoneTotal>phoneKept.length) mine.__phoneTruncated = phoneTotal-phoneKept.length;
+    console.log("[Get-Rescue] call history for ticket "+recordId+": "+linked.length+" linked, "+byUcid.length+" by UCID, "+phoneKept.length+" by phone"+(phoneTotal>phoneKept.length?(" (+"+(phoneTotal-phoneKept.length)+" older phone matches hidden)"):"")+".");
     CALL_LOGS_BY_TICKET[String(recordId)]=mine;
     return mine;
   }catch(e){
@@ -9644,18 +10002,33 @@ function onSearchInput(){
    so it can't break the criteria string. */
 async function runSearch(){
   const raw=$("q").value.trim();
-  if(raw.length<3){ toast("Type at least 3 characters — phone number, Case ID, vehicle reg. no., or client tracking ID","err"); return; }
+  if(raw.length<3){ toast("Type at least 3 characters — phone number, Case ID, vehicle reg. no., client tracking ID, caller ID or UCID","err"); return; }
   const digits=raw.replace(/\D/g,"");
   const safe=raw.replace(/"/g,"");
   const dd=$("searchDropdown");
   dd.classList.add("on");
   dd.innerHTML='<div class="sd-msg"><div class="spin" style="width:22px;height:22px;margin-bottom:8px"></div>Searching…</div>';
-  const clauses=[];
-  if(digits.length>=3) clauses.push("("+CONFIG.phoneField+'.contains("'+digits+'"))');
-  CONFIG.searchTextFields.forEach(f=>{ clauses.push("("+f+'.contains("'+safe+'"))'); });
+  // The criteria this search has always used. Kept intact as the fallback.
+  const baseClauses=[];
+  if(digits.length>=3) baseClauses.push("("+CONFIG.phoneField+'.contains("'+digits+'"))');
+  CONFIG.searchTextFields.forEach(f=>{ baseClauses.push("("+f+'.contains("'+safe+'"))'); });
+  // The same clauses plus the two telephony fields.
+  const clauses=baseClauses.slice();
+  if(digits.length>=3) CONFIG.searchExtraDigitFields.forEach(f=>{ clauses.push("("+f+'.contains("'+digits+'"))'); });
+  CONFIG.searchExtraTextFields.forEach(f=>{ clauses.push("("+f+'.contains("'+safe+'"))'); });
   const crit=clauses.join(" || ");
-  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| fields:", [CONFIG.phoneField].concat(CONFIG.searchTextFields), "| typed:", raw, "| criteria:", crit);
-  const recs=await getTickets(crit);
+  const baseCrit=baseClauses.join(" || ");
+  console.log("[Get-Rescue] search — report:", CONFIG.reportName, "| typed:", raw, "| criteria:", crit);
+  let recs=await getTickets(crit);
+  /* apiGetReport() swallows a bad criteria and returns [] rather than throwing, so
+     an empty result is ambiguous: either nothing matched, or Agent_Ticket_Report
+     cannot query callerID/UCID. Retrying with the proven criteria resolves both
+     safely — a genuine no-match simply returns empty twice, at the cost of one
+     extra call on a search that was going to show "no ticket found" anyway. */
+  if(!recs.length && crit!==baseCrit){
+    console.warn("[Get-Rescue] search: no match including callerID/UCID — retrying with the original fields only. If this line appears on EVERY search, Agent_Ticket_Report does not expose those two fields to criteria and the extra lists in CONFIG should be emptied.");
+    recs=await getTickets(baseCrit);
+  }
   console.log("[Get-Rescue] search matched", recs.length, "record(s):", recs);
   if(!recs.length){ dd.innerHTML=`<div class="sd-msg">No ticket found for "${esc(raw)}"</div>`; return; }
   dd.innerHTML=recs.map(rowHtml).join("");
@@ -9720,6 +10093,7 @@ function showView(v){
   // Vendor Accounting Level 1 (2026-09-04) — same on/off toggle pattern as
   // opsMapView above.
   $("vendorAcctView").classList.toggle("on", v==="vendoracct");
+  $("inviteAuditView").classList.toggle("on", v==="inviteaudit");
   // Vendor Accounting Level 2 (2026-09-04) — same on/off toggle pattern as
   // vendorAcctView above.
   $("accountsPayableView").classList.toggle("on", v==="accountspayable");
@@ -9950,7 +10324,7 @@ async function openTicket(rec){
   // re-render below. Fully safe if the Call_Log form doesn't exist: the fetch
   // fails, the cache holds [], and the field shows its own "No calls recorded"
   // hint (loadCallLogsForTicket() swallows and logs).
-  loadCallLogsForTicket(state.recordId).then(function(logs){
+  loadCallLogsForTicket(state.recordId, state.record).then(function(logs){
     if(logs && logs.length && state.recordId) rerenderCurrentView();
   });
   // seedAcceptanceVendorFields() is now called from renderWizard() itself
@@ -10630,6 +11004,20 @@ function buildField(f){
     const val = typeof f.compute==="function" ? f.compute(state.record) : "";
     wrap.innerHTML = val
       ? lab+`<input type="text" readonly value="${esc(val)}">`
+      : lab+`<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`;
+  } else if(f.t==="htmlblock"){
+    /* Read-only block that renders its own HTML (2026-09-29). Added because
+       t:"computed" puts its value inside a single-line <input readonly>, which
+       is fine for one short string and useless for anything with structure —
+       the Call History panel was being clipped to one line by it.
+
+       Same "computed at render time, nothing stored" contract as computed and
+       navlink above, so collectStep() skips it for the same reason. f.html(record)
+       returns the markup; returning "" falls back to f.emptyHint. The callee
+       is responsible for escaping — every caller here builds through esc(). */
+    const markup = typeof f.html==="function" ? (f.html(state.record)||"") : "";
+    wrap.innerHTML = markup
+      ? lab+markup
       : lab+`<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`;
   } else if(f.t==="qrblock"){
     // Decorative QR placeholder (2026-08-11, user request) — same pattern/
@@ -11512,7 +11900,7 @@ function closureFieldGroups(){
     keys.forEach(function(k){
       const st=byKey[k]; if(!st) return;
       st.fields.forEach(function(f){
-        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||f.t==="computed"||f.t==="qrblock") return; // no meaningful value to show/edit here
+        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||f.t==="computed"||f.t==="htmlblock"||f.t==="qrblock") return; // no meaningful value to show/edit here
         if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
         if(f.closureHide) return;
         fields.push(f);
@@ -11597,6 +11985,10 @@ function closureFieldValueDisplay(f){
     const val = typeof f.compute==="function" ? f.compute(state.record) : "";
     return val ? {text: val, empty:false} : {text:(f.emptyHint||"—"), empty:true};
   }
+  // htmlblock carries no plain-text value — closureFieldRowHtml() renders its
+  // markup directly. Handled here anyway so it can never fall through to the
+  // generic object/array branches below and print "[object Object]".
+  if(f.t==="htmlblock") return {text:"", empty:true};
   if(f.t==="file"){
     if(state.files[f.n]) return {text:"Selected: "+state.files[f.n].name, empty:false};
     // Real bug fixed 2026-09-11 — same root cause as buildField()'s own
@@ -11638,6 +12030,16 @@ function closureFieldRowHtml(f){
   // intentionally doesn't carry that class, so clicking it does nothing
   // rather than opening an editor that could try to write a payload against
   // a field Zoho has never heard of.
+  // Same non-clickable, never-editable contract as the computed row just
+  // below — f.n is synthetic, so this must never reach openFieldEditor().
+  // Stacked rather than inline: a table needs the full row width.
+  if(f.t==="htmlblock"){
+    const markup = typeof f.html==="function" ? (f.html(state.record)||"") : "";
+    return `<div class="crow-ro" style="display:block">
+      <span class="k" style="display:block;margin-bottom:6px">${esc(f.l)}</span>
+      ${markup || `<span class="v empty">${esc(f.emptyHint||"—")}</span>`}
+    </div>`;
+  }
   if(f.t==="computed"){
     return `<div class="crow-ro">
       <span class="k">${esc(f.l)}</span>
@@ -12041,6 +12443,7 @@ function collectStep(validate){
     if(f.t==="button") return; // no DOM value to read — its own onclick sets state.record directly
     if(f.t==="navlink") return; // computed display only, nothing stored — see buildField's own comment
     if(f.t==="computed") return; // same "computed display only" reasoning as navlink — see buildField's own comment
+    if(f.t==="htmlblock") return; // ditto — renders its own markup, stores nothing
     if(f.t==="qrblock") return; // same "display only" reasoning — purely decorative, see buildField's own comment
     if(f.t==="remarks") return; // state.record kept current by the Add-button handler (see wireField) — nothing to scrape from the DOM
     let v;
@@ -12954,7 +13357,145 @@ $("opsMapBtn").onclick=loadOpsMap;
 $("opsMapBack").onclick=function(){ showView("dashboard"); loadDashboard(); };
 $("opsMapEngagementFilter").onchange=renderOpsMapMarkers;
 $("opsMapServiceFilter").onchange=renderOpsMapMarkers;
+/* ============================================================================
+   ACCEPT / REJECT TABLE — 2026-09-30
+   Client list item: "table containing the accept/reject status of various
+   mechanics linked to ticket IDs".
+
+   Two narrower views of this data already existed and neither answers the ask:
+   the closure screen shows Rejection History for ONE ticket, and
+   vendorPerformance shows rejections for ONE vendor. What was missing is the
+   cross-ticket grid — every mechanic against every ticket in one place.
+
+   Built on Invites_Report, not Task_Rejections, because Invites is the only
+   source that carries ALL THREE outcomes. A rejection writes a Task_Rejections
+   row, but an ACCEPT and a still-PENDING invite write nothing there — a table
+   built on rejections alone could never show who accepted or who has not
+   replied, which is most of what this screen is for. Task_Rejections is then
+   joined on for the reject reason and time, which only it carries.
+
+   getTaskRejections (the Custom API) is deliberately NOT used: it returns
+   {id, RSP_Name, Rejected_At} with no RSID, so it cannot key a per-ticket
+   table. It exists for vendorPerformance, whose portal profile cannot read the
+   report directly. This widget can — loadRejectionHistory()/loadInviteStatuses()
+   already do, and this reuses their exact read shape with the per-ticket filter
+   removed.
+
+   READ-ONLY, and gated to IS_OPS_MANAGER like every other ops screen. It writes
+   nothing and touches no existing function, so it cannot affect assignment,
+   closure or payouts.
+   ========================================================================= */
+let INVITE_AUDIT_ROWS=null;   // cached per visit; Refresh clears it
+/* Reads a Zoho date-time into something sortable. Falls back to 0 rather than
+   dropping the row — an invite with an unparseable stamp still matters. */
+function iaTimeOf(v){
+  const d=parseAnyDateTime(v);
+  return d ? d.getTime() : 0;
+}
+/* One row per INVITE. Status is derived from the two fields vendorTicket
+   actually writes on Accept/Reject (Service_Acceptance_Next="Yes" and
+   Status="RSP REJECT") — see loadInviteStatuses()'s own comment for why those
+   are the reliable signals. Anything else is genuinely still pending. */
+function iaStatusOf(inv){
+  if(String(inv.Service_Acceptance_Next||"").trim().toLowerCase()==="yes") return "Accepted";
+  if(String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1) return "Rejected";
+  return "Pending";
+}
+async function loadInviteAudit(){
+  showView("inviteaudit");
+  if(INVITE_AUDIT_ROWS){ renderInviteAudit(); return; }
+  $("iaBody").innerHTML=`<div class="hint" style="display:block;padding:16px">Loading…</div>`;
+  try{
+    const fn=resolve("getRecords");
+    if(!fn){ $("iaBody").innerHTML=`<div class="hint" style="display:block;padding:16px">getRecords is unavailable — cannot read invites.</div>`; return; }
+    // Same no-server-side-criteria read both existing loaders use: a criteria
+    // against the RSID Lookup is confirmed broken (Zoho code 3330).
+    const invRes=await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:1000 });
+    const invites=(invRes && invRes.code===3000 && Array.isArray(invRes.data)) ? invRes.data : [];
+    if(!invites.length) console.warn("[Get-Rescue] loadInviteAudit: no Invites rows came back — code:", invRes&&invRes.code, invRes);
+    // Rejections are best-effort: they only add reason/time to rows already
+    // present, so a failure here degrades the detail, never the table.
+    let rejections=[];
+    try{
+      const rjRes=await fn({ app_name:CONFIG.appName, report_name:CONFIG.taskRejectionsReport, field_config:"all", max_records:1000 });
+      if(rjRes && rjRes.code===3000 && Array.isArray(rjRes.data)) rejections=rjRes.data;
+    }catch(e){ console.warn("[Get-Rescue] loadInviteAudit: Task_Rejections read failed — reasons/times will be blank", e); }
+    // Ticket id -> Case ID label, from whatever the dashboard already holds.
+    // Never fetched again: this screen is an audit view, not a ticket loader.
+    const labelById={};
+    (state.tickets||[]).forEach(function(t){ if(t && t.ID!=null) labelById[String(t.ID)]=caseLabel(t); });
+    INVITE_AUDIT_ROWS=invites.map(function(inv){
+      const ticketId=String(unwrapLookup(inv.RSID)||"");
+      const who=lookupNamesFor(inv.Vendor, OPTIONS.vendors)
+             || lookupNamesFor(inv.Technician, OPTIONS.technicians)
+             || unwrapLookupDisplay(inv.Vendor) || unwrapLookupDisplay(inv.Technician) || "—";
+      const status=iaStatusOf(inv);
+      // Matched on ticket AND mechanic: one ticket can be rejected by several
+      // mechanics, so matching on ticket alone would show the wrong reason.
+      let reason=String(inv.Reject_Reason||"").trim(), respondedAt="";
+      if(status==="Rejected"){
+        const rj=rejections.find(function(x){
+          return String(unwrapLookup(x.RSID)||"")===ticketId &&
+                 String(x.RSP_Name||"").trim().toLowerCase()===String(who).trim().toLowerCase();
+        });
+        if(rj){
+          respondedAt=String(rj.Rejected_At||"").trim();
+          if(!reason) reason=String(rj.Reason||"").trim();
+        }
+      }
+      const invitedAt=String(inv.Invited_At||inv.Added_Time||"").trim();
+      return { ticketId:ticketId,
+               ticket: labelById[ticketId] || unwrapLookupDisplay(inv.RSID) || ticketId || "—",
+               who:who, status:status, invitedAt:invitedAt, respondedAt:respondedAt,
+               reason:reason, sortAt: iaTimeOf(respondedAt||invitedAt) };
+    });
+    // Newest activity first — an ops manager is looking at what just happened.
+    INVITE_AUDIT_ROWS.sort(function(a,b){ return b.sortAt-a.sortAt; });
+    console.log("[Get-Rescue] loadInviteAudit:", INVITE_AUDIT_ROWS.length, "invite row(s) from", invites.length, "Invites and", rejections.length, "Task_Rejections.");
+  }catch(e){
+    console.warn("[Get-Rescue] loadInviteAudit failed", e);
+    INVITE_AUDIT_ROWS=[];
+  }
+  renderInviteAudit();
+}
+function renderInviteAudit(){
+  const host=$("iaBody"); if(!host) return;
+  const rows=INVITE_AUDIT_ROWS||[];
+  const q=String(($("iaFilter")&&$("iaFilter").value)||"").trim().toLowerCase();
+  const shown=q ? rows.filter(function(r){
+    return (r.ticket+" "+r.ticketId+" "+r.who+" "+r.status+" "+r.reason).toLowerCase().indexOf(q)!==-1;
+  }) : rows;
+  const counts={Accepted:0,Rejected:0,Pending:0};
+  shown.forEach(function(r){ counts[r.status]=(counts[r.status]||0)+1; });
+  $("iaSub").textContent = shown.length+" invite"+(shown.length===1?"":"s")+" · "+
+    counts.Accepted+" accepted · "+counts.Rejected+" rejected · "+counts.Pending+" pending";
+  if(!shown.length){
+    host.innerHTML=`<div class="hint" style="display:block;padding:16px">${rows.length?"No invite matches that filter.":"No invites have been sent yet."}</div>`;
+    return;
+  }
+  const TH='style="text-align:left;padding:8px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--worktop);border-bottom:1px solid var(--line)"';
+  const TD='style="padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top"';
+  const pill=function(st){
+    const c = st==="Accepted" ? "var(--ok)" : (st==="Rejected" ? "var(--stop)" : "var(--wait)");
+    const bg= st==="Accepted" ? "var(--ok-soft)" : (st==="Rejected" ? "var(--stop-soft)" : "var(--wait-soft)");
+    return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${bg};color:${c};font-family:var(--f-mono);font-size:10px;letter-spacing:.04em">${esc(st.toUpperCase())}</span>`;
+  };
+  const cell=function(v){ const t=String(v==null?"":v).trim(); return t?esc(t):`<span style="color:var(--muted)">—</span>`; };
+  const head=["Ticket","Mechanic","Status","Invited","Responded","Reason"]
+    .map(function(h){ return "<th "+TH+">"+esc(h)+"</th>"; }).join("");
+  const body=shown.map(function(r){
+    return "<tr>"+[cell(r.ticket),cell(r.who),pill(r.status),cell(r.invitedAt),cell(r.respondedAt),cell(r.reason)]
+      .map(function(v){ return "<td "+TD+">"+v+"</td>"; }).join("")+"</tr>";
+  }).join("");
+  host.innerHTML=`<div style="overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)">`+
+    `<table style="border-collapse:collapse;width:100%;font-size:12.5px">`+
+    `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
 $("vendorAcctBtn").onclick=loadVendorAcct;
+$("inviteAuditBtn").onclick=loadInviteAudit;
+$("inviteAuditBack").onclick=function(){ showView("dashboard"); };
+$("inviteAuditRefresh").onclick=function(){ INVITE_AUDIT_ROWS=null; loadInviteAudit(); };
+$("iaFilter").addEventListener("input", function(){ renderInviteAudit(); });
 $("vendorAcctBack").onclick=function(){ showView("dashboard"); loadDashboard(); };
 // Grid/List toggle (2026-09-14) — clears the selection on the way out of grid
 // mode so a stale tick can never be carried back in and bulk-approved blind,
@@ -13232,6 +13773,7 @@ async function boot(){
   $("opsMapBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // Vendor Accounting Level 1 (2026-09-04) — same gate as Ops Map above.
   $("vendorAcctBtn").style.display = IS_OPS_MANAGER ? "" : "none";
+  $("inviteAuditBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // Vendor Accounting Level 2 (2026-09-04) — same gate as Level 1 above.
   $("accountsPayableBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // GST export (2026-09-25) — same gate as the three ops buttons above.

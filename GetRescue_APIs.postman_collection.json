@@ -1,0 +1,446 @@
+{
+  "info": {
+    "name": "Get-Rescue APIs",
+    "description": "Ticket search and ticket create/update for the Get-Rescue Zoho Creator app.\n\n## Before you start\n\nSet the collection variables (Collection > Variables):\n\n- `searchKey` — already filled in, the public key for searchTickets\n- `createKey` — already filled in, the public key for createTicket\n\n## How Creator Custom APIs behave\n\nEach API is registered in Zoho with ONE HTTP method, and that choice decides where parameters go:\n\n- **GET** — parameters go in the query string (searchTickets works this way)\n- **POST** — parameters go in the JSON body, and query-string parameters are IGNORED\n\nIf a request returns `9400 The provided HTTP method is not valid for this custom API`, the API is registered with the other method. Swap it and move the parameters accordingly.\n\n## Reading the response\n\nEvery response is wrapped by Creator:\n\n```json\n{ \"result\": \"<a JSON string>\", \"code\": 3000 }\n```\n\nThe outer `code: 3000` only means Creator ran the script. **Parse `result` and read the inner `code`** — that is the real outcome. The tests in this collection do exactly that.\n\n## Verified\n\nEvery request here was run against the live APIs on 28 September 2026. searchTickets is registered as **GET**, createTicket as **POST** — that is measured, not assumed.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://www.zohoapis.in/creator/custom/getrescued",
+      "type": "string"
+    },
+    {
+      "key": "searchKey",
+      "value": "yshxh6m9PDzqjhmnPACrbBWMY",
+      "type": "string"
+    },
+    {
+      "key": "createKey",
+      "value": "thd8DO2kGUyvb13hqwmFndD0H",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Search Tickets",
+      "description": "One search term is tried against seven fields. Registered as GET, so parameters go in the query string.\n\n| Field | Match |\n| --- | --- |\n| Case ID | as sent |\n| Vehicle registration | as sent |\n| Client tracking ID | as sent |\n| Customer name | as sent |\n| UCID | as sent |\n| Phone number | last 10 digits |\n| Caller ID | last 10 digits |\n\nPhone and caller ID match on the last ten digits, so `+91 72100 36790`, `07210036790` and `7210036790` all find the same ticket.",
+      "item": [
+        {
+          "name": "By phone number",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/searchTickets?publickey={{searchKey}}&query=7210036790&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "searchTickets"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{searchKey}}"
+                },
+                {
+                  "key": "query",
+                  "value": "7210036790",
+                  "description": "Any of the seven searchable values. Minimum 3 characters."
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Optional. Defaults to 20, capped at 100."
+                }
+              ]
+            },
+            "description": "Verified live: returns the most recent tickets carrying this number, newest first."
+          },
+          "response": []
+        },
+        {
+          "name": "By Case ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/searchTickets?publickey={{searchKey}}&query=RSID711024",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "searchTickets"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{searchKey}}"
+                },
+                {
+                  "key": "query",
+                  "value": "RSID711024"
+                }
+              ]
+            },
+            "description": "A full Case ID returns exactly that ticket. A partial one (`RSID711`) returns every ticket whose ID contains it."
+          },
+          "response": []
+        },
+        {
+          "name": "By UCID (telephony call id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/searchTickets?publickey={{searchKey}}&query=16203361546765504",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "searchTickets"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{searchKey}}"
+                },
+                {
+                  "key": "query",
+                  "value": "16203361546765504"
+                }
+              ]
+            },
+            "description": "UCID matches the term exactly as sent, not on the last ten digits — it is a 17-digit Ozonetel call id, and trimming it would match the wrong ticket.\n\nNOTE: the `UCID` and `callerID` fields on Create_Case are new and nothing populates them yet, so this returns NO_MATCH until a ticket is created carrying call details."
+          },
+          "response": []
+        },
+        {
+          "name": "No match",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/searchTickets?publickey={{searchKey}}&query=ZZZNOTHING",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "searchTickets"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{searchKey}}"
+                },
+                {
+                  "key": "query",
+                  "value": "ZZZNOTHING"
+                }
+              ]
+            },
+            "description": "Returns `result: NO_MATCH` with an empty array. A search that finds nothing is a SUCCESS, not an error — check `result`, not just `code`."
+          },
+          "response": []
+        },
+        {
+          "name": "Query too short (guard)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/searchTickets?publickey={{searchKey}}&query=71",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "searchTickets"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{searchKey}}"
+                },
+                {
+                  "key": "query",
+                  "value": "71"
+                }
+              ]
+            },
+            "description": "Fewer than 3 characters is refused with `QUERY_TOO_SHORT`. A one or two character term matches most of the table and is never what the caller intended."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Create / Update Ticket",
+      "description": "One API does both. Omit `recordId` to create; supply it to update.\n\n**Set the `createKey` collection variable before running these.**\n\nIf these return `9400`, the API is registered as GET rather than POST — move the body fields into the query string.",
+      "item": [
+        {
+          "name": "Create a ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Test Customer\",\n  \"mobile\": \"7210036790\",\n  \"email\": \"test@example.com\",\n  \"vehicle\": \"Maruti Suzuki Brezza\",\n  \"issue\": \"AIR FILL\",\n  \"callerID\": \"+917210036790\",\n  \"ucid\": \"16203361546765504\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "Creates a Create_Case record and returns `mode: created` with the new `recordId` and `caseId`.\n\n**Required:** customerName, mobile, vehicle, issue.\n**Optional:** email, callerID, ucid.\n\n**vehicle** — either a Vehicle Master record ID, or the vehicle name exactly as it appears there (case does not matter).\n\n**issue** — either a Vehicle Issue record ID, or the issue name. Several may be sent comma-separated. If any resolves to a TOW-type issue the ticket is created as TOW, otherwise RSR.\n\n**callerID / ucid** — the telephony details of the call this ticket came from. Both are optional; omit them for a ticket raised any other way. They are echoed back in the response so you can confirm what was stored, and both become searchable through the searchTickets API.\n\nA value still containing a placeholder such as `$CallerID$` is treated as absent and stored blank — storing that literal text would make the ticket look like it came from a call it did not."
+          },
+          "response": []
+        },
+        {
+          "name": "Create a ticket (minimum fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerName\": \"Test Customer\",\n  \"mobile\": \"7210036790\",\n  \"vehicle\": \"Maruti Suzuki Brezza\",\n  \"issue\": \"AIR FILL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "The four required fields and nothing else. `email`, `callerID` and `ucid` are all optional — omitting them is the normal case for a ticket raised from WhatsApp or the website rather than a phone call.\n\nUse this to confirm the API still behaves for callers that predate the telephony fields."
+          },
+          "response": []
+        },
+        {
+          "name": "Update a ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recordId\": \"448881000000711024\",\n  \"customerName\": \"Updated Name\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "Supplying `recordId` switches the API to update mode. Returns `mode: updated` and `updatedFields`.\n\n**Only the fields you send are changed** — everything else on the ticket is left alone. Send at least one of customerName, mobile, email, vehicle or issue.\n\nA `recordId` that does not exist is refused, and nothing is created or updated."
+          },
+          "response": []
+        },
+        {
+          "name": "Attach call details to an existing ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recordId\": \"448881000000711024\",\n  \"callerID\": \"+917210036790\",\n  \"ucid\": \"16203361546765504\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "The main reason `callerID` and `ucid` exist: a ticket was raised first, and the call it came from is linked afterwards.\n\nOnly the two fields sent are changed — the customer, vehicle, issue and everything else on the ticket are left exactly as they were. The response lists what changed in `updatedFields`.\n\nOnce attached, `searchTickets` finds this ticket by either value."
+          },
+          "response": []
+        },
+        {
+          "name": "Update with a bad recordId (guard)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recordId\": \"1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "Writes nothing. Useful as a setup check:\n\n- `\"recordId 1 was supplied but no Create_Case record with that ID exists\"` — the recordId parameter IS registered, update mode works\n- `\"Customer Name is required\"` — recordId is NOT registered on the Custom API screen, so it arrived null and the call fell through to create mode"
+          },
+          "response": []
+        },
+        {
+          "name": "Placeholder guard ($CallerID$)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recordId\": \"448881000000711024\",\n  \"callerID\": \"$CallerID$\",\n  \"ucid\": \"$UCID$\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/createTicket?publickey={{createKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "createTicket"
+              ],
+              "query": [
+                {
+                  "key": "publickey",
+                  "value": "{{createKey}}"
+                }
+              ]
+            },
+            "description": "Both values are rejected and stored blank rather than written literally.\n\nThis is not hypothetical: Ozonetel's ScreenPop sends its own tokens unsubstituted when misconfigured, and this project has hit exactly that. A ticket carrying the literal text `$CallerID$` would look like it came from a call it did not, and would never be found by any real search.\n\nExpect `updatedFields` to come back empty, or an error saying no field was supplied to change — both mean the guard fired correctly."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Creator wraps every reply as { result: \"<json string>\", code: 3000 }.",
+          "// The outer code only means the script RAN — the real outcome is inside.",
+          "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+          "",
+          "let outer;",
+          "try { outer = pm.response.json(); }",
+          "catch (e) { pm.test('Response is JSON', () => { throw new Error('Not JSON: ' + pm.response.text().slice(0, 200)); }); }",
+          "",
+          "if (outer) {",
+          "  pm.test('Not a Creator-level error', function () {",
+          "    pm.expect(outer.code, outer.message || '').to.not.be.oneOf([9400, 9370, 9410, 2945]);",
+          "  });",
+          "",
+          "  if (typeof outer.result === 'string') {",
+          "    const inner = JSON.parse(outer.result);",
+          "    console.log('result:', inner.result, '| message:', inner.message);",
+          "    pm.test('Script reported an outcome', () => pm.expect(inner).to.have.property('code'));",
+          "",
+          "    if (inner.tickets) {",
+          "      console.log('tickets returned:', inner.count);",
+          "      pm.test('count matches the array length', () => pm.expect(inner.tickets.length).to.eql(inner.count));",
+          "    }",
+          "  }",
+          "}"
+        ]
+      }
+    }
+  ]
+}

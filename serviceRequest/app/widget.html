@@ -297,7 +297,27 @@ const CUSTOM_API_PUBLIC_KEYS = {
 async function callCustomApi(apiName, payload){
   const fn=resolve("invokeCustomApi");
   if(!fn){ console.warn("[Get-Rescue SR] no invokeCustomApi method found"); return null; }
-  const config = { api_name: apiName, workspace_name: "getrescued", http_method: "POST", content_type: "application/json" };
+  /* Method chosen per call 2026-09-29. getIssueOptions is registered in Creator
+     as METHOD: GET (confirmed on its Custom API screen), and this function was
+     sending POST with content_type application/json to it — which Creator
+     refuses outright with 9410 "The Content-Type specified for this Custom API
+     is invalid." That is the same failure just root-caused in vendorTicket for
+     getVehicleNames, and it is very likely what the "aren't currently
+     succeeding in Zoho" note earlier in this file is describing.
+
+     The rule used here is a property of the call, not a hardcoded list of API
+     names: a call with NO payload cannot be a POST-with-body, so GET is tried
+     first and POST kept as the fallback. That covers getIssueOptions and
+     getVehicleOptions (both zero-argument) without guessing at a registration
+     screen nobody has looked at, and leaves createServiceRequest — which does
+     carry a payload — on exactly the POST path it uses today, untouched.
+
+     content_type is omitted on the GET attempt because a GET carries no request
+     body, and the content type is precisely what 9410 objects to. */
+  const attempts = (payload && Object.keys(payload).length)
+    ? [{ http_method: "POST", content_type: "application/json" }]
+    : [{ http_method: "GET" }, { http_method: "POST", content_type: "application/json" }];
+  const config = Object.assign({ api_name: apiName, workspace_name: "getrescued" }, attempts[0]);
   // Real bug fixed 2026-09-10, live: getVehicleOptions/getIssueOptions (both
   // ZERO-argument Custom APIs, called with an empty {} payload) failed with
   // a client-side "Improper Configuration..!!" error from Zoho's own widget
@@ -313,18 +333,31 @@ async function callCustomApi(apiName, payload){
   if(publicKey) config.public_key = publicKey;
   else console.warn("[Get-Rescue SR]", apiName, "has no public_key configured — this call will very likely fail with a 9370 'invalid public key' error. See CUSTOM_API_PUBLIC_KEYS near the top of this file.");
   console.error("[Get-Rescue SR] callCustomApi — about to call", apiName, "| payload:", payload, "| public_key attached:", !!publicKey);
-  try{
-    const res = await fn(config);
-    let data = res;
-    if(data && typeof data.result==="string"){
-      try{ data = JSON.parse(data.result); }
-      catch(e){ console.warn("[Get-Rescue SR] response.result wasn't valid JSON", e); return null; }
+  let lastErr=null;
+  for(const attempt of attempts){
+    const cfg = Object.assign({}, config, attempt);
+    // Re-apply the two optional keys: Object.assign above copies the base, and
+    // `attempt` must not be able to drop either of them.
+    if(payload && Object.keys(payload).length) cfg.payload = payload;
+    else delete cfg.payload;
+    if(publicKey) cfg.public_key = publicKey;
+    if(attempt.http_method === "GET") delete cfg.content_type;
+    try{
+      const res = await fn(cfg);
+      let data = res;
+      if(data && typeof data.result==="string"){
+        try{ data = JSON.parse(data.result); }
+        catch(e){ console.warn("[Get-Rescue SR] response.result wasn't valid JSON", e); return null; }
+      }
+      if(attempts.length>1) console.log("[Get-Rescue SR]", apiName, "succeeded as", attempt.http_method);
+      return data;
+    }catch(e){
+      lastErr=e;
+      console.warn("[Get-Rescue SR]", apiName, "failed as", attempt.http_method, e);
     }
-    return data;
-  }catch(e){
-    console.warn("[Get-Rescue SR]", apiName, "failed", e);
-    return null;
   }
+  console.warn("[Get-Rescue SR]", apiName, "failed on every method tried. Last error:", lastErr);
+  return null;
 }
 
 /* every phone number in this app is an Indian number — mirrors

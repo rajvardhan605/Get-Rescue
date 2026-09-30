@@ -1,0 +1,106 @@
+string searchTickets(string query, string limit)
+{
+	try
+	{
+		info "========== TICKET SEARCH ==========";
+		info "  time  = " + zoho.currenttime;
+		info "  query = [" + ifnull(query,"(null)") + "]";
+		info "  limit = [" + ifnull(limit,"(null)") + "]";
+		term = ifnull(query,"").trim();
+		if(term.length() < 3)
+		{
+			info "  TOO SHORT - refused. A 1-2 character term matches most of the table.";
+			return "{\"code\": \"ERROR\", \"result\": \"QUERY_TOO_SHORT\", \"count\": 0, \"tickets\": [], \"message\": \"Send at least 3 characters. A shorter term matches most of the table and is never what the caller intended.\"}";
+		}
+		maxRows = 20;
+		wantedLimit = ifnull(limit,"").trim();
+		if(wantedLimit != "")
+		{
+			try
+			{
+				parsedLimit = wantedLimit.toLong();
+				if(parsedLimit > 0)
+				{
+					maxRows = parsedLimit;
+				}
+			}
+			catch (limitEx)
+			{
+				maxRows = 20;
+			}
+		}
+		if(maxRows > 100)
+		{
+			maxRows = 100;
+		}
+		digitsOnly = term.replaceAll("[^0-9]","");
+		phoneMatch = digitsOnly;
+		if(phoneMatch.length() > 10)
+		{
+			phoneMatch = phoneMatch.subText(phoneMatch.length() - 10);
+		}
+		if(phoneMatch.length() < 6)
+		{
+			phoneMatch = "__NO_PHONE_MATCH__";
+		}
+		info "  term = [" + term + "] | phone tail = [" + phoneMatch + "] | max " + maxRows;
+		termSafe = term.replaceAll("\"","'");
+		ticketsJson = "";
+		foundCount = 0;
+		// UCID matches the term AS SENT: it is a 17-digit Ozonetel call id, so the
+		// last-10-digits treatment used for phones would match the wrong thing.
+		// callerID matches the phone tail instead, because Ozonetel stores it as
+		// "+917210036790" (or with a leading space) while an agent searching will
+		// type the bare 10 digits.
+		for each caseRec in Create_Case[Case_ID.contains(term) || Vehicle_Registration_Number.contains(term) || Client_Tracking_Id.contains(term) || Customer_Name.contains(term) || UCID.contains(term) || Phone_Number.contains(phoneMatch) || Phone_Number1.contains(phoneMatch) || callerID.contains(phoneMatch)] sort by ID desc
+		{
+			if(foundCount < maxRows)
+			{
+				recId = caseRec.ID.toString();
+				caseIdText = ifnull(caseRec.Case_ID,"").toString().trim().replaceAll("\"","'");
+				nameText = ifnull(caseRec.Customer_Name,"").toString().trim().replaceAll("\"","'");
+				phoneText = ifnull(caseRec.Phone_Number1,"").toString().trim();
+				if(phoneText == "")
+				{
+					phoneText = ifnull(caseRec.Phone_Number,"").toString().trim();
+				}
+				phoneText = phoneText.replaceAll("\"","'");
+				statusText = ifnull(caseRec.Status,"").toString().trim().replaceAll("\"","'");
+				serviceText = ifnull(caseRec.Service_Type,"").toString().trim().replaceAll("\"","'");
+				regText = ifnull(caseRec.Vehicle_Registration_Number,"").toString().trim().replaceAll("\"","'");
+				trackingText = ifnull(caseRec.Client_Tracking_Id,"").toString().trim().replaceAll("\"","'");
+				closureText = ifnull(caseRec.Closure_Status,"").toString().trim().replaceAll("\"","'");
+				addedText = ifnull(caseRec.Added_Time,"").toString().trim().replaceAll("\"","'");
+				feeText = ifnull(caseRec.Total_Service_Fee,0).toString().trim();
+				// Returned as well as searched — a caller who finds a ticket by UCID
+				// needs to see which call it was, and a blank here tells the client the
+				// ticket was not created from a phone call at all.
+				ucidText = ifnull(caseRec.UCID,"").toString().trim().replaceAll("\"","'");
+				callerIdText = ifnull(caseRec.callerID,"").toString().trim().replaceAll("\"","'");
+				rowJson = "{\"id\": \"" + recId + "\", \"caseId\": \"" + caseIdText + "\", \"customerName\": \"" + nameText + "\", \"phone\": \"" + phoneText + "\", \"status\": \"" + statusText + "\", \"serviceType\": \"" + serviceText + "\", \"vehicleRegistration\": \"" + regText + "\", \"clientTrackingId\": \"" + trackingText + "\", \"callerId\": \"" + callerIdText + "\", \"ucid\": \"" + ucidText + "\", \"closureStatus\": \"" + closureText + "\", \"totalServiceFee\": \"" + feeText + "\", \"createdAt\": \"" + addedText + "\"}";
+				if(ticketsJson == "")
+				{
+					ticketsJson = rowJson;
+				}
+				else
+				{
+					ticketsJson = ticketsJson + ", " + rowJson;
+				}
+				foundCount = foundCount + 1;
+			}
+		}
+		info "  matched " + foundCount + " ticket(s)";
+		info "===================================";
+		if(foundCount == 0)
+		{
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_MATCH\", \"query\": \"" + termSafe + "\", \"count\": 0, \"tickets\": [], \"message\": \"No ticket matches this term on case ID, phone number, caller ID, UCID, vehicle registration, client tracking ID or customer name.\"}";
+		}
+		return "{\"code\": \"SUCCESS\", \"result\": \"MATCHED\", \"query\": \"" + termSafe + "\", \"count\": " + foundCount + ", \"tickets\": [" + ticketsJson + "], \"message\": \"Matching tickets, newest first. Case ID, UCID, vehicle registration, client tracking ID and customer name match on the term as sent; phone number and caller ID match on the last 10 digits, so +91, spaces and dashes make no difference.\"}";
+	}
+	catch (e)
+	{
+		info "searchTickets threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"result\": \"EXCEPTION\", \"count\": 0, \"tickets\": [], \"message\": \"" + e.toString().replaceAll("\"","'") + "\"}";
+	}
+	return "{\"code\": \"ERROR\", \"result\": \"NO_RESULT\", \"count\": 0, \"tickets\": [], \"message\": \"The script finished without reaching any known outcome.\"}";
+}

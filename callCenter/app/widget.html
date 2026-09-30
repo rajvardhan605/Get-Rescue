@@ -890,13 +890,18 @@ function renderCurrent(){
 function renderHistoryTable(rows){
   const cell=(v)=>esc(v==null?"":String(v));
   const link=(url,label)=> url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>` : "";
+  /* The per-row refresh column was removed 2026-09-29 (user request) — a
+     trailing header cell plus a button cell carrying the per-call re-poll.
+     wireHistoryRefreshButtons() is deliberately left in place and unchanged,
+     so it no-ops on an empty selector; restoring the column is putting those
+     two cells back. The top-right "Refresh" button still reloads the list. */
   return `<div style="overflow-x:auto"><table class="cc-table">
     <thead><tr>
       <th>Placed At</th><th>Phone</th><th>Reference</th><th>Type</th><th>Status</th>
       <th>Agent</th><th>Start</th><th>Answered In</th><th>End</th>
       <th>Talk</th><th>Total</th><th>Outcome</th><th>Transferred To</th>
       <th>Conf. Dur.</th><th>Recording</th><th>Conf. Rec.</th><th>Call Flow</th>
-      <th>UCID</th><th>Placed By</th><th></th>
+      <th>UCID</th>
     </tr></thead>
     <tbody>${rows.map(function(r){
       return `<tr>
@@ -918,8 +923,6 @@ function renderHistoryTable(rows){
         <td>${link(r.Conference_Audio_URL,"▶ Play")}</td>
         <td>${cell(r.Call_Flow)}</td>
         <td>${cell(r.UCID)}</td>
-        <td>${cell(r.Placed_By)}</td>
-        <td>${r.UCID ? `<button type="button" class="btn ghost sm" data-hist-refresh="${esc(r.ID)}" data-hist-ucid="${esc(r.UCID)}">↻</button>` : ""}</td>
       </tr>`;
     }).join("")}</tbody>
   </table></div>`;

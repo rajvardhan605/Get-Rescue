@@ -1182,6 +1182,35 @@ function technicianDisplayName(v){
   const plain = (v && typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
   return String(plain||"").trim();
 }
+/* Real bug fixed 2026-09-29 (user-reported live: the SAME ticket searched on
+   All Tickets and on this board showed different data — All Tickets resolved
+   "Maruti Suzuki Brezza · STEPNEY C…" while this board printed the raw record
+   id "448881000000057692 · [object Object]").
+
+   Exactly the bug vendorDisplayName() above was written for, in the two fields
+   nobody had got to yet. readVal() cannot resolve either one: Vehicle holds a
+   bare Zoho record id, so readVal returns the id; Vehicle_Issue is an ARRAY of
+   lookup objects, and readVal's generic Array branch does a plain .join(", ")
+   without unwrapping the elements first — which is literally where the
+   "[object Object]" came from.
+
+   lookupNamesFor() is getRescueTicket's own resolver, copied verbatim rather
+   than reinvented, so both screens now resolve names through identical logic
+   and cannot drift apart again. Its fallback is unchanged: an id with no match
+   in OPTIONS (list not loaded, or a record deleted from the master table) still
+   degrades to whatever readVal would have shown, never to blank. */
+function lookupNamesFor(rawValue, optionsList){
+  const arr=Array.isArray(rawValue)?rawValue:(rawValue?[rawValue]:[]);
+  return arr.map(function(item){
+    const id=(item && typeof item==="object") ? (item.ID!=null?item.ID:item.id) : item;
+    const m=(id!=null && optionsList) ? optionsList.find(function(o){ return String(o.id)===String(id); }) : null;
+    if(m) return m.label;
+    return (item && typeof item==="object") ? (item.display_value||item.zc_display_value||item.value||"") : String(item||"");
+  }).filter(Boolean).join(", ");
+}
+// Named wrappers so the four call sites read the same as vendorNamesFor(r).
+function vehicleNameFor(r){ return lookupNamesFor(r[CONFIG.vehicleField], OPTIONS.vehicles); }
+function issueNamesFor(r){ return lookupNamesFor(r.Vehicle_Issue, OPTIONS.issues); }
 /* one Kanban card per ticket — same fields the old row-style dashboard showed,
    just stacked vertically to fit a column instead of a full-width row. */
 function cardHtml(r){
@@ -1204,7 +1233,7 @@ function cardHtml(r){
       <svg class="chev" viewBox="0 0 24 24" width="16" height="16"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </span>
     <span class="nm">${esc(name)}</span>
-    <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span>`:""}${esc(readVal(r,CONFIG.vehicleField)||"")} · ${esc(readVal(r,"Vehicle_Issue")||"")}</span>
+    <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span>`:""}${esc(vehicleNameFor(r))} · ${esc(issueNamesFor(r))}</span>
     ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
     ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
     ${showFlags ? `<span class="flags">
@@ -1232,7 +1261,7 @@ function rowHtml(r){
     <span class="avatar">${esc(initials(name))}</span>
     <span class="main">
       <span class="top-line"><span class="cid">${esc(caseLabel(r))}</span><span class="nm">${esc(name)}</span></span>
-      <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(readVal(r,CONFIG.vehicleField)||"")} · ${esc(readVal(r,"Vehicle_Issue")||"")}</span>
+      <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(vehicleNameFor(r))} · ${esc(issueNamesFor(r))}</span>
       ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
       ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
       ${showFlags ? `<span class="flags">
@@ -1565,8 +1594,10 @@ function summaryHtml(){
     ["Customer", readVal(r,CONFIG.nameField)],
     ["Phone", r[CONFIG.phoneField]||""],
     ["Service Type", r[CONFIG.serviceTypeField]||""],
-    ["Vehicle", r[CONFIG.vehicleField]||""],
-    ["Issue", readVal(r,"Vehicle_Issue")],
+    // Same resolver as the card and search row — see lookupNamesFor's own
+    // comment. These two printed a raw record id and "[object Object]".
+    ["Vehicle", vehicleNameFor(r)],
+    ["Issue", issueNamesFor(r)],
     ["Total Fee", r.Total_Service_Fee||""],
     ["Booking Fee", r.Booking_Fee||""],
     ["Remaining Fee", r.Remaining_Fee||""],
