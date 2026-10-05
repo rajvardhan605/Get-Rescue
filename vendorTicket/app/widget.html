@@ -618,7 +618,30 @@ async function apiUpload(id, fieldName, file){
   const C=window.ZOHO && ZOHO.CREATOR;
   const fn=(C && C.FILE && typeof C.FILE.uploadFile==="function") ? C.FILE.uploadFile.bind(C.FILE) : resolve("uploadFile");
   if(!fn || !file) return false;
-  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
+  const req={ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file };
+  try{
+    const r=await fn(req);
+    /* THE OFFLINE-PHOTO LOSS FIX — 2026-10-03, client-reported: "it seems to
+       be saving the photos when offline, but when app comes back online and
+       the submit button is clicked the page moves forward but the photos are
+       not sent to the backend. The photos are thus lost."
+
+       Some Creator SDK builds RESOLVE this promise on a business-logic
+       rejection (code !== 3000) instead of throwing, so the catch below never
+       fired and every rejected upload was reported as a success. That alone
+       would only mean a missing photo — what made it data LOSS is
+       flushPhotoQueue(), which deletes the queued IndexedDB row on a
+       "successful" upload. A photo saved offline was therefore uploaded,
+       silently rejected, reported as sent, and then deleted from the device.
+
+       getRescueTicket hit this same bug on 2026-08-07 and has run with this
+       exact check ever since; it is ported rather than rewritten. */
+    if(r && typeof r==="object" && "code" in r && r.code!==3000){
+      console.warn("uploadFile for "+fieldName+" resolved with a non-success code — treating as FAILED so the photo stays queued:", r);
+      return false;
+    }
+    return true;
+  }
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
 }
 
@@ -1502,6 +1525,107 @@ async function loadMyInvites(){
 // list without duplicating this filtering logic — see that function's own
 // comment for why a separate fetch (rather than just reusing state.tickets)
 // is what actually detects a newly-arrived case.
+/* ---------- a vendor's OWN reject, 2026-10-03 ----------
+   A reject now lives on that vendor's Invites row, never on the shared
+   Create_Case record. The ticket itself is only moved to RSP REJECT once no
+   other invited vendor is still live, so a second vendor can still accept a
+   ticket the first one turned down.
+
+   The 24h window is timed from a LOCALSTORAGE stamp written on the device
+   that did the rejecting. That is deliberate: adding a reject-time field to
+   the Invites update risks the whole update being rejected for an unknown
+   column, which would lose the Status write too — and this file already
+   carries scars from guessed Invites field names. The vendor who rejected is
+   the only one who needs the timer, and they are on the device that has it.
+   With no stamp (storage blocked, different device) the ticket simply stays
+   visible read-only, which is exactly today's behaviour. */
+const REJECT_VISIBLE_MS = 24*60*60*1000;
+const REJECT_STAMP_KEY = "gr_vendor_rejected_at";
+function rejectStamps(){
+  try{ return JSON.parse(localStorage.getItem(REJECT_STAMP_KEY)||"{}") || {}; }
+  catch(e){ return {}; }
+}
+function stampRejectLocally(ticketId){
+  try{
+    const m=rejectStamps(); m[String(ticketId)]=Date.now();
+    localStorage.setItem(REJECT_STAMP_KEY, JSON.stringify(m));
+  }catch(e){ console.warn("[GR-Vendor] could not stamp this reject locally — the ticket will stay visible rather than dropping after 24h (the pre-2026-10-03 behaviour)", e); }
+}
+function inviteIsRejected(inv){
+  return !!inv && String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1;
+}
+/* When THIS vendor rejected, in ms, or null when that cannot be established. */
+function myRejectTime(inv, ticketId){
+  // Read a real field if the Invites form happens to carry one — never written
+  // by this app, so this is a free upgrade if the field is ever added.
+  if(inv){
+    const t=parseInvitedAt(inv.Service_Reject_Time || inv.Rejected_At);
+    if(t!=null) return t;
+  }
+  const local=rejectStamps()[String(ticketId)];
+  return (typeof local==="number") ? local : null;
+}
+/* Is any OTHER invited vendor still able to take this ticket? */
+async function otherInvitesStillLive(ticketId){
+  try{
+    const all=await apiGetReport(CONFIG.invitesReport, null, 200);
+    const myId=currentVendorRecord ? String(currentVendorRecord.id) : null;
+    const others=all.filter(function(inv){
+      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      return myId==null || String(lookupId(inv.Vendor))!==myId;
+    });
+    const live=others.filter(function(inv){ return !inviteIsRejected(inv); });
+    console.log("[GR-Vendor] otherInvitesStillLive("+ticketId+"):", others.length, "other invite(s),", live.length, "still live");
+    return live.length>0;
+  }catch(e){
+    /* Fail toward NOT touching the shared ticket. Wrongly marking it rejected
+       is precisely the bug being fixed and blocks every other vendor; wrongly
+       leaving it alone only means the agent reads the reject from the invite
+       row and the Task_Rejections entry, both of which are still written. */
+    console.warn("[GR-Vendor] could not check the other invites for ticket "+ticketId+" — leaving the shared ticket status untouched", e);
+    return true;
+  }
+}
+/* ---------- missed tickets, 2026-10-03 ----------
+   A ticket can leave a vendor's list for two reasons they are entitled to
+   hear about: they did not respond in time, or somebody else accepted first.
+   Both are announced through the same path so the vendor never silently
+   loses a job from their screen.
+
+   2 minutes matches getRescueTicket's own INVITE_TIMEOUT_MS, which drives the
+   "Timed Out" label on the agent's Vendor Invite Status panel. The two are
+   deliberately the same number: an agent seeing "Timed Out" and a vendor
+   still seeing an actionable ticket is exactly the confusion this creates.
+   If the SLA changes, change BOTH.
+
+   Notified ids are remembered so the 30s dashboard poll cannot re-toast the
+   same missed ticket every half minute; the store self-prunes after 7 days. */
+const INVITE_TIMEOUT_MS = 2*60*1000;
+const MISSED_NOTIFIED_KEY = "gr_vendor_missed_notified";
+function missedNotified(){
+  try{ return JSON.parse(localStorage.getItem(MISSED_NOTIFIED_KEY)||"{}") || {}; }
+  catch(e){ return {}; }
+}
+function notifyMissed(list){
+  if(!list || !list.length) return;
+  let seen={};
+  try{ seen=missedNotified(); }catch(e){}
+  const fresh=list.filter(function(x){ return !(String(x.id) in seen); });
+  if(!fresh.length) return;
+  try{
+    const cut=Date.now()-7*24*60*60*1000;
+    fresh.forEach(function(x){ seen[String(x.id)]=Date.now(); });
+    Object.keys(seen).forEach(function(k){ if(!(seen[k]>cut)) delete seen[k]; });
+    localStorage.setItem(MISSED_NOTIFIED_KEY, JSON.stringify(seen));
+  }catch(e){ /* storage blocked: the vendor may see the toast twice, which is far better than never */ }
+  fresh.forEach(function(x){
+    console.log("[GR-Vendor] missed ticket", x.label, "—", x.why);
+  });
+  const msg = fresh.length===1
+    ? ("Missed "+fresh[0].label+" — "+fresh[0].why)
+    : ("Missed "+fresh.length+" tickets: "+fresh.map(function(x){ return x.label; }).join(", "));
+  if(typeof toast==="function") toast(msg,"err");
+}
 async function fetchMyTickets(){
   let inviteMap={};
   try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[GR-Vendor] loadMyInvites failed (falling back to Vendor_Emails/name match only)", e); }
@@ -1510,10 +1634,31 @@ async function fetchMyTickets(){
   console.log("[GR-Vendor] fetchMyTickets: fetched "+recs.length+" total records; LOGIN_EMAIL="+LOGIN_EMAIL+", MY_VENDOR_NAME="+MY_VENDOR_NAME);
   const statusMatched = recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; });
   console.log("[GR-Vendor] fetchMyTickets: "+statusMatched.length+" match MY_STATUSES ("+MY_STATUSES.join(", ")+")");
+  const missed=[];
   const mine = statusMatched.filter(function(r){
     if(!(inviteMap[String(r.ID)]!=null || isMine(r))) return false;
+    /* This vendor turned it down: keep it visible but read-only (see
+       renderActionScreen) for REJECT_VISIBLE_MS, then drop it. With no
+       usable stamp, keep showing it rather than hiding something the vendor
+       might still need to see. */
+    const myInv=inviteMap[String(r.ID)];
+    if(inviteIsRejected(myInv)){
+      const at=myRejectTime(myInv, r.ID);
+      if(at==null) return true;
+      return (Date.now()-at) < REJECT_VISIBLE_MS;
+    }
     const st=String(r[CONFIG.stageField]||"").trim().toUpperCase();
-    if(st==="RSP IRA (INVITE RESPONSE AWAITED)") return true; // still open to every invited candidate
+    if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){
+      /* Unanswered for longer than the SLA — drop it and say so. A missing or
+         unparseable Invited_At keeps the ticket visible rather than guessing
+         it is stale, the same rule the agent-side "Timed Out" label uses. */
+      const invitedAt = myInv ? parseInvitedAt(myInv.Invited_At) : null;
+      if(invitedAt!=null && (Date.now()-invitedAt) >= INVITE_TIMEOUT_MS){
+        missed.push({ id:r.ID, label:caseLabel(r), why:"not accepted in time" });
+        return false;
+      }
+      return true; // still open to every invited candidate
+    }
     // Action 4 mock ("1st person to accept... task goes away from other
     // providers' apps") — once someone has accepted, only the vendor actually
     // recorded in Assigned_Vendor keeps seeing it; every other invited vendor
@@ -1524,8 +1669,13 @@ async function fetchMyTickets(){
     // candidate" behavior rather than hiding it from the vendor actually
     // working it, since we can't tell who that is without this field.
     if(assignedId==null || assignedId==="") return true;
-    return currentVendorRecord && String(assignedId)===String(currentVendorRecord.id);
+    const itsMine = !!(currentVendorRecord && String(assignedId)===String(currentVendorRecord.id));
+    // Somebody else got there first — the vendor is told rather than just
+    // finding the ticket gone on the next poll.
+    if(!itsMine) missed.push({ id:r.ID, label:caseLabel(r), why:"another vendor accepted it first" });
+    return itsMine;
   });
+  notifyMissed(missed);
   console.log("[GR-Vendor] fetchMyTickets: "+mine.length+" remain after Invites/isMine()/Assigned_Vendor filter", mine.map(function(r){ return caseLabel(r); }));
   return sortMyTicketsNewestFirst(mine);
 }
@@ -1903,26 +2053,30 @@ function renderActionScreen(){
   stopPaymentPoll();
   const st=String(state.current[CONFIG.stageField]||"").trim().toUpperCase();
   const isTow=String(state.current[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
-  if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance"; renderAcceptScreen(); }
+  /* MY OWN REJECT WINS OVER THE TICKET STATUS — 2026-10-03. Now that a reject
+     no longer moves the shared ticket, a vendor who rejected would otherwise
+     still be looking at "RSP IRA" and be shown the Accept screen again. This
+     branch is what makes the kept-visible ticket genuinely read-only: it
+     renders a message and no actions at all. */
+  const myInv=state.inviteByTicketId && state.inviteByTicketId[String(state.current.ID)];
+  if(inviteIsRejected(myInv) || st==="RSP REJECT"){
+    $("ascreenTitle").textContent="Rejected";
+    const reason=(myInv && myInv.Reject_Reason) || (isTow ? state.current.Reject_Reason1 : state.current.Reject_Reason);
+    $("ascreenBody").innerHTML = `<div class="empty-state">
+      <h3 style="color:var(--stop)">You Rejected This Ticket</h3>
+      <p>${reason?esc(reason):"No reason recorded."}</p>
+      <p style="font-family:var(--f-mono);font-size:10.5px;color:var(--muted);margin-top:10px">This ticket is no longer actionable by you and will clear from your list automatically.</p>
+    </div>`;
+  }
+  else if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance"; renderAcceptScreen(); }
   else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown Location"; isTow?renderReachScreenTow():renderReachScreenRsr(); }
   else if(st==="WORK IN PROGRESS"){ $("ascreenTitle").textContent="Work In Progress"; renderWipScreen(); }
   else if(st==="LOADING"){ $("ascreenTitle").textContent="Loading"; renderLoadingScreen(); }
   else if(st==="TO DROP LOCATION"){ $("ascreenTitle").textContent="Reached Drop Location"; renderReachedDropScreen(); }
   else if(st==="UNLOADING"){ $("ascreenTitle").textContent="Unloading & Handover"; renderUnloadingScreen(); }
   else if(st==="REMAINING FEE DUE"){ $("ascreenTitle").textContent="Final Payment"; renderPaymentScreen(); }
-  // Added 2026-08-20 (see MY_STATUSES' own matching comment) — this branch
-  // only ever becomes reachable now that RSP REJECT is in MY_STATUSES at
-  // all; before this fix, a rejected ticket never stayed in "My Tickets"
-  // long enough to be tapped back open, so this generic fallback never had
-  // to say anything specific about it.
-  else if(st==="RSP REJECT"){
-    $("ascreenTitle").textContent="Rejected";
-    const reason = isTow ? state.current.Reject_Reason1 : state.current.Reject_Reason;
-    $("ascreenBody").innerHTML = `<div class="empty-state">
-      <h3 style="color:var(--stop)">You Rejected This Ticket</h3>
-      <p>${reason?esc(reason):"No reason recorded."}</p>
-    </div>`;
-  }
+  // The RSP REJECT branch moved to the top of this chain on 2026-10-03 so it
+  // can also catch a reject that lives only on this vendor's own invite.
   else { $("ascreenBody").innerHTML='<div class="empty-state"><p>Nothing to do on this ticket right now.</p></div>'; }
 }
 
@@ -2159,15 +2313,27 @@ async function rejectService(){
     const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
     // "Service_Reject_Time" — see technicianTicket's own comment; same field,
     // same Action 5 flow-spec correction, not repeated here.
-    const payload=isTow
-      ? { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason1: reason, Status:"RSP REJECT" }
-      : { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP REJECT" };
-    await apiUpdate(r.ID, payload);
-    // Invites (2026-08-03) — mirror the reject onto this invite too, so a
-    // rejected invite doesn't look like it's still awaiting a response.
-    // Field name guessed (not given for the reject path specifically) — flag
-    // if this errors out live (best-effort/non-blocking either way).
+    /* THE REJECT GOES ON THIS VENDOR'S INVITE FIRST — 2026-10-03.
+       Deliberately unchanged in shape from the 2026-08-03 call it replaces:
+       the same two fields, so it carries no new risk of an unknown column
+       taking the whole update down with it. */
     updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
+    stampRejectLocally(r.ID);
+    /* THE SHARED TICKET IS ONLY TOUCHED WHEN NOBODY ELSE IS LEFT.
+       Client-reported 2026-10-03: "if one vendor clicks reject, the ticket on
+       all the other vendors' apps is also marked as REJECTED, preventing
+       further action by them." Root cause was writing Status:"RSP REJECT"
+       straight onto the Create_Case record every invited vendor is reading.
+       A single-vendor reject still moves the ticket exactly as before, so the
+       agent-side view of that case is unchanged. */
+    if(await otherInvitesStillLive(r.ID)){
+      console.log("[GR-Vendor] rejectService: other invited vendors are still live on ticket", r.ID, "— leaving the shared ticket status alone so they can still accept it.");
+    } else {
+      const payload=isTow
+        ? { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason1: reason, Status:"RSP REJECT" }
+        : { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP REJECT" };
+      await apiUpdate(r.ID, payload);
+    }
     try{
       const fn=resolve("addRecords");
       // RSID/Vehicle are real Lookup fields on Task_Rejections — see

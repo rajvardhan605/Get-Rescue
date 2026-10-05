@@ -393,7 +393,30 @@ async function apiUpload(id, fieldName, file){
   const C=window.ZOHO && ZOHO.CREATOR;
   const fn=(C && C.FILE && typeof C.FILE.uploadFile==="function") ? C.FILE.uploadFile.bind(C.FILE) : resolve("uploadFile");
   if(!fn || !file) return false;
-  try{ await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file }); return true; }
+  const req={ app_name:CONFIG.appName, report_name:CONFIG.reportName, id:id, field_name:fieldName, file:file };
+  try{
+    const r=await fn(req);
+    /* THE OFFLINE-PHOTO LOSS FIX — 2026-10-03, client-reported: "it seems to
+       be saving the photos when offline, but when app comes back online and
+       the submit button is clicked the page moves forward but the photos are
+       not sent to the backend. The photos are thus lost."
+
+       Some Creator SDK builds RESOLVE this promise on a business-logic
+       rejection (code !== 3000) instead of throwing, so the catch below never
+       fired and every rejected upload was reported as a success. That alone
+       would only mean a missing photo — what made it data LOSS is
+       flushPhotoQueue(), which deletes the queued IndexedDB row on a
+       "successful" upload. A photo saved offline was therefore uploaded,
+       silently rejected, reported as sent, and then deleted from the device.
+
+       getRescueTicket hit this same bug on 2026-08-07 and has run with this
+       exact check ever since; it is ported rather than rewritten. */
+    if(r && typeof r==="object" && "code" in r && r.code!==3000){
+      console.warn("uploadFile for "+fieldName+" resolved with a non-success code — treating as FAILED so the photo stays queued:", r);
+      return false;
+    }
+    return true;
+  }
   catch(e){ console.warn("uploadFile failed for "+fieldName, e); return false; }
 }
 

@@ -650,8 +650,8 @@ img,svg{max-width:100%}
            invites to multiple vendors, a rejection gave no visible sign of
            WHICH vendor rejected or that anything happened at all — the
            Assignment step only ever showed the Vendors1 picker, never the
-           live Invites_Report responses) — populated only on the "assignment"
-           step, see renderWizard()'s own assignInviteStatusHtml() call. -->
+           live Invites_Report responses) — populated on EVERY step as of
+           2026-10-03, see renderWizard()'s own assignInviteStatusHtml() call. -->
       <div id="assignInviteStatus"></div>
     </div>
   </div>
@@ -5003,6 +5003,28 @@ function vendorOriginFor(record, base){
   }
   return base ? { lat:base.lat, lon:base.lon, source:"nearest base location" } : null;
 }
+/* Where the vendor ACTUALLY arrived — 2026-10-03, client-reported: the
+   destination of the vendor travel leg was the agent-entered breakdown
+   location even when the vendor had run the whole job in the app and their
+   real arrival GPS was already on the ticket.
+
+   markReachedRsr()/markReachedTow() in vendorTicket stamp Reach_Location_Lat/
+   Lon at the moment the vendor taps Reached, so this data has been on the
+   record all along and was simply never read back here.
+
+   Deliberately the SAME shape and the same rule as vendorOriginFor() above
+   and the TOW cancel mid-point below: prefer the vendor's own GPS only when
+   the vendor genuinely ran the ticket in the app, and fall back to the
+   agent-entered location otherwise. An agent running a ticket on a vendor's
+   behalf never produces a Reach GPS, so that path is unchanged — this can
+   only ever make the figure more accurate, never less. */
+function vendorReachPointFor(record, bLat, bLon){
+  if(vendorRanTicketInApp(record)){
+    const lat=parseCoord(record.Reach_Location_Lat), lon=parseCoord(record.Reach_Location_Lon);
+    if(lat!=null && lon!=null) return { lat:lat, lon:lon, source:"vendor arrival GPS (Reach_Location_*)" };
+  }
+  return { lat:bLat, lon:bLon, source:"breakdown location (agent entry)" };
+}
 async function runClosureDistanceCalculations(record){
   try{
     const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
@@ -5042,7 +5064,14 @@ async function runClosureDistanceCalculations(record){
           if(record.Vendor_Round_Trip_Distance==null || record.Vendor_Round_Trip_Distance===""){
             const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
             let legs=null;
-            if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null) legs=[base,{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},base];
+            if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null){
+              // The pickup point is where the vendor actually reached the
+              // vehicle, not where the agent said it was — see
+              // vendorReachPointFor(). Drop and both base legs are unchanged.
+              const pickup=vendorReachPointFor(record, bLat, bLon);
+              console.log("[Get-Rescue] TOW round-trip pickup point:", pickup.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
+              legs=[base,{lat:pickup.lat,lon:pickup.lon},{lat:dLat,lon:dLon},base];
+            }
             else if(record.Closure_Status==="Cancelled - Billable"){
               /* PDF "Vendor Roundtrip KM", the CANCEL cases. The two differ only
                  in the middle point:
@@ -5075,9 +5104,10 @@ async function runClosureDistanceCalculations(record){
                behalf. vendorOriginFor() returns the latter unless the former is
                genuinely available, so this can only ever become MORE accurate. */
             const origin=vendorOriginFor(record, base);
+            const dest=vendorReachPointFor(record, bLat, bLon);
             if(origin){
-              console.log("[Get-Rescue] Vendor_Distance origin:", origin.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
-              const km=await legDistanceKm([origin,{lat:bLat,lon:bLon}]);
+              console.log("[Get-Rescue] Vendor_Distance origin:", origin.source, "-> destination:", dest.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
+              const km=await legDistanceKm([origin,{lat:dest.lat,lon:dest.lon}]);
               if(km!=null) record.Vendor_Distance=km;
             }
           }
@@ -6557,18 +6587,30 @@ async function bulkApproveVendorAcct(){
   const btn=$("vaBulkApproveBtn"); btn.disabled=true; btn.textContent="Approving…";
   let done=0; const failed=[];
   for(const d of sel){
+    /* The REASON travels with the failure — 2026-10-03, user-reported: this
+       screen said only "0 approved, 1 failed: RSID835005" and dropped the real
+       Zoho message into a console nobody had open. apiUpdate() already throws
+       the genuine server message (invalid picklist value, unknown column, a
+       locked record), and the List view's own single-case approve has always
+       shown it — only this grid path threw it away. */
+    let payload=null;
     try{
-      await apiUpdate(d.r.ID, vendorAcctApprovalPayload(d.r, d.fee, d.r.Extras, d.r.Ops_Approval_Comments, null));
+      payload = vendorAcctApprovalPayload(d.r, d.fee, d.r.Extras, d.r.Ops_Approval_Comments, null);
+      await apiUpdate(d.r.ID, payload);
       done++;
       VA_CASES = VA_CASES.filter(function(x){ return String(x.ID)!==String(d.r.ID); });
       VA_SELECTED.delete(String(d.r.ID));
     }catch(e){
-      console.warn("[Get-Rescue] bulkApproveVendorAcct: failed to approve "+caseLabel(d.r),e);
-      failed.push(caseLabel(d.r));
+      const why=(e&&e.message)||String(e||"unknown error");
+      console.warn("[Get-Rescue] bulkApproveVendorAcct: failed to approve "+caseLabel(d.r)+" — "+why+" | payload sent:", payload, e);
+      failed.push({ label:caseLabel(d.r), why:why });
     }
   }
   if(failed.length){
-    toast(done+" approved, "+failed.length+" failed: "+failed.join(", "),"err");
+    // One reason is shown in full; the rest stay in the console. Every failure
+    // in a batch is almost always the same cause, so the first is the useful one.
+    const labels=failed.map(function(x){ return x.label; }).join(", ");
+    toast(done+" approved, "+failed.length+" failed: "+labels+" — "+failed[0].why,"err");
   } else {
     toast(done+" case"+(done===1?"":"s")+" approved","ok");
   }
@@ -9492,7 +9534,7 @@ const LOCK_HEARTBEAT_MS = 60*1000; // refresh Locked_At this often while the wiz
 // a vendor to respond to an invite" — this was NOT an explicit client
 // requirement/SLA, just a sensible starting point; easy to change here if a
 // different threshold is wanted later.
-const INVITE_TIMEOUT_MS = 15*60*1000;
+const INVITE_TIMEOUT_MS = 2*60*1000; // 2 min — client-set 2026-10-03 (was a 15-min placeholder; see the comment above, which anticipated exactly this change)
 let LOCK_HEARTBEAT_TIMER=null;
 // Generalized out of agentDisplayName() below (2026-08-11) — that function
 // only ever resolved the CURRENT logged-in agent's own name; the lock UI
@@ -10631,7 +10673,16 @@ function renderWizard(){
   // naturally lands on right after an accept/reject — so the full
   // rejection/timeout history (including which vendor ultimately accepted)
   // stays visible without any extra navigation.
-  $("assignInviteStatus").innerHTML = (step.key==="assignment"||step.key==="acceptance"||step.key==="acceptanceTow") ? assignInviteStatusHtml() : "";
+  // EVERY STEP — 2026-10-03, client-reported: "Multiple vendor assignment
+  // status is not displayed anywhere in the ticket." It was displayed, but
+  // only on three steps, and a live ticket leaves them almost immediately.
+  // This gate has already been widened once for exactly this reason (see the
+  // 2026-09 comment above); widening it to every step is the completion of
+  // that fix rather than a new idea. #assignInviteStatus sits in the shared
+  // .form-card, not inside the assignment step, so it renders anywhere, and
+  // assignInviteStatusHtml() already returns "" when a ticket has no invites
+  // — so a single-vendor or un-assigned ticket shows nothing extra.
+  $("assignInviteStatus").innerHTML = assignInviteStatusHtml();
   // Real bug fixed (2026-08-07, user-reported live: Receipt Photo on the
   // Payment step showed "Already uploaded" text but the thumbnail above it
   // stayed a placeholder icon forever) — this was WRONGLY believed to only
