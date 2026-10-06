@@ -424,6 +424,12 @@ img,svg{max-width:100%}
 .mech-notif-close:hover{color:var(--stop)}
 @keyframes mechNotifIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)}}
 .modal{position:fixed;inset:0;background:rgba(20,22,28,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:20px}
+/* #modal is the generic confirm box and sits EARLIER in the markup than
+   #fieldModal, so at equal z-index the field editor painted on top of it and
+   a confirmation opened from inside that editor was invisible behind the
+   overlay (2026-10-05). A confirmation should always outrank what it is
+   asking about. */
+#modal{z-index:80}
 .modal.on{display:flex}
 .modal .box{background:#fff;border-radius:16px;padding:24px;max-width:380px;width:100%;box-shadow:var(--sh-2);text-align:center}
 .modal .box h4{font-family:var(--f-disp);font-size:21px;margin-bottom:8px}
@@ -3832,7 +3838,13 @@ const CLOSURE_FIELDS=[
      app's other Zoho Checkbox-type fields (Send_Payment_Link1,
      Send_Link_For_The_Drop_Location — see buildPayload()'s own matching
      branch), not the plain "Yes"/"No" string shape used by t:"radio" fields. */
-  { n:"Google_Feedback_Requested", l:"Request Google Feedback", t:"check" },
+  /* default:true added 2026-10-05. A cash-paying customer never reaches the
+     in-app feedback form — that fires from the online payment's return_url —
+     so this request is the only way to ask them for anything. It was off by
+     default and relied on the agent remembering, which meant most cash jobs
+     collected no feedback at all. The agent can still untick it, and an
+     explicit untick is remembered. */
+  { n:"Google_Feedback_Requested", l:"Request Google Feedback", t:"check", default:true },
   // Customer_Feedback_Requested ("Request Customer Feedback" checkbox) and
   // Closure_Extra_Photo ("Additional Photo") REMOVED 2026-09-10 (explicit
   // client soft-test feedback: "please remove the 'REQUEST CUSTOMER
@@ -4006,6 +4018,12 @@ const CLOSURE_FIELDS=[
             apiGetById(state.recordId).then(function(fresh){
               if(fresh && fresh.Zoho_Books_Invoice_ID) state.record.Zoho_Books_Invoice_ID = fresh.Zoho_Books_Invoice_ID;
               if(fresh && fresh.Zoho_Books_Invoice_URL) state.record.Zoho_Books_Invoice_URL = fresh.Zoho_Books_Invoice_URL;
+              /* Invoice_PDF was missing from this list — 2026-10-05. The Custom API
+                 attaches the PDF to the record directly, so the widget only learns
+                 about it by re-reading the record. Without this the Download Invoice
+                 PDF row stayed on its empty message until the ticket was closed and
+                 reopened, even though the file was already attached in Zoho. */
+              if(fresh && fresh.Invoice_PDF) state.record.Invoice_PDF = fresh.Invoice_PDF;
               rerenderCurrentView();
             }).catch(function(){ rerenderCurrentView(); });
           }
@@ -4130,7 +4148,21 @@ const CLOSURE_FIELDS=[
   { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
     when:(s)=>isOnDemandClient(s),
     hrefField:"Zoho_Books_Invoice_URL", linkLabel:"🧾 Open Invoice",
-    emptyMsg:"Not available yet — click \"Generate Invoice\" above." }
+    emptyMsg:"Not available yet — click \"Generate Invoice\" above." },
+  /* The invoice as a file ON THE TICKET — 2026-10-05, client item 16. The row
+     above opens Zoho Books, which needs a Books login; this one downloads the
+     PDF the Custom API attached to Create_Case.Invoice_PDF, so an agent with no
+     Books account can still read the invoice.
+
+     Separate row rather than a replacement: the Books link is still the right
+     thing for anyone who DOES have access (it is live, this is a snapshot taken
+     at generation time), and replacing it would have broken a working path for
+     the accounts team. */
+  { n:"__InvoicePdfDisplay", l:"Invoice PDF", t:"navlink", full:true,
+    when:(s)=>isOnDemandClient(s),
+    hrefCompute:(r)=>zohoFileDownloadUrl(r.ID||state.recordId, "Invoice_PDF", r.Invoice_PDF, 0),
+    linkLabel:"⬇ Download Invoice PDF",
+    emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, check the Invoice_PDF field exists on Create_Case." }
 ];
 // See STAGES' own "agentClosure" entry's comment — patched in here (rather
 // than inline in that array literal) because STAGES is built before this
@@ -4701,7 +4733,13 @@ function vendorStaticLatLon(raw){
 function vendorLiveLatLon(raw){
   return { lat:parseCoord(rawValue(raw,CONFIG.vendorCurrentLatField)), lon:parseCoord(rawValue(raw,CONFIG.vendorCurrentLonField)) };
 }
-function vendorInfo(opt){
+/* `breakdown` ({lat,lon}) is optional and only matters for an OFFLINE vendor:
+   given one, their distance is measured from whichever of their registered
+   base locations is actually closest to that breakdown, instead of from the
+   single Address field. Call sites with no breakdown in hand (the email
+   lookup, the "does any vendor have a location" check, the Ops Map) pass
+   nothing and behave exactly as before. */
+function vendorInfo(opt, breakdown){
   const raw=(opt&&opt.raw)||{};
   const phone=rawValue(raw,CONFIG.vendorPhoneField);
   const priority=rawValue(raw,CONFIG.vendorPriorityField);
@@ -4718,7 +4756,19 @@ function vendorInfo(opt){
   const live = online ? vendorLiveLatLon(raw) : {lat:null,lon:null};
   const hasLive = live.lat!=null && live.lon!=null;
   const staticLL = vendorStaticLatLon(raw);
-  const ll = hasLive ? live : staticLL;
+  /* ITEM 22, 2026-10-05 — an offline vendor is dispatched from whichever of
+     their bases is nearest the job, not from whichever address happens to be
+     on the record. nearestVendorBaseLocation() scans Base_Location_1..5 and
+     is the same function the closure maths already trusts for this.
+
+     Returns null when the vendor has no Base_Location_* pairs at all, so a
+     vendor set up with only an Address falls through to exactly today's
+     value — this can only ever sharpen the figure, never blank it. */
+  let nearestBase=null;
+  if(!hasLive && breakdown && breakdown.lat!=null && breakdown.lon!=null){
+    nearestBase = nearestVendorBaseLocation(raw, breakdown.lat, breakdown.lon);
+  }
+  const ll = hasLive ? live : (nearestBase || staticLL);
   const lat=ll.lat, lon=ll.lon;
   const hasLoc=lat!=null&&lon!=null;
   const email=rawValue(raw,CONFIG.vendorEmailField);
@@ -4736,7 +4786,7 @@ function vendorInfo(opt){
       "| static lat/lon ("+CONFIG.vendorAddressField+".latitude/longitude, or flat "+CONFIG.vendorLatField+"/"+CONFIG.vendorLonField+"):", staticLL.lat, staticLL.lon,
       "| this record's own keys:", Object.keys(raw), "| full raw record:", raw);
   }
-  return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:online, lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email, locationSource: hasLoc ? (hasLive?"live":"static") : null };
+  return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:online, lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email, locationSource: hasLoc ? (hasLive?"live":(nearestBase?"nearestBase":"static")) : null };
 }
 /* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
    auto-populate a hidden "Vendor_Emails" field with the selected vendors'
@@ -4888,7 +4938,10 @@ async function refreshVendorDistances(record){
   if(VENDOR_DISTANCE_CACHE_KEY===cacheKey || vendorDistanceFetchInFlight) return; // already cached (or already being fetched) for this exact breakdown location
   vendorDistanceFetchInFlight=true;
   try{
-    const withLoc=OPTIONS.vendors.map(function(o){ return { o:o, info:vendorInfo(o) }; }).filter(function(x){ return x.info.lat!=null && x.info.lon!=null; });
+    // Google is asked to measure from the SAME point the picker shows — pass
+    // the breakdown so an offline vendor is routed from their nearest base.
+    const bPoint={lat:bLat, lon:bLon};
+    const withLoc=OPTIONS.vendors.map(function(o){ return { o:o, info:vendorInfo(o, bPoint) }; }).filter(function(x){ return x.info.lat!=null && x.info.lon!=null; });
     if(!withLoc.length) return;
     // Scope-restricted 2026-09-08 (explicit user decision): Google's
     // Distance Matrix API is now billed ONLY for the Final Closure
@@ -5032,8 +5085,16 @@ async function runClosureDistanceCalculations(record){
     const isTow=String(record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
     // --- Vendor Fleet Location + Vendor Round Trip Distance / Vendor Distance ---
     const assignedRaw = record.Assigned_Vendor;
-    const assignedVendorId = assignedRaw && typeof assignedRaw==="object" ? (assignedRaw.ID||assignedRaw.id) : assignedRaw;
-    const vendorOpt = assignedVendorId!=null ? OPTIONS.vendors.find(function(o){ return String(o.id)===String(assignedVendorId); }) : null;
+    /* vendorOptForTicket() rather than Assigned_Vendor alone — 2026-10-05.
+       It tries Assigned_Vendor first and falls back to matching the ticket's
+       vendor email, which is what every other screen already does. Reading the
+       field directly meant a ticket with a blank Assigned_Vendor skipped this
+       entire block, leaving Vendor Fleet Location, Vendor Round Trip Distance
+       and Vendor Distance permanently empty while every other metric on the
+       same panel computed normally. Same fix as the Accounts Payable filter. */
+    const vendorOpt = vendorOptForTicket(record);
+    const assignedVendorId = vendorOpt ? vendorOpt.id
+      : (assignedRaw && typeof assignedRaw==="object" ? (assignedRaw.ID||assignedRaw.id) : assignedRaw);
     // Diagnostic logging (2026-09-11, Task Tracker PDF items 26/33 — "Vendor
     // Round Trip Distance"/"Vendor Fleet Location" both "field is there, but
     // data not populating"). This whole block already silently no-ops
@@ -5046,7 +5107,7 @@ async function runClosureDistanceCalculations(record){
     // fix, only report on. Next real Agent Closure save will show exactly
     // which case fired.
     if(!vendorOpt){
-      console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location/Vendor Round Trip Distance/Vendor Distance will NOT populate: no matching vendor found in OPTIONS.vendors for assignedVendorId =", assignedVendorId, "(raw Assigned_Vendor:", JSON.stringify(assignedRaw), ") — either no vendor has accepted this ticket yet, or OPTIONS.vendors hasn't loaded.");
+      console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location/Vendor Round Trip Distance/Vendor Distance will NOT populate: vendorOptForTicket() resolved no vendor for this ticket. Raw Assigned_Vendor:", JSON.stringify(assignedRaw), "| ticket vendor emails:", JSON.stringify([record.Vendor_Email, record.Vendor_Email1, record.Vendor_Email2]), "— BOTH routes failed, so either no vendor has accepted this ticket yet, or none of those emails matches a Vendors_Report record, or OPTIONS.vendors hasn't loaded.");
     }
     if(vendorOpt){
       let base=null;
@@ -5946,9 +6007,15 @@ function vendorRateFieldNames(varKey, isNight, slabField){
    vendor falls back rather than silently paying zero. */
 function readVendorNumber(vendorRaw, names){
   for(let i=0;i<names.length;i++){
-    const raw=vendorRaw ? vendorRaw[names[i]] : null;
-    if(raw==null || String(raw).trim()==="") continue;
-    const v=Number(raw);
+    /* readVal() rather than the raw value — 2026-10-05, item 18. A rate field
+       that comes back as an object made String(raw) "[object Object]" (so the
+       blank check passed) and Number(raw) NaN (so it was skipped), meaning a
+       configured Day/Night rate read as "not configured" and quietly fell
+       through to the flat Base_Fee/Base_KM/KM_Rate fallback. A plain number or
+       numeric string behaves exactly as before. */
+    const txt=readVal(vendorRaw, names[i]).trim();
+    if(txt==="") continue;
+    const v=Number(txt);
     if(!isNaN(v)) return { value:v, field:names[i] };
   }
   return null;
@@ -6038,11 +6105,20 @@ function computeVendorFeeForTicket(record, vendorRaw){
   const kmHit  =readVendorNumber(vendorRaw, vendorRateFieldNames("baseKm",  night, slabField));
   const rateHit=readVendorNumber(vendorRaw, vendorRateFieldNames("kmRate",  night, slabField));
   console.log("[Get-Rescue] vendor rate lookup — "+(VENDOR_RATE_CATEGORY_LABEL[slabField]||slabField)+    " / "+(night?"NIGHT":"DAY")+" | base fee: "+(feeHit?feeHit.field:"Base_Fee (flat fallback)")+    " | base km: "+(kmHit?kmHit.field:"Base_KM (flat fallback)")+    " | km rate: "+(rateHit?rateHit.field:"KM_Rate (flat fallback)")+    " | slab: "+slabField);
-  return computeVendorFee({
-    baseFee: feeHit ? feeHit.value : vendorRaw.Base_Fee,
+  /* The three resolved inputs, kept so callers can DISPLAY what was used
+     (2026-10-05). The Operations Approval grid used to read vendorRaw.Base_Fee
+     for its Base Fee column, which showed ₹0 for every vendor priced from the
+     Day/Night card while Gross Fee — computed from these — showed the real
+     figure. computeVendorFee() itself is unchanged; this only exposes what it
+     was already given. */
+  const resolvedBaseFee = feeHit ? feeHit.value : vendorRaw.Base_Fee;
+  const resolvedBaseKm  = kmHit  ? kmHit.value  : vendorRaw.Base_KM;
+  const resolvedKmRate  = rateHit? rateHit.value: vendorRaw.KM_Rate;
+  const computed = computeVendorFee({
+    baseFee: resolvedBaseFee,
     actualKm: actualKm,
-    baseKm: kmHit ? kmHit.value : vendorRaw.Base_KM,
-    kmRate: rateHit ? rateHit.value : vendorRaw.KM_Rate,
+    baseKm: resolvedBaseKm,
+    kmRate: resolvedKmRate,
     slabKm: slabKm,
     extras: record.Extras,
     // Derived, not read from the stored field (2026-09-14) — see
@@ -6052,6 +6128,15 @@ function computeVendorFeeForTicket(record, vendorRaw){
     // it always has, with no change to its own code path.
     cashCollected: cashCollectedForTicket(record)
   });
+  /* Additive only — every existing reader of this return value (grossFee,
+     netFee, kmFee, balanceBeforeTds) is untouched. */
+  if(computed && typeof computed==="object"){
+    computed.baseFee = Number(resolvedBaseFee)||0;
+    computed.baseKm  = Number(resolvedBaseKm)||0;
+    computed.kmRate  = Number(resolvedKmRate)||0;
+    computed.rateSource = (feeHit ? feeHit.field : "Base_Fee (flat fallback)");
+  }
+  return computed;
 }
 
 /* =====================================================================
@@ -6120,14 +6205,29 @@ function isPendingOpsApproval(r){
    Tried only AFTER the existing id and label lookups, so every ticket that
    resolves today keeps resolving exactly as it does now. */
 const VENDOR_EMAIL_FIELDS = ["Vendor_Email","Vendor_Email1","Vendor_Email2"];
+/* Email fields to try ON THE VENDOR RECORD, configured name first so a
+   correctly configured workspace resolves exactly as before. Mirrors
+   vendorTicket's own VENDOR_EMAIL_FIELD_CANDIDATES. */
+const VENDOR_RECORD_EMAIL_FIELDS = [CONFIG.vendorEmailField,"Vendor_Email","Email","email","Email_Address","Login_Email","Primary_Email"]
+  .filter(function(v,i,a){ return v && a.indexOf(v)===i; });
+/* True when this vendor record carries the given address in ANY of its email
+   fields. readVal() rather than String(): a Creator field can arrive as an
+   object and String({}) is "[object Object]", which never equals an email —
+   that alone silently broke every lookup for an object-shaped Email field
+   (2026-10-05, items 15/18). */
+function vendorRecordHasEmail(vendorRaw, wantedLower){
+  if(!vendorRaw || !wantedLower) return false;
+  for(const fieldName of VENDOR_RECORD_EMAIL_FIELDS){
+    if(readVal(vendorRaw,fieldName).trim().toLowerCase()===wantedLower) return true;
+  }
+  return false;
+}
 function vendorOptByEmail(r){
   const list = OPTIONS.vendors || [];
   for(const fld of VENDOR_EMAIL_FIELDS){
-    const em = String(r[fld]||"").trim().toLowerCase();
+    const em = readVal(r,fld).trim().toLowerCase();
     if(!em) continue;
-    const hit = list.find(function(o){
-      return String((o.raw && o.raw[CONFIG.vendorEmailField])||"").trim().toLowerCase() === em;
-    });
+    const hit = list.find(function(o){ return vendorRecordHasEmail(o.raw, em); });
     if(hit) return hit;
   }
   return null;
@@ -6360,6 +6460,9 @@ function vaSortRows(rows){
     return 0;
   });
 }
+/* The ticket status, read through CONFIG like everywhere else rather than
+   hardcoding the field name here. */
+function d_status(r){ return (r && r[CONFIG.stageField]) || ""; }
 function vaGridRowData(r){
   const vendorRaw = vendorRawForTicket(r);
   const fee = vaFeeFor(r, vendorRaw, r.Extras, null);
@@ -6382,9 +6485,17 @@ function vaGridRowData(r){
     issue: vaServiceIssueText(r),
     vehicle: vaVehicleText(r),
     settlement: vaPaymentStatusText(r),
-    baseFee: Number(vendorRaw && vendorRaw.Base_Fee)||0,
+    /* The rate actually used, not the flat legacy field — 2026-10-05. Falls
+       back to Base_Fee only when no fee could be computed at all, so a row
+       with no rate card still shows what it always did. */
+    baseFee: (fee && fee.baseFee!=null) ? fee.baseFee : (Number(vendorRaw && vendorRaw.Base_Fee)||0),
     cash: cashCollectedForTicket(r),
-    needsKm: svc==="TOW" && !(km>0) };
+    needsKm: svc==="TOW" && !(km>0),
+    /* The vendor has finished but no agent has closed the case, so
+       runClosureDistanceCalculations() has not run and every vendor distance
+       on this row is still empty — making the KM Fee a calculated zero rather
+       than a measured one. */
+    pendingAgentClosure: String(d_status(r)).toUpperCase()==="RSP CLOSED" };
   // Pre-computed comparable values for vaSortRows() — numbers stay numbers so
   // they sort numerically rather than as "₹1,200" strings. A row with no
   // calculable fee sorts as 0 on every money column instead of throwing.
@@ -6436,15 +6547,19 @@ function renderVendorAcctGrid(){
   }
   const anyNeedsKm = rows.some(function(d){ return d.needsKm; });
   const anyUnavail = rows.some(function(d){ return !d.fee; });
+  const anyPending = rows.some(function(d){ return d.pendingAgentClosure; });
   const body = rows.map(function(d){
     const id = esc(d.r.ID);
-    const cls = !d.fee ? " class=\"va-unavail\"" : (d.needsKm ? " class=\"va-warn\"" : "");
+    const cls = !d.fee ? " class=\"va-unavail\"" : ((d.needsKm || d.pendingAgentClosure) ? " class=\"va-warn\"" : "");
     const money = function(n){ return "₹"+Number(n||0).toFixed(2); };
     // The RSR/TOW km cells show a value only for the branch that case actually
     // belongs to — runClosureDistanceCalculations() deliberately forces the
     // other one null (see its own comments), so printing "0.0" in both would
     // read as a real measured zero rather than "not applicable here".
-    const rsrCell = d.svc==="TOW" ? "—" : d.rsrKm.toFixed(1);
+    // Same ⚠ treatment the TOW km cell already uses, for the same reason: a
+    // zero that is "not calculated yet" must not read as a measured zero.
+    const rsrCell = d.svc==="TOW" ? "—"
+      : (d.rsrKm.toFixed(1)+(d.pendingAgentClosure?' <span title="Agent closure is still pending on this case, so its vendor distance has not been calculated yet and the KM Fee is based on 0 km. Close the case first for an accurate figure.">⚠</span>':""));
     const towCell = d.svc==="TOW"
       ? (d.towKm.toFixed(1)+(d.needsKm?' <span title="TOW case with no round-trip distance — its KM Fee is calculated on 0 km. Open it in List view to set the distance before approving.">⚠</span>':""))
       : "—";
@@ -6485,6 +6600,7 @@ function renderVendorAcctGrid(){
     </div>
     <div class="va-hint" style="margin-top:8px">Click a column header to sort, again to reverse, a third time to clear. <b>Shift-click</b> another header to sort by it within the first — the small number on each header shows the order being applied.${VA_SORT.length?' <a href="#" id="vaClearSort">Clear sorting</a>':""}</div>
     ${anyNeedsKm?'<div class="va-hint" style="margin-top:10px">⚠ Highlighted rows are TOW cases with no round-trip distance recorded, so their KM Fee is calculated on 0 km. Open those in List view and set the distance before approving.</div>':""}
+    ${anyPending?'<div class="va-hint" style="margin-top:6px">⚠ Some cases are still awaiting AGENT CLOSURE (status RSP CLOSED). Vendor distances are calculated at agent closure, so their Travel Kms and KM Fee are 0 for now. They can still be approved, but the vendor will be paid base fee only.</div>':""}
     ${anyUnavail?'<div class="va-hint" style="margin-top:6px">Dimmed rows have no calculable fee (no matching KM slab for the vehicle/issue combination, or no vendor rate card) and cannot be approved — here or in List view.</div>':""}
     <div class="va-fee-box" id="vaGridTotals" style="margin-top:14px"></div>
     <div class="va-gridbar">
@@ -6583,6 +6699,15 @@ async function bulkApproveVendorAcct(){
     const proceed = await confirmBox("Approve "+sel.length+" case"+(sel.length===1?"":"s")+"?",
       warnKm.length+" selected TOW case"+(warnKm.length===1?" has":"s have")+" no round-trip distance, so their KM Fee is calculated on 0 km. Approve anyway?", "Approve");
     if(!proceed) return;
+  }
+  /* Separate prompt from the TOW one above, deliberately: the cause and the
+     remedy are different, and merging them into one vague warning would tell
+     an ops manager less than either says on its own. */
+  const warnPending = sel.filter(function(d){ return d.pendingAgentClosure; });
+  if(warnPending.length){
+    const proceedPending = await confirmBox("Approve before agent closure?",
+      warnPending.length+" selected case"+(warnPending.length===1?" is":"s are")+" still awaiting agent closure, so the vendor distance has not been calculated and the KM Fee is 0. Approving now pays base fee only. Approve anyway?", "Approve anyway");
+    if(!proceedPending) return;
   }
   const btn=$("vaBulkApproveBtn"); btn.disabled=true; btn.textContent="Approving…";
   let done=0; const failed=[];
@@ -6965,20 +7090,33 @@ async function searchAccountsPayable(){
   // returns the unchanged result set.
   const wanted = Array.prototype.slice.call($("apPayStatus").selectedOptions||[]).map(function(o){ return o.value; });
   const all = await apiGet(null);
+  /* Counters, so an empty result says which test emptied it (2026-10-05). */
+  let dropVendor=0, dropStatus=0, dropNoDate=0, dropRange=0;
   AP_CASES = all.filter(function(r){
-    if(String(unwrapLookup(r.Assigned_Vendor))!==String(vendorId)) return false;
-    if(!apPaymentStatusMatches(r, wanted)) return false;
+    /* vendorOptForTicket() rather than Assigned_Vendor alone — 2026-10-05.
+       It tries Assigned_Vendor first and falls back to the ticket's vendor
+       email, which is what every other screen already does. A ticket accepted
+       while the vendor-identity bug was live has a BLANK Assigned_Vendor, and
+       this strict test made every one of them invisible here while Operations
+       Approval still listed them. */
+    const vopt = vendorOptForTicket(r);
+    if(!vopt || String(vopt.id)!==String(vendorId)){ dropVendor++; return false; }
+    if(!apPaymentStatusMatches(r, wanted)){ dropStatus++; return false; }
     // Date basis (2026-09-17): the vendor ACCEPT time, matching the "Date &
     // Time" column this screen now displays — filtering on one date while
     // showing another is how a case "disappears" for no visible reason. Falls
     // back to Added_Time when a case has no accept time recorded, so nothing
     // that used to match can drop out of the results.
     const d=parseAnyDateTime ? (parseAnyDateTime(vaAcceptedAtRaw(r)) || parseAnyDateTime(r.Added_Time)) : null;
-    if(!d) return false;
-    return d.getTime()>=fromD.getTime() && d.getTime()<=toD.getTime();
+    if(!d){ dropNoDate++; return false; }
+    const inRange = d.getTime()>=fromD.getTime() && d.getTime()<=toD.getTime();
+    if(!inRange) dropRange++;
+    return inRange;
   });
   AP_SELECTED=new Set();
-  console.log("[Get-Rescue] searchAccountsPayable: "+all.length+" total tickets, "+AP_CASES.length+" payable for vendor "+vendorId+" in range");
+  console.log("[Get-Rescue] searchAccountsPayable: "+all.length+" total tickets -> "+AP_CASES.length+" shown for vendor "+vendorId+
+    " | dropped: "+dropVendor+" other vendor, "+dropStatus+" wrong payment status, "+dropNoDate+" no usable date, "+dropRange+" outside "+
+    ymd(fromD)+" to "+ymd(toD)+". A case Operations Approval shows but this does not is almost always the vendor test — check that ticket's Assigned_Vendor.");
   renderAccountsPayableList();
 }
 function apVendorRaw(vendorId){
@@ -7559,7 +7697,7 @@ function vendorsFor(record){
   // Zoho record — only the picker's own list is what changes.
   const capFiltered=OPTIONS.vendors.filter(function(o){ return vendorCapabilityMatches(o.raw, record.Service_Type); });
   const all=capFiltered.filter(function(o){ return o.label!==o.id; }).map(function(o){
-    const info=vendorInfo(o);
+    const info=vendorInfo(o, { lat:parseCoord(record.Latitude), lon:parseCoord(record.Longitude) });
     return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info,o.id) }) });
   });
   // Diagnostic (2026-08-16, user-reported live: "Preferred Vendor? No" shows
@@ -7632,7 +7770,10 @@ function vendorOptionHtml(o){
   // position, not their static registered address, so it's worth showing
   // which one this figure is actually based on. No suffix at all for a
   // static-address-based distance, matching this row's own pre-existing look.
-  if(v.distanceKm!=null) meta.push(v.distanceKm+" km"+(v.locationSource==="live"?" (live)":""));
+  // "(nearest base)" added 2026-10-05 alongside the item-22 fix — same
+  // transparency argument as "(live)" above: an agent comparing vendors should
+  // be able to see which point each figure was measured from.
+  if(v.distanceKm!=null) meta.push(v.distanceKm+" km"+(v.locationSource==="live"?" (live)":(v.locationSource==="nearestBase"?" (nearest base)":"")));
   if(v.phone) meta.push(v.phone);
   const statusLabel=v.statusKnown?(v.online?"Online":"Offline"):"Unknown";
   /* App Status and Login Status, 2026-09-25 — ETA sheet item 24 lists both as
@@ -8224,7 +8365,20 @@ function seedAcceptanceVendorFields(r){
     // lookup already used for display purposes elsewhere in this file.
     const picked = OPTIONS.vendors.find(function(o){ return String(o.id)===String(r.Assigned_Vendor); })
       || OPTIONS.vendors.find(function(o){ return String(o.v)===String(r.Assigned_Vendor); });
-    const pickedEmail = (picked && picked.raw && picked.raw.Email) ? picked.raw.Email : "";
+    /* readVal() over the same candidate fields the rest of the app uses —
+       2026-10-05. This line WRITES Vendor_Email onto the ticket, and that is
+       the value every later vendor lookup falls back to when Assigned_Vendor
+       is blank. Reading .Email raw meant an object-shaped field was written
+       through as an object, and a vendor whose address lives under a different
+       field name was written as "" — either way the fallback downstream had
+       nothing usable to match on. */
+    let pickedEmail="";
+    if(picked && picked.raw){
+      for(const emailField of VENDOR_RECORD_EMAIL_FIELDS){
+        const candidate=readVal(picked.raw, emailField).trim();
+        if(candidate){ pickedEmail=candidate; break; }
+      }
+    }
     if(pickedEmail){ r.Vendor_Email=pickedEmail; r.Vendor_Email1=pickedEmail; r.Vendor_Email2=pickedEmail; }
   }
   r._prevAssignedVendor = r.Assigned_Vendor;
@@ -9150,6 +9304,48 @@ async function checkVoiceCallbackStatusFromTicket(callbackId, logId, ticketId){
 // GST-backed-out figure instead would under-invoice the customer by the
 // 18% that was reverse-calculated out, since a tax-exempt line item adds
 // nothing on top of its own rate.
+/* ---------- client TAX INVOICE template values — 2026-09-30 ----------
+   Six per-ticket values the client's own sample invoice shows and a stock
+   Zoho Books invoice has nowhere to put. They travel as new parameters on
+   onDemandInvoicing (see its .deluge header) and land in cf_* custom fields
+   on the Books invoice, where the template reads them.
+
+   Nothing below changes an existing payload key. serviceLabel in particular
+   still carries "RSR - Battery Assistance" exactly as it always has, because
+   it is the line item description on every invoice created to date — Service
+   Type and Service Description get their own fields instead, which is also
+   what the client's two-column layout actually wants. */
+const TAX_INVOICE_SERVICE_TYPE={ RSR:"Roadside Assistance", TOW:"Towing" };
+function taxInvoiceServiceType(record){
+  const raw=String((record&&record[CONFIG.serviceTypeField])||"").trim();
+  if(!raw) return "";
+  // Unknown codes pass through as-is rather than becoming "" — a new
+  // Service_Type added later shows its raw code on the invoice, which is wrong
+  // but visible, instead of silently printing nothing.
+  return TAX_INVOICE_SERVICE_TYPE[raw.toUpperCase()] || raw;
+}
+/* dd/MM/yyyy to match the sample exactly. Deliberately a STRING for a Text
+   custom field in Books, not an ISO date for a Date field: Books would then
+   re-format it to the org's own date setting and could shift it a day across
+   timezones, and this date is only ever displayed, never calculated on.
+
+   Falls through the closure timestamps in the order the job actually reaches
+   them, so the invoice shows the day the service was performed rather than the
+   day the invoice happened to be generated — those differ whenever an agent
+   invoices a ticket the morning after. Added_Time is the last resort, and
+   today only if even that is missing. */
+function taxInvoiceServiceDate(record){
+  const candidates=[ record && record.RSP_Completion_Time, record && record.Agent_Closure_Time,
+                     record && record.RSP_Closure_Time,    record && record.Drop_Location_Arrival_Time,
+                     record && record.Reach_Time,          record && record.Added_Time ];
+  for(let i=0;i<candidates.length;i++){
+    if(!candidates[i]) continue;
+    const d=parseAnyDateTime(candidates[i]);
+    if(d) return pad(d.getDate())+"/"+pad(d.getMonth()+1)+"/"+d.getFullYear();
+  }
+  const n=new Date();
+  return pad(n.getDate())+"/"+pad(n.getMonth()+1)+"/"+n.getFullYear();
+}
 async function onDemandInvoicing(record, amountOverride, invoiceIdField, referenceSuffix, applyTax, paymentUrlField){
   const fn=resolve("invokeCustomApi");
   if(!fn){
@@ -9258,7 +9454,21 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
       bookingFeeAmount: String(bookingFeeToApply),
       bookingFeeRef: bookingFeeToApply>0 ? (caseLabel(record)+"-BF") : "",
       remainingFeeAmount: String(remainingFeeToApply),
-      remainingFeeRef: remainingFeeToApply>0 ? (caseLabel(record)+"-RF") : ""
+      remainingFeeRef: remainingFeeToApply>0 ? (caseLabel(record)+"-RF") : "",
+      // --- client TAX INVOICE template fields, 2026-09-30 (additive) ---
+      // lookupNamesFor() is this file's own id->label resolver; record.Vehicle
+      // holds a Vehicle_Master_Report id, so the raw value would print as a
+      // bare record id on the invoice without it — the same trap already fixed
+      // on the Kanban board and the vendor apps.
+      vehicleMake: lookupNamesFor(record[CONFIG.vehicleField], OPTIONS.vehicles)||"",
+      registrationNumber: record.Vehicle_Registration_Number||"",
+      serviceDate: taxInvoiceServiceDate(record),
+      serviceType: taxInvoiceServiceType(record),
+      serviceDescription: lookupNamesFor(record.Vehicle_Issue, OPTIONS.issues)||"",
+      // Payment_Method_Final is the closure-stage mode and the right one for a
+      // closure invoice; Payment_Method is the booking-fee mode, used only as a
+      // fallback for a ticket invoiced before closure ever set the final one.
+      paymentMode: record.Payment_Method_Final||record.Payment_Method||""
     }
   };
   // TEMPORARY 2026-08-27 (actively debugging live: the Custom API reports
@@ -9536,6 +9746,12 @@ const LOCK_HEARTBEAT_MS = 60*1000; // refresh Locked_At this often while the wiz
 // different threshold is wanted later.
 const INVITE_TIMEOUT_MS = 2*60*1000; // 2 min — client-set 2026-10-03 (was a 15-min placeholder; see the comment above, which anticipated exactly this change)
 let LOCK_HEARTBEAT_TIMER=null;
+/* Which record THIS session actually holds the lock on — 2026-10-03.
+   releaseLock() used to blank Locked_By/Locked_At unconditionally, so any
+   path that set state.recordId without ever acquiring a lock (openClosure()
+   does exactly that) would clear ANOTHER agent's lock on its way back to the
+   dashboard — quietly undoing the very protection this feature exists for. */
+let LOCK_HELD_ID=null;
 // Generalized out of agentDisplayName() below (2026-08-11) — that function
 // only ever resolved the CURRENT logged-in agent's own name; the lock UI
 // needs to show the name of whichever OTHER agent is holding it too.
@@ -9682,7 +9898,10 @@ function activeLockOn(rec){
 }
 async function acquireLock(recordId){
   if(!recordId) return;
-  try{ await updateTicket(recordId, { Locked_By: LOGIN_EMAIL||"", Locked_At: fmtDateTime(new Date()) }); }
+  try{
+    await updateTicket(recordId, { Locked_By: LOGIN_EMAIL||"", Locked_At: fmtDateTime(new Date()) });
+    LOCK_HELD_ID=String(recordId);
+  }
   catch(e){ console.warn("[Get-Rescue] acquireLock — couldn't save (have Locked_By/Locked_At been added to Create_Case in Zoho Studio yet?):", e); }
 }
 /* Best-effort — not guaranteed to complete if the tab is actually closing
@@ -9691,6 +9910,12 @@ async function acquireLock(recordId){
 async function releaseLock(recordId){
   stopLockHeartbeat();
   if(!recordId) return;
+  // Never clear a lock we did not take — see LOCK_HELD_ID's own comment.
+  if(String(LOCK_HELD_ID||"")!==String(recordId)){
+    console.log("[Get-Rescue] releaseLock: skipping", recordId, "— this session never acquired it (LOCK_HELD_ID:", LOCK_HELD_ID, ")");
+    return;
+  }
+  LOCK_HELD_ID=null;
   try{ await updateTicket(recordId, { Locked_By: "", Locked_At: "" }); }
   catch(e){ console.warn("[Get-Rescue] releaseLock — couldn't clear (non-fatal, will just go stale on its own):", e); }
 }
@@ -10864,7 +11089,13 @@ function buildField(f){
     const opts=allOpts.map((o,idx)=>`<div class="opt ${sel===String(o.v)?"sel":""}" id="${id}_opt_${idx}" data-value="${esc(o.v)}" tabindex="${radioLocked?"-1":(idx===selIdx?"0":"-1")}" role="radio" aria-checked="${sel===String(o.v)}">${esc(o.label)}</div>`).join("");
     wrap.innerHTML=lab+`<div class="radio-set${radioLocked?" locked":""}" id="${id}" role="radiogroup">${opts}</div>`;
   } else if(f.t==="check"){
-    const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
+    /* f.default is honoured ONLY when nothing is stored (2026-10-05). A stored
+       false is an agent's real "no" — defaulting over it on the next open would
+       make the box impossible to untick. */
+    const unset = (cur===undefined || cur===null || cur==="");
+    const on = unset
+      ? (f.default===true)
+      : (cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0));
     wrap.innerHTML=`<label class="check"><input type="checkbox" id="${id}" ${on?"checked":""}${f.readonly?" disabled":""}><span>${esc(f.l)}</span></label>`;
   } else if(f.t==="button"){
     const on = cur===true||cur==="Yes"||(Array.isArray(cur)&&cur.indexOf("Yes")>=0);
@@ -12293,6 +12524,81 @@ let editingField=null;
 // live vendor-app data mid-flow) — this override only applies to editing
 // FROM the closure summary, via openFieldEditor() below.
 const CLOSURE_ALWAYS_EDITABLE_FIELDS=["Payment_Method_Final","Payment_received","Upload_Photo_of_receipt"];
+/* How many photos this field would lose, and whether there is anything to
+   lose. state.files holds a photo picked in this editor that has not been
+   uploaded yet; state.record holds whatever is already on the ticket. */
+function closurePhotoCounts(f){
+  return { picked: !!state.files[f.n], saved: fileCountFor(state.record[f.n]) };
+}
+/* Clears a file field on the ticket.
+
+   Blanking is the only documented way to remove a file from a Creator file
+   field, and on a field holding several photos it removes all of them. The
+   vendor app refuses that case outright because a vendor cannot see what they
+   would lose. An agent can: the count is in the confirmation text, so this
+   says plainly "Remove all 3 photos" rather than quietly destroying two of
+   them. That difference is deliberate, not an inconsistency.
+
+   The server write happens FIRST. If it fails, nothing local is touched and
+   the agent still has exactly what they had. */
+async function removeClosurePhoto(f){
+  const c=closurePhotoCounts(f);
+  if(!c.picked && !c.saved) return;
+  const label=f.l||f.n;
+  const go = await confirmBox(
+    c.saved>1 ? ("Remove all "+c.saved+" photos?") : "Remove this photo?",
+    c.saved>1
+      ? (label+" holds "+c.saved+" photos. Zoho can only clear the whole field, so all "+c.saved+" will be removed from this ticket. This cannot be undone.")
+      : ("This removes the photo in "+label+" from the ticket. This cannot be undone."),
+    c.saved>1 ? ("Remove all "+c.saved) : "Remove");
+  if(!go) return;
+  if(c.saved && state.recordId){
+    try{
+      const payload={}; payload[f.n]="";
+      await apiUpdate(state.recordId, payload);
+    }catch(e){
+      console.warn("[Get-Rescue] removeClosurePhoto: could not clear "+f.n+" — nothing was changed", e);
+      // Always say nothing changed — a bare server message like "clear rejected"
+      // leaves the agent unsure whether the photo went or not.
+      toast("Couldn't remove the photo — nothing was changed"+((e&&e.message)?(": "+e.message):""),"err");
+      return;
+    }
+  }
+  if(c.picked) delete state.files[f.n];
+  if(c.saved) state.record[f.n]="";
+  /* Drop the cached preview blobs, or the thumbnail the agent just deleted
+     keeps rendering from memory. Keyed recordId|field|index — clear every
+     index this field could have had. */
+  for(let i=0;i<Math.max(1,c.saved);i++) delete FILE_PREVIEW_CACHE[state.recordId+"|"+f.n+"|"+i];
+  toast(c.saved>1 ? (c.saved+" photos removed") : "Photo removed","ok");
+  closeFieldEditor();
+  rerenderCurrentView();
+}
+/* Adds the remove control under a file field in the editor — only when the
+   field is editable and there is genuinely something to remove, so a blank
+   field shows no dead button. */
+function appendPhotoRemoveControl(body, f){
+  if(!f || f.t!=="file") return;
+  if(state.closureReadOnly || f.readonly===true) return;
+  if(typeof f.readonly==="function" && f.readonly(state.record)) return;
+  const c=closurePhotoCounts(f);
+  if(!c.picked && !c.saved) return;
+  const wrap=document.createElement("div");
+  wrap.style.cssText="margin-top:12px";
+  const btn=document.createElement("button");
+  btn.type="button";
+  btn.className="btn ghost";
+  btn.style.cssText="color:var(--stop);border-color:var(--stop)";
+  btn.textContent = c.saved>1 ? ("Remove all "+c.saved+" photos") : "Remove photo";
+  btn.onclick=function(){
+    btn.disabled=true;
+    Promise.resolve(removeClosurePhoto(f))
+      .catch(function(e){ console.warn("[Get-Rescue] removeClosurePhoto threw", e); toast("Couldn't remove the photo","err"); })
+      .then(function(){ if(btn) btn.disabled=false; });
+  };
+  wrap.appendChild(btn);
+  body.appendChild(wrap);
+}
 function openFieldEditor(fieldName){
   const f=CLOSURE_FIELD_INDEX[fieldName]; if(!f) return;
   const base = CLOSURE_ALWAYS_EDITABLE_FIELDS.indexOf(fieldName)!==-1 ? Object.assign({},f,{readonly:false}) : f;
@@ -12307,6 +12613,9 @@ function openFieldEditor(fieldName){
   $("fieldModalTitle").textContent=f.l||f.n;
   const body=$("fieldModalBody"); body.innerHTML="";
   body.appendChild(buildField(editingField));
+  // Photo delete — client item 21, 2026-10-05. No-ops for every non-file
+  // field and for a file field that has nothing in it.
+  appendPhotoRemoveControl(body, editingField);
   $("fieldModalSave").style.display = state.closureReadOnly ? "none" : "";
   $("fieldModalCancel").textContent = state.closureReadOnly ? "Close" : "Cancel";
   $("fieldModal").classList.add("on");
@@ -12434,7 +12743,7 @@ async function saveFieldEditor(){
       if(originStage && typeof originStage.extra==="function"){
         Object.assign(payload, originStage.extra(state.record));
       }
-      if(Object.keys(payload).length) await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
+      if(Object.keys(payload).length) await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
     }
     // rerenderCurrentView() (2026-08-07, was a hardcoded renderClosure() call)
     // — the closure summary this popup edits is now ALSO reachable as the
@@ -12701,6 +13010,40 @@ function buildPayload(step){
 }
 
 /* ---- actions ---- */
+/* Pulls the column name out of Zoho's own rejection, e.g.
+   ["Invalid column value for Send_Payment_Link1"] -> "Send_Payment_Link1". */
+function invalidColumnFrom(err){
+  const msg=(err && (err.message||String(err))) || "";
+  const m=msg.match(/Invalid column value for\s+([A-Za-z0-9_]+)/i);
+  return m ? m[1] : null;
+}
+/* Retries an update once, re-shaping ONE rejected tick-box column.
+
+   Creator has two single-tick field types and they want different values: a
+   multi-select Checkbox takes ["Yes"]/[], a Decision box takes true/false.
+   This app has always sent the array form. Where that is wrong the whole save
+   fails and the agent is stuck, so the boolean is tried before giving up.
+
+   Only ever touches the one column Zoho named, and only when the value we sent
+   was the array form — so it cannot reinterpret anything else in the payload. */
+async function updateTicketTolerant(recordId, payload){
+  try{
+    return await updateTicket(recordId, payload);
+  }catch(e){
+    const col=invalidColumnFrom(e);
+    if(!col || !(col in payload)) throw e;
+    const sent=payload[col];
+    if(!Array.isArray(sent)) throw e;
+    const retry=Object.assign({},payload);
+    retry[col]= sent.indexOf("Yes")>=0;
+    console.warn("[Get-Rescue] updateTicketTolerant: Zoho rejected "+col+" as "+JSON.stringify(sent)+
+      " — retrying it as the boolean "+retry[col]+". If this works, "+col+" is a DECISION BOX in Zoho, not a Checkbox:"+
+      " correct it in FIELDS.md and in buildPayload() so the first attempt succeeds.");
+    const out = await updateTicket(recordId, retry);
+    console.warn("[Get-Rescue] updateTicketTolerant: the boolean retry for "+col+" SUCCEEDED.");
+    return out;
+  }
+}
 async function saveStep(advance){
   const step=state.path[state.stepIndex];
   // Defense in depth (2026-08-07) — the Save/"Close Case" button is already
@@ -12752,6 +13095,23 @@ async function saveStep(advance){
          Assigning it here makes the freshly created record identical in shape
          to a reopened one, which is what the rest of the file already assumes. */
       state.record.ID=id;
+      /* LOCK THE TICKET WE JUST CREATED — 2026-10-03, client-reported:
+         "while CREATING a new ticket, when the agent reaches the second page
+         (booking fee page), other agents are still allowed to open and edit
+         the same ticket."
+
+         Exactly right, and this line is why. The lock was only ever taken in
+         openTicket(), i.e. when reopening an existing ticket from the
+         dashboard. A ticket created here existed in Zoho, was visible on every
+         other agent's dashboard, and carried no lock at all for the whole rest
+         of the create flow — so activeLockOn() returned null for them and they
+         got no warning. Same two calls openTicket() already makes.
+
+         Deliberately not awaited: the agent is mid-create and a slow lock write
+         must not stall moving to the next step. acquireLock() swallows its own
+         errors, and the heartbeat re-attempts every 60s regardless. */
+      acquireLock(id);
+      startLockHeartbeat(id);
       // Real bug fixed (2026-08-05, user request, reapplied after it was
       // somehow lost from an earlier pass — see the top-of-file OneDrive
       // note): the header kept showing "New Ticket" for the rest of this
@@ -12773,7 +13133,7 @@ async function saveStep(advance){
       try{ await updateTicket(id,{[CONFIG.caseIdField]:caseId}); }
       catch(e){ console.warn("[Get-Rescue] could not set Case_ID to", caseId, "on record", id, "— ticket was still created; Case_ID may be left at Zoho's own default:", e); }
     }
-    else { await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p)); }
+    else { await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p)); }
     // Real bug fixed (2026-08-19, user-reported live: assigning a vendor
     // then immediately saving Accept in the same session corrupted Status
     // to "Service Acceptance" — see buildPayload()'s own matching comment
@@ -12930,7 +13290,7 @@ async function cancelWizard(){
   // "LOCATION REQUEST"/"SERVICE FEE QUOTE" if a required action wasn't done)
   // so cancelling isn't silently different from saving without completing it.
   if(state.recordId){
-    try{ collectStep(false); setPath(); await saveWithCoordFallback(buildPayload(state.path[state.stepIndex]), (p)=>updateTicket(state.recordId,p)); }
+    try{ collectStep(false); setPath(); await saveWithCoordFallback(buildPayload(state.path[state.stepIndex]), (p)=>updateTicketTolerant(state.recordId,p)); }
     catch(e){ console.warn("cancel: best-effort save failed", e); }
   }
   backToDash();
@@ -13043,7 +13403,7 @@ async function saveClosure(){
       [CONFIG.stageField]:"CLOSED"
     };
     if(closureCountsAsFeeBearing(r.Closure_Status)) payload.Total_Service_Fee=finalTSF;
-    await saveWithCoordFallback(payload, (p)=>updateTicket(state.recordId,p));
+    await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
     // See uploadPendingFiles()'s own comment (awaited + folded into one toast
     // now, same fix as saveStep()'s matching call).
     const failedUploads = await uploadPendingFiles(state.recordId);

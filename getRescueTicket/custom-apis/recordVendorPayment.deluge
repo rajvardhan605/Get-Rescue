@@ -96,14 +96,66 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 				}
 			}
 		}
+		// NAME LOOKUP BEFORE CREATING — 2026-10-05. The phone search above misses
+		// any vendor whose Books record carries a different phone, or none, and the
+		// create that followed then collided on the duplicate name Books enforces.
+		// Searching the field Books actually treats as unique closes that gap.
+		//
+		// Own try/catch, miss treated as "not found": a refused or unexpected search
+		// leaves us exactly where we already were - about to create - so this can
+		// only ever find more, never break what works.
+		nameForContact = vendorName;
+		if(nameForContact == null)
+		{
+			nameForContact = "Vendor";
+		}
+		if(nameForContact == "")
+		{
+			nameForContact = "Vendor";
+		}
+		if(vendor_id == "")
+		{
+			try
+			{
+				nameForSearch = nameForContact.replaceAll(" ","%20");
+				nameSearchResp = invokeurl
+				[
+					url :books_base_url + "/contacts?organization_id=" + organization_id + "&contact_name=" + nameForSearch + "&contact_type=vendor"
+					type :GET
+					connection:"zoho_books_connection"
+				];
+				info "recordVendorPayment - vendor name lookup for [" + nameForContact + "], raw response: " + nameSearchResp.toString();
+				nameContacts = nameSearchResp.get("contacts");
+				if(nameContacts != null)
+				{
+					for each nameContact in nameContacts
+					{
+						if(vendor_id == "")
+						{
+							// Matched here rather than trusting the filter: a "contains"-style
+							// search would otherwise bind this payment to a similarly named vendor.
+							foundName = "";
+							if(nameContact.get("contact_name") != null)
+							{
+								foundName = nameContact.get("contact_name").toString().trim();
+							}
+							if(foundName.equalsIgnoreCase(nameForContact.trim()))
+							{
+								vendor_id = nameContact.get("contact_id").toString();
+								info "recordVendorPayment - matched existing Books vendor by NAME (the phone search had missed it): " + foundName + " -> " + vendor_id;
+							}
+						}
+					}
+				}
+			}
+			catch (nameSearchEx)
+			{
+				info "recordVendorPayment - vendor name lookup failed, falling through to create exactly as before: " + nameSearchEx.toString();
+			}
+		}
 		if(vendor_id == "")
 		{
 			contactMap = Map();
-			nameForContact = vendorName;
-			if(nameForContact == null)
-			{
-				nameForContact = "Vendor";
-			}
 			if(nameForContact == "")
 			{
 				nameForContact = "Vendor";
@@ -136,7 +188,7 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			if(newContact == null)
 			{
 				createContactErr = createContactResp.get("message");
-				errMap.put("message","Could not find or create vendor in Zoho Books: " + createContactErr);
+				errMap.put("message","Could not find or create vendor in Zoho Books: " + createContactErr + " If this says the name is already taken, that vendor exists in Books but could not be matched - open them in Books, copy their Contact ID, and paste it into Zoho_Books_Vendor_ID on the vendor record. That skips this lookup entirely.");
 				return errMap.toString();
 			}
 			vendor_id = newContact.get("contact_id");
@@ -201,6 +253,92 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			return errMap.toString();
 		}
 
+		// TDS TAX ID — resolved here, before any Books write (2026-10-05).
+		//
+		// Books refuses tax_amount_withheld at payment level and wants the TDS
+		// declared on the Bill, which needs the id of a configured TDS tax. Looked
+		// up by PERCENTAGE rather than hardcoded, so a vendor on 2% and one on 10%
+		// both work with no code change.
+		//
+		// The full response is logged because the exact shape Books returns for TDS
+		// taxes has never been confirmed in this project. If the match below finds
+		// nothing, that log line is the answer.
+		tdsTaxId = "";
+		if(preflightTds > 0)
+		{
+			try
+			{
+				taxesResp = invokeurl
+				[
+					url :books_base_url + "/settings/taxes?organization_id=" + organization_id
+					type :GET
+					connection:"zoho_books_connection"
+				];
+				info "recordVendorPayment - configured taxes in Books, raw response: " + taxesResp.toString();
+				taxList = taxesResp.get("taxes");
+				if(taxList != null)
+				{
+					for each taxEntry in taxList
+					{
+						if(tdsTaxId == "")
+						{
+							taxPct = 0.0;
+							try
+							{
+								if(taxEntry.get("tax_percentage") != null)
+								{
+									taxPct = taxEntry.get("tax_percentage").toString().toDecimal();
+								}
+							}
+							catch (pctEx)
+							{
+								taxPct = -1.0;
+							}
+							// Name checked as well as percentage: a plain 2% GST would otherwise
+							// match a 2% TDS rate and post the withholding against the wrong head.
+							taxNameText = "";
+							if(taxEntry.get("tax_name") != null)
+							{
+								taxNameText = taxEntry.get("tax_name").toString().toUpperCase();
+							}
+							taxTypeText = "";
+							if(taxEntry.get("tax_type") != null)
+							{
+								taxTypeText = taxEntry.get("tax_type").toString().toUpperCase();
+							}
+							looksLikeTds = false;
+							if(taxNameText.contains("TDS"))
+							{
+								looksLikeTds = true;
+							}
+							if(taxTypeText.contains("TDS"))
+							{
+								looksLikeTds = true;
+							}
+							if(looksLikeTds)
+							{
+								if(taxPct == tdsPercentAmt)
+								{
+									tdsTaxId = taxEntry.get("tax_id").toString();
+									info "recordVendorPayment - matched TDS tax [" + taxNameText + "] at " + taxPct + "% -> tax_id " + tdsTaxId;
+								}
+							}
+						}
+					}
+				}
+			}
+			catch (taxEx)
+			{
+				info "recordVendorPayment - could not read the configured taxes from Books: " + taxEx.toString();
+			}
+			if(tdsTaxId == "")
+			{
+				info "recordVendorPayment PRE-FLIGHT REJECT - no configured TDS tax matches " + tdsPercentAmt + "%. Nothing was written.";
+				errMap.put("message","This vendor has TDS of " + tdsPercentAmt + "%, and Zoho Books requires the withholding to be declared on the Bill using a configured TDS tax. No TDS tax at that rate was found in Books, so NOTHING was written - no Bill, no Credit, no Payment. Create it in Zoho Books under Settings -> Taxes (name it so it contains \"TDS\", e.g. TDS 2%), then retry. To pay this vendor without any withholding instead, set TDS_Percentage to 0 on their record.");
+				return errMap.toString();
+			}
+		}
+		
 		// Bills need an explicit bill_number - unlike Invoices, Zoho Books
 		// has no auto-generate toggle for Bills, since a Bill is meant to
 		// carry the VENDOR's own invoice number. There isn't one here (this
@@ -220,6 +358,14 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		billMap.put("vendor_id",vendor_id);
 		billMap.put("bill_number",billNumber);
 		billMap.put("line_items",lineItems);
+		// TDS declared HERE rather than on the payment — the whole point of this
+		// change. tdsTaxId is only ever non-blank when the pre-flight above resolved
+		// a real configured tax at this vendor's own rate.
+		if(tdsTaxId != "")
+		{
+			billMap.put("is_tds_applied",true);
+			billMap.put("tds_tax_id",tdsTaxId);
+		}
 		billDate = paymentDate;
 		if(billDate == null)
 		{
@@ -263,10 +409,16 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 
 		// Step 3: TDS. Computed here from the vendor TDS percent rather
 		// than trusted from the caller, so it always matches billTotal
-		// exactly. Applied at payment time via tax_amount_withheld below,
-		// not the Bill's own is_tds_applied/tds_tax_id fields - those need
-		// a pre-configured TDS tax rate id per distinct percentage in
-		// Books, which does not fit a per-vendor rate cleanly.
+		// exactly.
+		//
+		// CHANGED 2026-10-05. This used to be applied at payment time via
+		// tax_amount_withheld, because the Bill's own is_tds_applied/tds_tax_id
+		// fields need a configured TDS tax id per percentage in Books. Zoho Books
+		// then refused the payment outright - "You cannot apply the Withholding Tax
+		// at the payment level. Kindly apply it at the bill level." - so the id is
+		// now resolved from Books by percentage in the pre-flight section above and
+		// declared on the Bill. The amount below is still what the payment leaves
+		// unpaid, so the arithmetic here is unchanged.
 		tdsAmount = (billTotal * tdsPercentAmt / 100.0).round(2);
 
 		// Step 4: Cash Collected. This is money the vendor already
@@ -355,9 +507,17 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		paymentBillEntry = Map();
 		paymentBillEntry.put("bill_id",bill_id);
 		paymentBillEntry.put("amount_applied",finalPayable.toString());
+		// tax_amount_withheld is NOT sent any more when the Bill already carries the
+		// TDS — Books rejects the whole payment for it, which is the error that
+		// started this. Kept for the tdsTaxId == "" case, which now only arises when
+		// TDS is zero, so in practice it no longer fires at all; left in place rather
+		// than deleted so a future rate of 0% behaves exactly as it always did.
 		if(tdsAmount > 0)
 		{
-			paymentBillEntry.put("tax_amount_withheld",tdsAmount.toString());
+			if(tdsTaxId == "")
+			{
+				paymentBillEntry.put("tax_amount_withheld",tdsAmount.toString());
+			}
 		}
 		paymentBillsList = List();
 		paymentBillsList.add(paymentBillEntry);
@@ -394,7 +554,39 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		{
 			bookErr = createPaymentResp.get("message");
 			info "Vendor Payment creation FAILED: " + bookErr;
-			errMap.put("message","Bill " + bill_id + " was created, but recording the payment failed: " + bookErr);
+			// CLEAN UP THE BILL WE JUST CREATED — 2026-10-05. Without this, every
+			// failed attempt leaves a real unpaid Bill behind, and a retry adds
+			// another. Books permits deleting a bill that has no payment against it,
+			// which is precisely the state a failed payment leaves us in.
+			billCleaned = "no";
+			try
+			{
+				deleteBillResp = invokeurl
+				[
+					url :books_base_url + "/bills/" + bill_id + "?organization_id=" + organization_id
+					type :DELETE
+					connection:"zoho_books_connection"
+				];
+				info "recordVendorPayment - rollback delete of bill " + bill_id + ", raw response: " + deleteBillResp.toString();
+				if(deleteBillResp.get("code") == 0)
+				{
+					billCleaned = "yes";
+				}
+			}
+			catch (delEx)
+			{
+				// Deliberately swallowed: the PAYMENT error is the one worth reporting,
+				// and losing it to a cleanup failure would leave nothing to act on.
+				info "recordVendorPayment - could not roll back bill " + bill_id + " (it will need removing by hand in Zoho Books): " + delEx.toString();
+			}
+			if(billCleaned == "yes")
+			{
+				errMap.put("message","Payment was refused by Zoho Books, so nothing was recorded: " + bookErr + " (the draft bill was removed again, so you can safely retry once this is resolved.)");
+			}
+			else
+			{
+				errMap.put("message","Bill " + bill_id + " was created, but recording the payment failed: " + bookErr + " That bill could NOT be removed automatically - delete it in Zoho Books before retrying, or you will end up with duplicates.");
+			}
 			return errMap.toString();
 		}
 		paymentRec = createPaymentResp.get("vendorpayment");

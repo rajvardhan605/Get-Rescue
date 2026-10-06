@@ -1,4 +1,4 @@
-string onDemandInvoicing(string recordId, string referenceNumber, string customerName, string customerPhone, string customerEmail, string gstNumber, string serviceLabel, string totalAmount, string serviceCharges, string cgst, string sgst, string roundOff, string applyTax, string customerPhoneDigits, string expiresAt, string bookingFeeAmount, string bookingFeeRef, string remainingFeeAmount, string remainingFeeRef)
+string onDemandInvoicing(string recordId, string referenceNumber, string customerName, string customerPhone, string customerEmail, string gstNumber, string serviceLabel, string totalAmount, string serviceCharges, string cgst, string sgst, string roundOff, string applyTax, string customerPhoneDigits, string expiresAt, string bookingFeeAmount, string bookingFeeRef, string remainingFeeAmount, string remainingFeeRef, string vehicleMake, string registrationNumber, string serviceDate, string serviceType, string serviceDescription, string paymentMode)
 {
 	// ⚠ 4 NEW PARAMETERS ADDED 2026-09-14 (bookingFeeAmount, bookingFeeRef,
 	// remainingFeeAmount, remainingFeeRef) — for the "one final invoice per
@@ -289,6 +289,97 @@ invoiceURL="";
 		invoiceMap.put("adjustment",roundOffAmt);
 		invoiceMap.put("adjustment_description","Round Off");
 		invoiceMap.put("reference_number",referenceNumberResolved);
+		// CLIENT TAX INVOICE TEMPLATE FIELDS — 2026-09-30, from the client's own
+		// sample "TAX INVOICE" PDF. That layout carries six per-ticket values a
+		// stock Zoho Books invoice has nowhere to put: Service Date, Vehicle Make,
+		// Registration No, Service Type, Service Description and Mode. Everything
+		// else on the sample (SAC, CIN, the reverse-charge line, Place of Supply,
+		// the declaration, the footer address and the signature) is static text and
+		// belongs in the Books template itself, not here.
+		//
+		// Sent as top-level cf_* keys, which is what Zoho Books generates from a
+		// custom field's own label ("Service Date" -> cf_service_date). The
+		// alternative form is a custom_fields array keyed by customfield_id; if
+		// these keys ever stop taking, the real ids are already visible in the GET
+		// invoice response this function logs further down — read them from there
+		// rather than guessing, the same rule this file learned the hard way over
+		// the /share/paymentlink guess.
+		//
+		// ⚠ SERVICE DESCRIPTION IS DELIBERATELY ITS OWN FIELD rather than reusing
+		// the line item description. serviceLabel already feeds that description on
+		// every invoice created to date ("RSR - Battery Assistance"), and the
+		// client's layout wants Type and Description in two separate columns.
+		// Repurposing serviceLabel would have changed what appears on the existing
+		// invoices; adding a field changes nothing that already works.
+		customFieldCount = 0;
+		if(serviceDate != null)
+		{
+			if(serviceDate != "")
+			{
+				invoiceMap.put("cf_service_date",serviceDate);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		if(vehicleMake != null)
+		{
+			if(vehicleMake != "")
+			{
+				invoiceMap.put("cf_vehicle_make",vehicleMake);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		if(registrationNumber != null)
+		{
+			if(registrationNumber != "")
+			{
+				invoiceMap.put("cf_registration_no",registrationNumber);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		if(serviceType != null)
+		{
+			if(serviceType != "")
+			{
+				invoiceMap.put("cf_service_type",serviceType);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		if(serviceDescription != null)
+		{
+			if(serviceDescription != "")
+			{
+				invoiceMap.put("cf_service_description",serviceDescription);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		if(paymentMode != null)
+		{
+			if(paymentMode != "")
+			{
+				invoiceMap.put("cf_mode",paymentMode);
+				customFieldCount = customFieldCount + 1;
+			}
+		}
+		// GST No — the client's sample prints a literal "NA" for a customer with no
+		// GSTIN, while Zoho Books renders an absent GSTIN as an empty space with no
+		// placeholder of any kind. So this is its own field and is ALWAYS sent,
+		// never conditionally: a blank here is exactly the thing being avoided.
+		//
+		// Deliberately reuses the existing gstNumber parameter rather than adding a
+		// new one — gstNumber is already registered on the Custom API and already
+		// proven to arrive (it is what sets gst_no on the contact above), so this
+		// field cannot fall into the "declared in the signature, never registered,
+		// silently null" trap that this file has hit twice.
+		gstNoText = "NA";
+		if(gstNumber != null)
+		{
+			if(gstNumber != "")
+			{
+				gstNoText = gstNumber;
+			}
+		}
+		invoiceMap.put("cf_gst_no",gstNoText);
+		customFieldCount = customFieldCount + 1;
 		jsonPayload = invoiceMap.toString();
 
 		createInvoiceResp = invokeurl
@@ -300,6 +391,38 @@ invoiceURL="";
 			connection:"zoho_books_connection"
 		];
 		invoiceRespCode = createInvoiceResp.get("code");
+		// SELF-HEALING RETRY — the whole reason the custom fields above are safe to
+		// ship before anyone has created them in Zoho Books. Books rejects the whole
+		// invoice when a cf_* key names a field that does not exist in the org, and
+		// creating that invoice is this function's one critical job. So: if the
+		// create failed AND we sent custom fields, drop them and create exactly the
+		// invoice this function has always created. Worst case the invoice is made
+		// without the template fields — today's behaviour, unchanged — and the log
+		// line below says precisely which step to finish in Books.
+		if(invoiceRespCode != 0)
+		{
+			if(customFieldCount > 0)
+			{
+				info "onDemandInvoicing - invoice creation was rejected while sending the tax-invoice custom fields (" + createInvoiceResp.get("message") + "). Retrying WITHOUT them. If this keeps happening, the six custom fields are not set up on the Invoice module in Zoho Books yet - Settings -> Preferences -> Invoices -> Field Customization. Labels must be exactly: Service Date, Vehicle Make, Registration No, Service Type, Service Description, Mode, GST No.";
+				invoiceMap.remove("cf_service_date");
+				invoiceMap.remove("cf_vehicle_make");
+				invoiceMap.remove("cf_registration_no");
+				invoiceMap.remove("cf_service_type");
+				invoiceMap.remove("cf_service_description");
+				invoiceMap.remove("cf_mode");
+				invoiceMap.remove("cf_gst_no");
+				jsonPayload = invoiceMap.toString();
+				createInvoiceResp = invokeurl
+				[
+					url :books_base_url + "/invoices?organization_id=" + organization_id
+					type :POST
+					parameters:jsonPayload
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_books_connection"
+				];
+				invoiceRespCode = createInvoiceResp.get("code");
+			}
+		}
 		if(invoiceRespCode != 0)
 		{
 			errMsg = createInvoiceResp.get("message");
@@ -748,26 +871,159 @@ invoiceURL="";
 			info "onDemandInvoicing - WARNING: payments_recorded is 0, so this invoice will show its full amount outstanding even though the booking/remaining fees may already have been collected. Check the two payment responses logged above. Most likely causes, in order: the four payment parameters (bookingFeeAmount, bookingFeeRef, remainingFeeAmount, remainingFeeRef) are not registered on this Custom API's setup screen, or the fees were not marked confirmed-paid on the ticket, or Books rejected payment_mode 'other'.";
 		}
 
-		// SEND EMAIL (NOT CRITICAL)
-		try
+		// EMAIL THE INVOICE TO THE CUSTOMER — rewritten 2026-10-05, client item 17.
+		//
+		// The old version sent no recipient at all, leaving Books to fall back on
+		// whatever email the CONTACT happened to carry. Contacts here are matched by
+		// PHONE (see STEP 1), so one created by an earlier ticket without an email
+		// keeps having none, and Books has nowhere to send to.
+		//
+		// It also failed completely silently: emailResp was assigned and never read,
+		// and the catch was deliberately empty. That is why a non-working email went
+		// unnoticed for so long — there was nothing to notice. The response is now
+		// logged and reported back as invoice_emailed.
+		//
+		// Still non-fatal in every path: an email failure must never take down an
+		// invoice that already exists in Books.
+		invoiceEmailed = "no";
+		emailTarget = "";
+		if(customerEmail != null)
 		{
-			emailParams = Map();
-			emailParams.put("send_customer_statement","false");
-			emailResp = invokeurl
-			[
-				url :books_base_url + "/invoices/" + invoice_id + "/email?organization_id=" + organization_id
-				type :POST
-				parameters:emailParams.toString()
-				headers:{"Content-Type":"application/json"}
-				connection:"zoho_books_connection"
-			];
+			if(customerEmail.trim() != "")
+			{
+				emailTarget = customerEmail.trim();
+			}
 		}
-		catch (emailEx)
+		if(emailTarget == "")
 		{
-			// swallowed on purpose — email failure must not block the invoice
-			// itself, which is already created and returned successfully
+			invoiceEmailed = "no email on ticket";
+			info "onDemandInvoicing - invoice NOT emailed: this ticket has no customer email address. Books is given no recipient and the contact is matched by phone, so it may well have none either. Capture the customer email on the ticket if the invoice should be sent automatically.";
+		}
+		else
+		{
+			try
+			{
+				emailParams = Map();
+				emailParams.put("send_customer_statement","false");
+				toList = List();
+				toList.add(emailTarget);
+				emailParams.put("to_mail_ids",toList);
+				emailResp = invokeurl
+				[
+					url :books_base_url + "/invoices/" + invoice_id + "/email?organization_id=" + organization_id
+					type :POST
+					parameters:emailParams.toString()
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_books_connection"
+				];
+				info "onDemandInvoicing - invoice email raw response (to " + emailTarget + "): " + emailResp.toString();
+				if(emailResp.get("code") == 0)
+				{
+					invoiceEmailed = "yes";
+				}
+				else
+				{
+					// SELF-HEALING RETRY, same shape as the cf_* custom fields above.
+					// to_mail_ids is the documented way to name a recipient, but it has no
+					// prior confirmed use in this project — so if Books rejects the call
+					// with it, fall back to EXACTLY the request this function sent before
+					// today. The worst case is therefore the old behaviour, never worse.
+					info "onDemandInvoicing - invoice email was rejected while naming the recipient explicitly. Retrying the way this function sent it before 2026-10-05 (no to_mail_ids, Books uses the contact email).";
+					retryParams = Map();
+					retryParams.put("send_customer_statement","false");
+					retryResp = invokeurl
+					[
+						url :books_base_url + "/invoices/" + invoice_id + "/email?organization_id=" + organization_id
+						type :POST
+						parameters:retryParams.toString()
+						headers:{"Content-Type":"application/json"}
+						connection:"zoho_books_connection"
+					];
+					info "onDemandInvoicing - invoice email retry raw response: " + retryResp.toString();
+					if(retryResp.get("code") == 0)
+					{
+						invoiceEmailed = "yes (contact email)";
+					}
+				}
+			}
+			catch (emailEx)
+			{
+				// Still swallowed — an email failure must not block the invoice itself,
+				// which is already created and returned successfully. The difference is
+				// that it now says so instead of vanishing.
+				info "onDemandInvoicing - invoice email threw (non-fatal; the invoice exists and is still returned): " + emailEx.toString();
+			}
 		}
 
+		// INVOICE PDF ONTO THE TICKET — 2026-10-05, client item 16: "the invoice is
+		// not available for viewing or downloading on Zoho Creator".
+		//
+		// accept=pdf is Books' own documented way to get the RENDERED invoice (the
+		// same document the customer would be emailed), so this picks up whatever
+		// invoice template the org has configured — including the client's TAX
+		// INVOICE layout and the cf_* fields sent further up — rather than anything
+		// rebuilt here.
+		//
+		// Runs LAST on purpose: the invoice has been marked sent and both payments
+		// recorded by this point, so the stored PDF shows the real balance instead
+		// of a draft with the full amount outstanding.
+		//
+		// ⚠ Needs a File Upload field named Invoice_PDF on the Create_Case form.
+		// Until it exists this logs and no-ops — the invoice, the link and the
+		// response are all completely unaffected.
+		invoicePdfSaved = "no";
+		try
+		{
+			if(recordId != null)
+			{
+				if(recordId.trim() != "")
+				{
+					pdfResp = invokeurl
+					[
+						url :books_base_url + "/invoices/" + invoice_id + "?organization_id=" + organization_id + "&accept=pdf"
+						type :GET
+						connection:"zoho_books_connection"
+					];
+					// .trim() before .toLong() — same defensive pattern as
+					// generateZohoPaymentLink.deluge, added there after a real live crash
+					// on a recordId carrying a trailing space.
+					/* What did Books actually hand back? A real PDF starts "%PDF-". JSON or
+					   HTML here means the request was refused and there is no document to
+					   store, which otherwise still reported "yes" because assigning a bad
+					   value to a file field throws nothing. Truncated deliberately — the
+					   whole file would flood the log and tell us no more than its head. */
+					pdfPeek = "";
+					try
+					{
+						pdfPeek = pdfResp.toString();
+						if(pdfPeek.length() > 60)
+						{
+							pdfPeek = pdfPeek.subString(0,60);
+						}
+					}
+					catch (peekEx)
+					{
+						pdfPeek = "(could not be read as text - which is what a real binary PDF looks like)";
+					}
+					info "onDemandInvoicing - PDF fetch returned, first 60 chars: [" + pdfPeek + "]. A real PDF starts with %PDF- . JSON or HTML here means Books refused the request and there is no document to attach.";
+					ticketRec = Create_Case[ID == recordId.trim().toLong()];
+					if(ticketRec != null)
+					{
+						ticketRec.Invoice_PDF = pdfResp;
+						invoicePdfSaved = "yes";
+						info "onDemandInvoicing - invoice PDF attached to ticket " + recordId + " (Create_Case.Invoice_PDF) - it can now be opened from Creator without a Zoho Books login.";
+					}
+					else
+					{
+						info "onDemandInvoicing - invoice PDF NOT attached: no Create_Case record with ID " + recordId + ".";
+					}
+				}
+			}
+		}
+		catch (pdfEx)
+		{
+			info "onDemandInvoicing - invoice PDF could NOT be attached (non-fatal; the invoice exists in Books and its link is still returned). Most likely the Invoice_PDF File Upload field does not exist on Create_Case yet: " + pdfEx.toString();
+		}
 		// payments_recorded added 2026-09-14 — lets the widget (and anyone
 		// reading the console) see at a glance whether 0/1/2 of the collected
 		// payments actually made it onto the invoice, without having to open
@@ -775,7 +1031,7 @@ invoiceURL="";
 		// signal to check this Custom API's own execution log (most likely
 		// causes, in order: the 4 new parameters not registered in the Custom
 		// API setup screen, or payment_mode "other" being rejected).
-		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"invoice_pdf_saved\": \"" + invoicePdfSaved + "\", \"invoice_emailed\": \"" + invoiceEmailed + "\", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
 		invoiceURL= successResponse;
 	}
 	catch (mainEx)

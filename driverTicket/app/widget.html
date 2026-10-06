@@ -2306,9 +2306,14 @@ function hydrateAlreadyUploadedThumbs(fieldName, rawValue){
     const url=zohoFileDownloadUrl(state.current.ID, fieldName, rawValue, idx);
     if(!url) return;
     const img=document.createElement("img");
+    // The remove button is part of the tile and must survive the thumbnail
+     // swap below, which replaces the tile's whole innerHTML (2026-10-05).
+    const keepRm=el.querySelector(".rm");
+    const restoreRm=function(){ if(keepRm) el.appendChild(keepRm); };
     img.onerror=function(){
       console.warn("[Get-Rescue] hydrateAlreadyUploadedThumbs: direct URL failed to load for", fieldName, "index", idx, "— reverting to the plain 'Saved' badge.");
       el.innerHTML='<span class="up-badge ok" title="Already saved">✓ Saved</span>';
+      restoreRm();
     };
     img.onload=function(){
       const badge=document.createElement("span");
@@ -2318,7 +2323,84 @@ function hydrateAlreadyUploadedThumbs(fieldName, rawValue){
     img.src=url;
     el.innerHTML="";
     el.appendChild(img);
+    restoreRm();
   });
+}
+/* See this file's photo-delete notes — deletion is only offered where the
+   resulting field contents can actually be rebuilt. */
+function photoDeleteAllowed(fieldName, max){
+  if(Number(max)===1) return true;
+  return fileCountFor(state.current && state.current[fieldName])===0;
+}
+function photoRmBtnHtml(kind, idx, allowed){
+  if(!allowed) return "";
+  return '<button type="button" class="rm" data-kind="'+kind+'" data-i="'+idx+'" title="Remove this photo">✕</button>';
+}
+/* Removes a photo from the ticket for real.
+
+   Order matters: the field is blanked FIRST and the keepers re-uploaded after.
+   The reverse (upload then blank) would delete what was just written. A keeper
+   whose re-upload fails goes onto the offline queue exactly like any other
+   failed upload, so it is retried rather than lost — the queue is why this is
+   safe to do at all.
+
+   Queued rows for this field are purged too. Without that, flushPhotoQueue()
+   would happily re-upload the very photo the vendor just deleted. */
+async function deletePhotoAt(fieldName, max, kind, index){
+  const r=state.current;
+  if(!r || r.ID==null){ toast("No ticket open","err"); return; }
+  if(!photoDeleteAllowed(fieldName, max)){
+    toast("This photo was saved earlier and can't be removed here — ask an agent to clear it on the ticket","err");
+    return;
+  }
+  let go=true;
+  try{ if(typeof confirm==="function") go=confirm("Remove this photo from the ticket?"); }
+  catch(e){ go=true; } // a WebView that blocks confirm() must not block the action
+  if(!go) return;
+
+  const sessionFiles=(state.photos[fieldName]||[]).slice();
+  const removedFile=(kind==="session") ? sessionFiles[index] : null;
+  const keepers=sessionFiles.filter(function(f,i){ return !(kind==="session" && i===index); });
+
+  try{
+    const payload={}; payload[fieldName]="";
+    await apiUpdate(r.ID, payload);
+  }catch(e){
+    console.warn("[Get-Rescue] deletePhotoAt: could not clear "+fieldName+" — nothing was changed", e);
+    toast("Couldn't remove the photo — nothing was changed","err");
+    return;
+  }
+
+  // The record no longer holds anything for this field.
+  state.current[fieldName]="";
+  state.photos[fieldName]=keepers;
+  if(removedFile){ state.uploadedPhotoFiles.delete(removedFile); state.failedPhotoFiles.delete(removedFile); }
+
+  // Stop a queued copy resurrecting any of this field's photos.
+  try{
+    const queued=await photoQueueAll();
+    for(const it of queued){
+      if(String(it.ticketId)===String(r.ID) && it.fieldName===fieldName) await photoQueueDelete(it.key);
+    }
+    PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+    renderPhotoQueueNote();
+  }catch(e){ console.warn("[Get-Rescue] deletePhotoAt: could not purge the offline queue for "+fieldName, e); }
+
+  // Put the keepers back.
+  for(const f of keepers){
+    state.uploadedPhotoFiles.delete(f);
+    let ok=false;
+    try{ ok=await apiUpload(r.ID, fieldName, f); }catch(e){ ok=false; }
+    if(ok) state.uploadedPhotoFiles.add(f);
+    else{
+      state.failedPhotoFiles.add(f);
+      await queuePhotoOffline(r.ID, fieldName, f);
+      PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+      renderPhotoQueueNote();
+    }
+  }
+  renderPhotoGrid(fieldName,max);
+  toast("Photo removed","ok");
 }
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
@@ -2326,11 +2408,14 @@ function renderPhotoGrid(fieldName,max){
   const alreadyRaw = state.current && state.current[fieldName];
   const alreadyCount = fileCountFor(alreadyRaw);
   let html="";
+  const rmAllowed=photoDeleteAllowed(fieldName, max);
   for(let i=0;i<alreadyCount;i++){
-    html += `<div class="photo-slot" data-already-field="${esc(fieldName)}" data-already-idx="${i}"><span class="up-badge ok" title="Already saved">✓ Saved</span></div>`;
+    // ✕ on an already-saved photo — 2026-10-05, client item 21. Only offered
+    // where photoDeleteAllowed() says the end state is rebuildable.
+    html += `<div class="photo-slot" data-already-field="${esc(fieldName)}" data-already-idx="${i}"><span class="up-badge ok" title="Already saved">✓ Saved</span>${photoRmBtnHtml("saved",i,rmAllowed)}</div>`;
   }
   files.forEach(function(f,i){
-    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}<button type="button" class="rm" data-i="${i}">✕</button></div>`;
+    html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}${photoRmBtnHtml("session",i,true)}</div>`;
   });
   if((alreadyCount+files.length)<max){
     // Was TWO add tiles (2026-08-03) — live in-app camera capture and a
@@ -2358,7 +2443,14 @@ function renderPhotoGrid(fieldName,max){
   const addGalEl=$("pf_"+fieldName+"_addGal");
   if(addGalEl) addGalEl.onclick=function(){ openGallery(fieldName,max); };
   grid.querySelectorAll(".rm").forEach(function(btn){
-    btn.onclick=function(){ files.splice(Number(btn.dataset.i),1); renderPhotoGrid(fieldName,max); };
+    // Was files.splice() alone — which only ever removed the TILE, while the
+    // photo stayed on the ticket because uploadPhotoNow() had already sent it.
+    btn.onclick=function(){
+      btn.disabled=true;
+      deletePhotoAt(fieldName, max, btn.dataset.kind||"session", Number(btn.dataset.i))
+        .catch(function(e){ console.warn("[Get-Rescue] deletePhotoAt threw", e); toast("Couldn't remove the photo","err"); })
+        .then(function(){ if(btn) btn.disabled=false; });
+    };
   });
   const cntEl=$("pf_"+fieldName+"_cnt");
   const minLabel=cntEl?cntEl.textContent.split("/")[1]:"";
@@ -2640,18 +2732,54 @@ const CAPTURE_MAX_DIM = 1600;
 // own matching header comment for the full reasoning (identical function,
 // copy-pasted here); openGallery() above now uses this before pushing a
 // gallery-picked file into state.photos.
+/* Burns the capture time and GPS into the bottom of a photo — extracted from
+   capturePhoto() on 2026-10-05 so the file-picker path stamps identically.
+
+   Sizing is proportional now, where the camera had it fixed at 56px/16px. On
+   a 1600px photo that bar was about 3% of the height and effectively
+   unreadable once the image was opened full-size, which defeats the point of
+   a proof-of-service stamp. The floors are the old fixed numbers, so a small
+   image renders exactly as it did before.
+
+   Never throws: a stamp failing must cost the caption, not the photograph. */
+function drawPhotoStamp(ctx, w, h, pos){
+  try{
+    const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
+    const lonText = pos ? pos.lon.toFixed(6) : "";
+    const barH = Math.max(56, Math.round(h*0.075));
+    const pad  = Math.max(14, Math.round(barH*0.25));
+    const font = Math.max(16, Math.round(barH*0.28)); // 0.28 so a 56px bar lands on exactly 16px, the camera figure
+    ctx.fillStyle="rgba(0,0,0,.55)";
+    ctx.fillRect(0, h-barH, w, barH);
+    ctx.fillStyle="#fff";
+    ctx.font=font+"px monospace";
+    ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, h-barH+Math.round(barH*0.40));
+    ctx.fillText(new Date().toLocaleString(), pad, h-barH+Math.round(barH*0.75));
+  }catch(e){ console.warn("[photo stamp] could not draw the stamp (photo itself is unaffected)", e); }
+}
 function compressImageFile(file, maxDim, quality){
   return new Promise(function(resolve){
     try{
       const img=new Image();
       const url=URL.createObjectURL(file);
-      img.onload=function(){
+      img.onload=async function(){
         try{
           const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
           const canvas=document.createElement("canvas");
           canvas.width=Math.round(img.naturalWidth*scale);
           canvas.height=Math.round(img.naturalHeight*scale);
-          canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+          const ctx=canvas.getContext("2d");
+          ctx.drawImage(img,0,0,canvas.width,canvas.height);
+          /* THE FIX — 2026-10-05. Every photo that reaches Zoho now carries the
+             same stamp the in-app camera has always drawn. getPositionSafe's 15s
+             cache is reused deliberately: a vendor picking several photos for one
+             job has not meaningfully moved between them, and it avoids a fresh
+             8s GPS wait per photo. A denied or unavailable fix still stamps the
+             time and prints "GPS unavailable" rather than silently stamping
+             nothing — an unstamped photo is exactly what was reported. */
+          let stampPos=null;
+          try{ stampPos=await getPositionSafe(15000); }catch(e){ stampPos=null; }
+          drawPhotoStamp(ctx, canvas.width, canvas.height, stampPos);
           canvas.toBlob(function(blob){
             URL.revokeObjectURL(url);
             resolve(blob ? new File([blob], file.name, {type:"image/jpeg"}) : file);
@@ -2680,13 +2808,8 @@ async function capturePhoto(){
     // this is the specific call site that benefits from reusing a very-
     // recent GPS fix instead of always requesting a brand-new one.
     const pos=await getPositionSafe(15000);
-    const latText = pos ? pos.lat.toFixed(6) : "GPS unavailable";
-    const lonText = pos ? pos.lon.toFixed(6) : "";
-    const barH=56, pad=14;
-    ctx.fillStyle="rgba(0,0,0,.55)"; ctx.fillRect(0,canvas.height-barH,canvas.width,barH);
-    ctx.fillStyle="#fff"; ctx.font="16px monospace";
-    ctx.fillText("Lat: "+latText+(lonText?", Lon: "+lonText:""), pad, canvas.height-barH+22);
-    ctx.fillText(new Date().toLocaleString(), pad, canvas.height-barH+42);
+    // Shared with the file-picker path since 2026-10-05 — see drawPhotoStamp().
+    drawPhotoStamp(ctx, canvas.width, canvas.height, pos);
     await new Promise(function(resolveBlob){
       canvas.toBlob(function(blob){
         if(!blob){ resolveBlob(); return; }
@@ -2778,12 +2901,25 @@ async function loadAvailability(){
    other part of this app. */
 const LOCATION_HEARTBEAT_MS=150000; // 2.5 min
 let locationHeartbeatTimer=null;
-async function pingCurrentLocation(){
-  if(!currentTechRecord) return;
+/* announce=true only for the fix taken the moment they come on duty — a
+   deliberate action they are waiting on. Interval ticks pass nothing and stay
+   silent, so this never nags every 2.5 minutes. */
+async function pingCurrentLocation(announce){
+  if(!currentTechRecord) return false;
+  const say=function(msg,kind){ if(announce && typeof toast==="function") toast(msg,kind); };
   try{
     const pos=await getPositionSafe();
-    if(!pos) return;
-    const fn=resolve("updateRecordById"); if(!fn) return;
+    if(!pos){
+      /* The portal-app case. A WebView gets location only if the host app has
+         the OS permission and passes it through, so this can fail here while
+         working perfectly in the phone browser. Said out loud because there is
+         no console inside the app to find it in. */
+      console.warn("[Get-Rescue] pingCurrentLocation: no position fix. In the Zoho Creator portal app this usually means the app itself lacks location permission — check the OS app settings, not just the browser prompt.");
+      say("Location unavailable — you may not show correctly on the dispatch map. Check location permission for this app.","err");
+      return false;
+    }
+    const fn=resolve("updateRecordById");
+    if(!fn){ say("Couldn't save your location right now","err"); return false; }
     const payload={};
     payload[CONFIG.techCurrentLatField]=pos.lat;
     payload[CONFIG.techCurrentLonField]=pos.lon;
@@ -2794,12 +2930,21 @@ async function pingCurrentLocation(){
        so the timestamp can never disagree with the position it describes. */
     payload["Location_Last_Updated_At"]=fmtDateTime(new Date());
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
-  }catch(e){ console.warn("[Get-Rescue] pingCurrentLocation failed (non-fatal, retries next tick):", e); }
+    // Logged so a wrong-but-present fix (a VPN or a desktop IP lookup putting
+    // someone in another country) is visible rather than guessed at.
+    console.log("[Get-Rescue] location updated —", pos.lat, pos.lon);
+    say("Location updated","ok");
+    return true;
+  }catch(e){
+    console.warn("[Get-Rescue] pingCurrentLocation failed (non-fatal, retries next tick):", e);
+    say("Couldn't save your location — check your connection","err");
+    return false;
+  }
 }
 function startLocationHeartbeat(){
   stopLocationHeartbeat(); // never let two timers stack
-  pingCurrentLocation(); // immediate fix now, don't wait for the first interval tick
-  locationHeartbeatTimer=setInterval(pingCurrentLocation, LOCATION_HEARTBEAT_MS);
+  pingCurrentLocation(true); // immediate fix now, and say how it went
+  locationHeartbeatTimer=setInterval(function(){ pingCurrentLocation(false); }, LOCATION_HEARTBEAT_MS);
 }
 function stopLocationHeartbeat(){ if(locationHeartbeatTimer){ clearInterval(locationHeartbeatTimer); locationHeartbeatTimer=null; } }
 async function onToggleClick(){
