@@ -203,6 +203,9 @@ img,svg{max-width:100%}
 
   <div id="dashboard">
     <div class="sec-head"><h2>My Tickets</h2><span class="cnt" id="ticketCount">0</span></div>
+    <!-- Shown only when this vendor's accept would not stick — see
+         renderVendorDiag(). Empty and invisible in the normal case. -->
+    <div id="vendorDiag"></div>
     <div id="ticketList"></div>
   </div>
 
@@ -313,9 +316,21 @@ const CONFIG = {
   // for the toggle too, but toggleGetRescue's OWN CONFIG actually says
   // "My_Availability_Vendor" (a separate report from the vendor master) —
   // that comment was simply wrong. Deliberately kept independent of
-  // vendorReport above: My_Availability_Vendor's own record id is NOT a
-  // Vendors_Report id, so it must never be used for Assigned_Vendor/ticket
-  // matching (see currentAvailabilityRecord's own comment) — only for this
+  // vendorReport above: My_Availability_Vendor is a SEPARATE form, so its own
+  // record id is NOT a Vendors_Report id and must never be used directly for
+  // Assigned_Vendor/ticket matching.
+  //
+  // 2026-10-06: I briefly recorded here that this note was stale, reasoning
+  // from the Current_Latitude round trip below that the two had to be one
+  // form. That was WRONG, and ACCESS.md says so plainly: the 2026-08-03
+  // unification was UN-DONE on 2026-08-05 because it did not work for the
+  // vendor portal. The note stands.
+  //
+  // resolveVendorRecord() does still consult this report when Vendors_Report
+  // yields no match - but it adopts the id ONLY after finding a real Invites
+  // row that references it. If the two id spaces differ, as this comment says
+  // they do, no such row exists and the fallback never fires. That guard is
+  // why being wrong above cost nothing. Field names match toggleGetRescue's own
   // toggle's own on/off state. Field names match toggleGetRescue's own
   // (working) guesses for this exact report.
   availabilityReport: "My_Availability_Vendor",
@@ -1030,6 +1045,21 @@ function resolveNavHref(storedLink, lat, lon){
   if(hasCoords) return buildNavUrl(lat, lon);
   return "";
 }
+/* The email of whoever accepted this ticket, lowercased, or "".
+   Read through readVal() because any of these can arrive object-shaped
+   ({display_value}), where a bare String() yields "[object Object]" and
+   silently matches nobody — a defect this project has already shipped five
+   times. Vendor_Email is the field acceptService() always writes; the TOW and
+   RSR branch fields are checked behind it for tickets accepted before that
+   field was added. */
+function acceptedByEmail(rec){
+  const FIELDS=["Vendor_Email","Vendor_Email1","Vendor_Email2"];
+  for(const k of FIELDS){
+    const v=readVal(rec,k).trim().toLowerCase();
+    if(v) return v;
+  }
+  return "";
+}
 function readVal(rec,key){ let v=rec?rec[key]:null; if(v==null) return ""; if(Array.isArray(v)) return v.join(", "); if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||""; return String(v); }
 function caseLabel(rec){ return readVal(rec,CONFIG.caseIdField) || ("#"+(rec.ID||"")); }
 // Lookup fields (RSID/Vendor on Invites) come back from Creator as objects —
@@ -1531,15 +1561,22 @@ async function loadMyInvites(){
    other invited vendor is still live, so a second vendor can still accept a
    ticket the first one turned down.
 
-   The 24h window is timed from a LOCALSTORAGE stamp written on the device
-   that did the rejecting. That is deliberate: adding a reject-time field to
-   the Invites update risks the whole update being rejected for an unknown
-   column, which would lose the Status write too — and this file already
-   carries scars from guessed Invites field names. The vendor who rejected is
-   the only one who needs the timer, and they are on the device that has it.
-   With no stamp (storage blocked, different device) the ticket simply stays
-   visible read-only, which is exactly today's behaviour. */
-const REJECT_VISIBLE_MS = 24*60*60*1000;
+   A REJECTED TICKET NOW LEAVES THE LIST AT ONCE — 2026-10-06, client-
+   reported: "when a vendor clicks Reject, the ticket continues to appear on
+   the vendor's My Tickets page." It did, for 24 hours, on purpose, so the
+   vendor could still see what they had turned down. That is no longer what
+   is wanted, so the window is removed rather than shortened: a few-second
+   grace period is just a race condition nobody can explain afterwards.
+
+   The localStorage stamp stays, and now earns its keep for a different
+   reason. rejectService() fires updateMyInvite() WITHOUT awaiting it, and
+   that call is best-effort by design and documented to no-op silently when
+   it cannot find the invite row. Either way the row can still read
+   un-rejected on the very next poll — which would put the ticket straight
+   back on the vendor's screen seconds after they rejected it. The stamp is
+   written synchronously on this device, so checking BOTH signals closes that
+   gap. A vendor on another device falls back to the invite row alone, which
+   is the best available answer there and no worse than before. */
 const REJECT_STAMP_KEY = "gr_vendor_rejected_at";
 function rejectStamps(){
   try{ return JSON.parse(localStorage.getItem(REJECT_STAMP_KEY)||"{}") || {}; }
@@ -1554,16 +1591,11 @@ function stampRejectLocally(ticketId){
 function inviteIsRejected(inv){
   return !!inv && String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1;
 }
-/* When THIS vendor rejected, in ms, or null when that cannot be established. */
-function myRejectTime(inv, ticketId){
-  // Read a real field if the Invites form happens to carry one — never written
-  // by this app, so this is a free upgrade if the field is ever added.
-  if(inv){
-    const t=parseInvitedAt(inv.Service_Reject_Time || inv.Rejected_At);
-    if(t!=null) return t;
-  }
-  const local=rejectStamps()[String(ticketId)];
-  return (typeof local==="number") ? local : null;
+/* Did THIS device reject this ticket? Only ever a yes/no now — the 24h window
+   that needed the actual time is gone (see REJECT_STAMP_KEY above). */
+function locallyRejected(ticketId){
+  try{ return rejectStamps()[String(ticketId)]!=null; }
+  catch(e){ return false; }
 }
 /* Is any OTHER invited vendor still able to take this ticket? */
 async function otherInvitesStillLive(ticketId){
@@ -1637,43 +1669,69 @@ async function fetchMyTickets(){
   const missed=[];
   const mine = statusMatched.filter(function(r){
     if(!(inviteMap[String(r.ID)]!=null || isMine(r))) return false;
-    /* This vendor turned it down: keep it visible but read-only (see
-       renderActionScreen) for REJECT_VISIBLE_MS, then drop it. With no
-       usable stamp, keep showing it rather than hiding something the vendor
-       might still need to see. */
+    /* This vendor turned it down — it goes now, not in 24 hours. Either
+       signal is enough: the invite row may not have been updated yet (that
+       write is not awaited and can silently no-op), and the local stamp is
+       missing on a different device. Requiring both would reintroduce the
+       bug on whichever one happened to fail. */
     const myInv=inviteMap[String(r.ID)];
-    if(inviteIsRejected(myInv)){
-      const at=myRejectTime(myInv, r.ID);
-      if(at==null) return true;
-      return (Date.now()-at) < REJECT_VISIBLE_MS;
-    }
+    if(inviteIsRejected(myInv) || locallyRejected(r.ID)) return false;
     const st=String(r[CONFIG.stageField]||"").trim().toUpperCase();
     if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){
-      /* Unanswered for longer than the SLA — drop it and say so. A missing or
-         unparseable Invited_At keeps the ticket visible rather than guessing
-         it is stale, the same rule the agent-side "Timed Out" label uses. */
-      const invitedAt = myInv ? parseInvitedAt(myInv.Invited_At) : null;
+      /* Unanswered for longer than the SLA — drop it and say so.
+         THIS IS THE ITEM-2 FIX (2026-10-06, "TIME-OUT functionality is not
+         working"). The timer was never the problem: inviteStartedAt() used to
+         be a bare parseInvitedAt(myInv.Invited_At), and when Invited_At is
+         absent from the Invites REPORT LAYOUT — which it can be while still
+         existing on the form, the exact risk FIELDS.md flags for this field —
+         every read is undefined, so this branch never once ran and no ticket
+         ever timed out. The ladder inside inviteStartedAt() is the same one
+         sortMyTicketsNewestFirst() has always had; the two were written the
+         same day and only one of them got it.
+         Still falls back to keeping the ticket when NO source yields a time,
+         rather than guessing it is stale — the same rule the agent-side
+         "Timed Out" label uses. */
+      const invitedAt = inviteStartedAt(myInv);
       if(invitedAt!=null && (Date.now()-invitedAt) >= INVITE_TIMEOUT_MS){
         missed.push({ id:r.ID, label:caseLabel(r), why:"not accepted in time" });
         return false;
       }
       return true; // still open to every invited candidate
     }
-    // Action 4 mock ("1st person to accept... task goes away from other
-    // providers' apps") — once someone has accepted, only the vendor actually
-    // recorded in Assigned_Vendor keeps seeing it; every other invited vendor
-    // this ticket would otherwise still match on (Vendors1/Invites) drops it.
+    /* Action 4 mock ("1st person to accept... task goes away from other
+       providers' apps"). Only reached once the ticket has moved PAST
+       RSP IRA — that branch returns above — so by here somebody has accepted
+       and the only question is who. */
     const assignedId=lookupId(r.Assigned_Vendor);
-    // No Assigned_Vendor recorded (a ticket accepted before this fix existed,
-    // or the write silently failed) — fall back to the old "show any invited
-    // candidate" behavior rather than hiding it from the vendor actually
-    // working it, since we can't tell who that is without this field.
-    if(assignedId==null || assignedId==="") return true;
-    const itsMine = !!(currentVendorRecord && String(assignedId)===String(currentVendorRecord.id));
-    // Somebody else got there first — the vendor is told rather than just
-    // finding the ticket gone on the next poll.
-    if(!itsMine) missed.push({ id:r.ID, label:caseLabel(r), why:"another vendor accepted it first" });
-    return itsMine;
+    /* The id is the precise answer and is tried first, but ONLY when this
+       vendor's own record resolved — otherwise the comparison can only ever
+       be false, which used to hide the case from the vendor actually working
+       it as well as from everyone else. */
+    if(assignedId!=null && assignedId!=="" && currentVendorRecord){
+      const itsMine = String(assignedId)===String(currentVendorRecord.id);
+      if(!itsMine) missed.push({ id:r.ID, label:caseLabel(r), why:"another vendor accepted it first" });
+      return itsMine;
+    }
+    /* Fallback: the EMAIL the accepting vendor wrote — 2026-10-06, client-
+       reported ("ticket accepted by ST V 741 but still showing to the other
+       vendor"). Assigned_Vendor is blank whenever the accepting vendor's
+       login does not match a Vendors_Report record, and that is a data gap
+       this code cannot close. Vendor_Email can: acceptService() writes it on
+       every accept and falls back to LOGIN_EMAIL in exactly the case the id
+       is missing, so it records who accepted either way.
+       Vendor_Email/1/2 only — never Vendor_Emails, the plural invite list
+       isMine() matches on, which names every invited vendor and so would
+       hide nothing from anyone. */
+    const acceptedBy = acceptedByEmail(r);
+    const myLogin = String(LOGIN_EMAIL||"").trim().toLowerCase();
+    if(acceptedBy && myLogin){
+      const itsMine = acceptedBy===myLogin;
+      if(!itsMine) missed.push({ id:r.ID, label:caseLabel(r), why:"another vendor accepted it first" });
+      return itsMine;
+    }
+    /* Neither signal available — keep today's behaviour and show it, rather
+       than hiding a live case from the vendor who may be driving to it. */
+    return true;
   });
   notifyMissed(missed);
   console.log("[GR-Vendor] fetchMyTickets: "+mine.length+" remain after Invites/isMine()/Assigned_Vendor filter", mine.map(function(r){ return caseLabel(r); }));
@@ -1699,6 +1757,35 @@ function parseInvitedAt(str){
   if(ap==="am" && hh===12) hh = 0;
   const d = new Date(Number(m[3]), mon, Number(m[1]), hh, Number(m[5]), Number(m[6]||0));
   return isNaN(d) ? null : d.getTime();
+}
+/* When an invite reached this vendor, in ms, or null if nothing can say.
+
+   Invited_At is the right answer and is stamped at invite creation. But a
+   Zoho field can exist on a FORM and be missing from the REPORT LAYOUT, and
+   then every read returns undefined while every write still succeeds — which
+   is silent, and is why the 2-minute timeout never fired for anyone.
+   Added_Time is a system field Zoho stamps on every record, so it is the
+   natural second answer: an invite row is created at invite time, making the
+   two values the same moment in practice.
+
+   Warns ONCE per session on the fallback rather than per invite per poll,
+   which at a 30s poll would be hundreds of identical lines an hour. If that
+   warning is in the console, add Invited_At to Invites_Report via Configure
+   Fields — the data is already being written. */
+let INVITED_AT_WARNED = false;
+function inviteStartedAt(inv){
+  if(!inv) return null;
+  const stamped = parseInvitedAt(inv.Invited_At);
+  if(stamped!=null) return stamped;
+  const added = parseInvitedAt(inv.Added_Time);
+  if(added!=null){
+    if(!INVITED_AT_WARNED){
+      INVITED_AT_WARNED = true;
+      console.warn("[GR-Vendor] Invited_At is empty on the Invites rows this vendor can read, so invite timing falls back to Added_Time. The 2-minute timeout still works, but add Invited_At to Invites_Report (Configure Fields) — it is being written at invite creation and is the more accurate value. Example row:", inv);
+    }
+    return added;
+  }
+  return null;
 }
 /* Newest-first ordering for "My Tickets" (2026-09-29, client-reported: "latest
    ticket show on the top ... i have assign ticket it showing last"). This list
@@ -1738,10 +1825,43 @@ function sortMyTicketsNewestFirst(list){
     return String(kb.id).localeCompare(String(ka.id), undefined, {numeric:true});
   });
 }
+/* Warns the vendor when their accept will not actually take hold.
+
+   Two independent faults produce the same visible result - the vendor taps
+   Accept, it appears to work, and the case stays live on every other
+   vendor's app. Neither shows anything on screen today, which is how both
+   reached a client test unnoticed.
+
+     no vendor record   -> Assigned_Vendor is written blank on accept, and
+                           fetchMyTickets() then falls back to showing the
+                           case to every invited candidate.
+     no linked invites  -> updateMyInvite() cannot find the row to mark, so
+                           the agent's Accept/Reject table never updates and
+                           the 2-minute timeout has no start time.
+
+   Deliberately plain-language: this is for whoever is holding the phone, not
+   for a console. The console warnings each of these already prints stay as
+   they are for the detail. */
+function renderVendorDiag(){
+  const host=$("vendorDiag"); if(!host) return;
+  const msgs=[];
+  if(!currentVendorRecord){
+    msgs.push("This app could not match your login (<b>"+esc(LOGIN_EMAIL||"not known")+"</b>) to a vendor record. Cases are being matched by email alone. If you accept a case it will NOT be recorded against you, so other invited vendors will keep seeing it.");
+  }
+  let inviteCount=0;
+  try{ inviteCount=Object.keys(state.inviteByTicketId||{}).length; }catch(e){ inviteCount=0; }
+  if(currentVendorRecord && inviteCount===0 && (state.tickets||[]).length){
+    msgs.push("None of your cases could be linked to an invite record. Accepting or rejecting will still move the case, but the office will not see your response on their Accept/Reject screen, and the 2-minute timer cannot run.");
+  }
+  host.innerHTML = msgs.length
+    ? ('<div style="margin:8px 0 12px;padding:12px 14px;border:1px solid var(--stop,#c0392b);border-radius:12px;background:rgba(192,57,43,.08);font-size:13px;line-height:1.5">'+msgs.join("<br><br>")+'</div>')
+    : "";
+}
 async function loadDashboard(){
   $("ticketList").innerHTML='<div class="spin"></div>';
   state.tickets = await fetchMyTickets();
   renderDashboard();
+  renderVendorDiag();
   // Real-time-ish "new case assigned" notifications (2026-08-07) — silently
   // (re)baselines the known-ticket-ids snapshot on every NORMAL load
   // (initial boot, pull-to-refresh, returning from a ticket) so none of
@@ -3644,9 +3764,66 @@ function hydrateAlreadyUploadedThumbs(fieldName, rawValue){
 // newly-picked-but-not-yet-final ones can be removed before upload.
 /* See this file's photo-delete notes — deletion is only offered where the
    resulting field contents can actually be rebuilt. */
+/* True when this field holds photos saved in an EARLIER session, so it can
+   only be cleared whole, never edited photo by photo — see this change's own
+   note: a saved photo is a URL, not a file, and a Creator widget cannot read
+   it back (CSP blocks fetch; a canvas is cross-origin tainted), so keepers
+   could not be re-uploaded after the blanking deletePhotoAt() relies on. */
+function photoClearOnlyField(fieldName, max){
+  if(Number(max)===1) return false;
+  return fileCountFor(state.current && state.current[fieldName])>0;
+}
+/* Clears every photo on a field so better ones can be taken. Same write
+   deletePhotoAt() makes — blank the field, purge the offline queue so nothing
+   resurrects — minus the keeper re-upload, because here there are deliberately
+   no keepers. The count goes in the prompt: this throws away work, and the
+   vendor should see how much before agreeing. */
+async function clearAllPhotos(fieldName, max){
+  const r=state.current;
+  if(!r || r.ID==null){ toast("No ticket open","err"); return; }
+  const n=fileCountFor(state.current && state.current[fieldName]) + (state.photos[fieldName]||[]).length;
+  let go=true;
+  try{ if(typeof confirm==="function") go=confirm("Remove all "+n+" photo"+(n===1?"":"s")+" from this field? You will need to take them again."); }
+  catch(e){ go=true; }
+  if(!go) return;
+  try{
+    const payload={}; payload[fieldName]="";
+    await apiUpdate(r.ID, payload);
+  }catch(e){
+    console.warn("[GR] clearAllPhotos: could not clear "+fieldName+" — nothing was changed", e);
+    toast("Couldn't remove the photos — nothing was changed","err");
+    return;
+  }
+  state.current[fieldName]="";
+  (state.photos[fieldName]||[]).forEach(function(file){
+    state.uploadedPhotoFiles.delete(file); state.failedPhotoFiles.delete(file);
+  });
+  state.photos[fieldName]=[];
+  try{
+    const queued=await photoQueueAll();
+    for(const it of queued){
+      if(String(it.ticketId)===String(r.ID) && it.fieldName===fieldName) await photoQueueDelete(it.key);
+    }
+    PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+    renderPhotoQueueNote();
+  }catch(e){ console.warn("[GR] clearAllPhotos: could not purge the offline queue for "+fieldName, e); }
+  renderPhotoGrid(fieldName,max);
+  toast("Photos removed — take new ones","ok");
+}
 function photoDeleteAllowed(fieldName, max){
   if(Number(max)===1) return true;
   return fileCountFor(state.current && state.current[fieldName])===0;
+}
+/* Shown only where per-photo removal is impossible, so there is always SOME
+   way to replace a bad photo rather than a message telling them to call an
+   agent. */
+function photoClearAllBtnHtml(fieldName, max){
+  if(!photoClearOnlyField(fieldName, max)) return "";
+  const n=fileCountFor(state.current && state.current[fieldName]);
+  return '<button type="button" class="photo-clearall" data-field="'+esc(fieldName)+'" '
+    + 'style="margin-top:8px;font-size:11px;padding:3px 10px;border:1px solid var(--line,#ccc);border-radius:999px;background:transparent;cursor:pointer" '
+    + 'title="These photos were saved earlier, so they cannot be removed one at a time. This clears all of them so you can take better ones.">'
+    + 'Clear all '+n+' photo'+(n===1?"":"s")+' and re-take</button>';
 }
 function photoRmBtnHtml(kind, idx, allowed){
   if(!allowed) return "";
@@ -3721,6 +3898,13 @@ async function deletePhotoAt(fieldName, max, kind, index){
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
+  // A host for the clear-all control, created once and reused — it sits
+  // OUTSIDE the grid so a re-render of the tiles cannot orphan its handler.
+  let clearHost=grid.nextElementSibling;
+  if(!clearHost || !clearHost.classList || !clearHost.classList.contains("photo-clearhost")){
+    clearHost=document.createElement("div"); clearHost.className="photo-clearhost";
+    if(grid.parentNode) grid.parentNode.insertBefore(clearHost, grid.nextSibling);
+  }
   const alreadyRaw = state.current && state.current[fieldName];
   const alreadyCount = fileCountFor(alreadyRaw);
   let html="";
@@ -3758,6 +3942,16 @@ function renderPhotoGrid(fieldName,max){
   if(addCamEl) addCamEl.onclick=function(){ openCamera(fieldName,max); };
   const addGalEl=$("pf_"+fieldName+"_addGal");
   if(addGalEl) addGalEl.onclick=function(){ openGallery(fieldName,max); };
+  if(clearHost){
+    clearHost.innerHTML=photoClearAllBtnHtml(fieldName,max);
+    const clearBtn=clearHost.querySelector(".photo-clearall");
+    if(clearBtn) clearBtn.onclick=function(){
+      clearBtn.disabled=true;
+      clearAllPhotos(fieldName,max)
+        .catch(function(e){ console.warn("[GR] clearAllPhotos threw", e); toast("Couldn't remove the photos","err"); })
+        .then(function(){ if(clearBtn) clearBtn.disabled=false; });
+    };
+  }
   grid.querySelectorAll(".rm").forEach(function(btn){
     // Was files.splice() alone — which only ever removed the TILE, while the
     // photo stayed on the ticket because uploadPhotoNow() had already sent it.
@@ -3790,6 +3984,25 @@ async function uploadPendingPhotos(recordId){
       else await queuePhotoOffline(recordId, fieldName, files[i]);
     }
   }
+  /* DRAIN ANYTHING QUEUED EARLIER — 2026-10-06, client-reported: "it saves the
+     photos when offline, but when the app comes back online and submit is
+     clicked the page moves forward and the photos are not sent."
+
+     Exactly right, and this was the gap. The loop above only ever handles THIS
+     step's own files; photos queued during an earlier offline spell sat in
+     IndexedDB waiting for one of three triggers, none of which fires here:
+     app boot, the browser "online" event (which never fires if the device was
+     already online when the app opened), and the dashboard poll — which
+     returns immediately unless the DASHBOARD is on screen, and a vendor
+     submitting a step is not on the dashboard.
+
+     So a vendor who reconnected and pressed submit saw the page advance with
+     their photos still sitting in the queue. Awaited, not fire-and-forget:
+     they pressed submit expecting the photos to go, and flushPhotoQueue()
+     returns immediately when the queue is empty, so the normal case costs
+     nothing. It guards against overlapping runs and swallows its own errors,
+     so this can never block the save. */
+  try{ await flushPhotoQueue(); }catch(e){ console.warn("[GR] uploadPendingPhotos: queue flush failed (non-blocking)", e); }
 }
 // Fire-and-forget upload the moment a photo is captured/picked, so it's
 // saved before the vendor ever taps a final action button (2026-08-04, per
@@ -4288,6 +4501,50 @@ async function resolveVendorRecord(logContext){
     // it's a genuine value mismatch (typo/whitespace/case Zoho didn't apply
     // the same trim+lowercase to) instead.
     console.warn("[GR-Vendor] "+logContext+": no", CONFIG.vendorReport, "record's", CONFIG.vendorEmailField, "matched", LOGIN_EMAIL, "— ticket matching (Assigned_Vendor/Vendors1/Invites) will be affected. Records loaded:", vrecs.length, "| every record's own "+CONFIG.vendorEmailField+" value:", vrecs.map(function(r){ return { ID:r.ID, email:r[CONFIG.vendorEmailField] }; }), "| first record's full own keys (to spot the real API name if every email above is undefined):", vrecs[0] && Object.keys(vrecs[0]));
+    /* SECOND CHANCE via the availability report — 2026-10-06. See this
+       change's own note: the two reports sit over ONE form, and the one the
+       vendor's portal profile can actually read is this one (the toggle
+       proves it resolved). Only reached once the Vendors_Report match above
+       has already failed, so a working workspace never takes this path. */
+    try{
+      const arecs=await apiGetReport(CONFIG.availabilityReport, null, 1000);
+      let availMatchField=null;
+      const myAvail=arecs.find(function(r){
+        const hit=vendorEmailFieldMatching(r, wantedEmail);
+        if(hit){ availMatchField=hit; return true; }
+        return false;
+      });
+      if(!myAvail){
+        console.warn("[GR-Vendor] "+logContext+": "+CONFIG.availabilityReport+" has no record carrying "+LOGIN_EMAIL+" either, so this login matches no vendor anywhere. Records loaded:", arecs.length);
+      } else {
+        /* PROVE the id spaces match before trusting it. A foreign id here
+           would be written into Assigned_Vendor, and a WRONG vendor on the
+           agent's screen is worse than a blank one. An Invites row whose
+           Vendor lookup equals this id is that proof, taken from real data
+           in this workspace rather than from a comment that may be stale. */
+        let proven=false;
+        try{
+          const invs=await apiGetReport(CONFIG.invitesReport, null, 200);
+          proven=invs.some(function(inv){ return String(lookupId(inv.Vendor))===String(myAvail.ID); });
+        }catch(e){ proven=false; }
+        if(!proven){
+          console.warn("[GR-Vendor] "+logContext+": found this login in "+CONFIG.availabilityReport+" (record "+myAvail.ID+", matched on \""+availMatchField+"\") but NO Invites row references that id, so it cannot be confirmed as a "+CONFIG.vendorReport+" id. Leaving identity unresolved rather than risk writing the wrong vendor onto a ticket. This is expected for a vendor who has never been invited to anything.");
+        } else {
+          currentVendorRecord={ id:myAvail.ID, data:myAvail };
+          // vendor_name is lowercase on the real form (FIELDS.md records the
+          // planned rename never landed), so both spellings are tried.
+          MY_VENDOR_NAME = readVal(myAvail,CONFIG.vendorNameField) || readVal(myAvail,"vendor_name") || "";
+          MY_VENDOR_PHONE = readVal(myAvail,CONFIG.vendorPhoneField) || "";
+          if($("techName")) $("techName").textContent = MY_VENDOR_NAME || "Vendor";
+          IS_FLEET = readVal(myAvail,CONFIG.vendorTypeField).trim().toLowerCase()==="fleet";
+          const rawTechsA = myAvail[CONFIG.vendorTechniciansField];
+          MY_TECHNICIAN_IDS = (Array.isArray(rawTechsA)?rawTechsA:(rawTechsA?[rawTechsA]:[])).map(lookupId).filter(function(v){ return v!=null && v!==""; });
+          console.warn("[GR-Vendor] "+logContext+": identity resolved through "+CONFIG.availabilityReport+" instead of "+CONFIG.vendorReport+" (record "+myAvail.ID+", \""+MY_VENDOR_NAME+"\", matched on \""+availMatchField+"\"), confirmed against a real Invites row. Accept/Reject status and Assigned_Vendor will now be recorded. Worth checking why "+CONFIG.vendorReport+" returned nothing for this login - most likely the vendor portal profile cannot read that report.");
+        }
+      }
+    }catch(e){
+      console.warn("[GR-Vendor] "+logContext+": the "+CONFIG.availabilityReport+" identity fallback threw; identity stays unresolved, exactly as before this fallback existed.", e);
+    }
   }
   return currentVendorRecord;
 }

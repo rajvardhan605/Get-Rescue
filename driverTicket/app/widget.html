@@ -2328,9 +2328,66 @@ function hydrateAlreadyUploadedThumbs(fieldName, rawValue){
 }
 /* See this file's photo-delete notes — deletion is only offered where the
    resulting field contents can actually be rebuilt. */
+/* True when this field holds photos saved in an EARLIER session, so it can
+   only be cleared whole, never edited photo by photo — see this change's own
+   note: a saved photo is a URL, not a file, and a Creator widget cannot read
+   it back (CSP blocks fetch; a canvas is cross-origin tainted), so keepers
+   could not be re-uploaded after the blanking deletePhotoAt() relies on. */
+function photoClearOnlyField(fieldName, max){
+  if(Number(max)===1) return false;
+  return fileCountFor(state.current && state.current[fieldName])>0;
+}
+/* Clears every photo on a field so better ones can be taken. Same write
+   deletePhotoAt() makes — blank the field, purge the offline queue so nothing
+   resurrects — minus the keeper re-upload, because here there are deliberately
+   no keepers. The count goes in the prompt: this throws away work, and the
+   vendor should see how much before agreeing. */
+async function clearAllPhotos(fieldName, max){
+  const r=state.current;
+  if(!r || r.ID==null){ toast("No ticket open","err"); return; }
+  const n=fileCountFor(state.current && state.current[fieldName]) + (state.photos[fieldName]||[]).length;
+  let go=true;
+  try{ if(typeof confirm==="function") go=confirm("Remove all "+n+" photo"+(n===1?"":"s")+" from this field? You will need to take them again."); }
+  catch(e){ go=true; }
+  if(!go) return;
+  try{
+    const payload={}; payload[fieldName]="";
+    await apiUpdate(r.ID, payload);
+  }catch(e){
+    console.warn("[GR] clearAllPhotos: could not clear "+fieldName+" — nothing was changed", e);
+    toast("Couldn't remove the photos — nothing was changed","err");
+    return;
+  }
+  state.current[fieldName]="";
+  (state.photos[fieldName]||[]).forEach(function(file){
+    state.uploadedPhotoFiles.delete(file); state.failedPhotoFiles.delete(file);
+  });
+  state.photos[fieldName]=[];
+  try{
+    const queued=await photoQueueAll();
+    for(const it of queued){
+      if(String(it.ticketId)===String(r.ID) && it.fieldName===fieldName) await photoQueueDelete(it.key);
+    }
+    PHOTO_QUEUE_COUNT=(await photoQueueAll()).length;
+    renderPhotoQueueNote();
+  }catch(e){ console.warn("[GR] clearAllPhotos: could not purge the offline queue for "+fieldName, e); }
+  renderPhotoGrid(fieldName,max);
+  toast("Photos removed — take new ones","ok");
+}
 function photoDeleteAllowed(fieldName, max){
   if(Number(max)===1) return true;
   return fileCountFor(state.current && state.current[fieldName])===0;
+}
+/* Shown only where per-photo removal is impossible, so there is always SOME
+   way to replace a bad photo rather than a message telling them to call an
+   agent. */
+function photoClearAllBtnHtml(fieldName, max){
+  if(!photoClearOnlyField(fieldName, max)) return "";
+  const n=fileCountFor(state.current && state.current[fieldName]);
+  return '<button type="button" class="photo-clearall" data-field="'+esc(fieldName)+'" '
+    + 'style="margin-top:8px;font-size:11px;padding:3px 10px;border:1px solid var(--line,#ccc);border-radius:999px;background:transparent;cursor:pointer" '
+    + 'title="These photos were saved earlier, so they cannot be removed one at a time. This clears all of them so you can take better ones.">'
+    + 'Clear all '+n+' photo'+(n===1?"":"s")+' and re-take</button>';
 }
 function photoRmBtnHtml(kind, idx, allowed){
   if(!allowed) return "";
@@ -2405,6 +2462,13 @@ async function deletePhotoAt(fieldName, max, kind, index){
 function renderPhotoGrid(fieldName,max){
   const files=state.photos[fieldName]||[];
   const grid=$("pf_"+fieldName+"_grid"); if(!grid) return;
+  // A host for the clear-all control, created once and reused — it sits
+  // OUTSIDE the grid so a re-render of the tiles cannot orphan its handler.
+  let clearHost=grid.nextElementSibling;
+  if(!clearHost || !clearHost.classList || !clearHost.classList.contains("photo-clearhost")){
+    clearHost=document.createElement("div"); clearHost.className="photo-clearhost";
+    if(grid.parentNode) grid.parentNode.insertBefore(clearHost, grid.nextSibling);
+  }
   const alreadyRaw = state.current && state.current[fieldName];
   const alreadyCount = fileCountFor(alreadyRaw);
   let html="";
@@ -2442,6 +2506,16 @@ function renderPhotoGrid(fieldName,max){
   if(addCamEl) addCamEl.onclick=function(){ openCamera(fieldName,max); };
   const addGalEl=$("pf_"+fieldName+"_addGal");
   if(addGalEl) addGalEl.onclick=function(){ openGallery(fieldName,max); };
+  if(clearHost){
+    clearHost.innerHTML=photoClearAllBtnHtml(fieldName,max);
+    const clearBtn=clearHost.querySelector(".photo-clearall");
+    if(clearBtn) clearBtn.onclick=function(){
+      clearBtn.disabled=true;
+      clearAllPhotos(fieldName,max)
+        .catch(function(e){ console.warn("[GR] clearAllPhotos threw", e); toast("Couldn't remove the photos","err"); })
+        .then(function(){ if(clearBtn) clearBtn.disabled=false; });
+    };
+  }
   grid.querySelectorAll(".rm").forEach(function(btn){
     // Was files.splice() alone — which only ever removed the TILE, while the
     // photo stayed on the ticket because uploadPhotoNow() had already sent it.
@@ -2471,6 +2545,25 @@ async function uploadPendingPhotos(recordId){
       else await queuePhotoOffline(recordId, fieldName, files[i]);
     }
   }
+  /* DRAIN ANYTHING QUEUED EARLIER — 2026-10-06, client-reported: "it saves the
+     photos when offline, but when the app comes back online and submit is
+     clicked the page moves forward and the photos are not sent."
+
+     Exactly right, and this was the gap. The loop above only ever handles THIS
+     step's own files; photos queued during an earlier offline spell sat in
+     IndexedDB waiting for one of three triggers, none of which fires here:
+     app boot, the browser "online" event (which never fires if the device was
+     already online when the app opened), and the dashboard poll — which
+     returns immediately unless the DASHBOARD is on screen, and a vendor
+     submitting a step is not on the dashboard.
+
+     So a vendor who reconnected and pressed submit saw the page advance with
+     their photos still sitting in the queue. Awaited, not fire-and-forget:
+     they pressed submit expecting the photos to go, and flushPhotoQueue()
+     returns immediately when the queue is empty, so the normal case costs
+     nothing. It guards against overlapping runs and swallows its own errors,
+     so this can never block the save. */
+  try{ await flushPhotoQueue(); }catch(e){ console.warn("[GR] uploadPendingPhotos: queue flush failed (non-blocking)", e); }
 }
 // Fire-and-forget upload the moment a photo is captured/picked — see
 // vendorTicket's own matching comment, not repeated here.

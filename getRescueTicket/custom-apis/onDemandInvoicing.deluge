@@ -972,6 +972,9 @@ invoiceURL="";
 		// Until it exists this logs and no-ops — the invoice, the link and the
 		// response are all completely unaffected.
 		invoicePdfSaved = "no";
+		// Set inside the try below; declared here so the response can read it even
+		// when the fetch threw before reaching the classification.
+		pdfKind = "not attempted";
 		try
 		{
 			if(recordId != null)
@@ -1005,17 +1008,43 @@ invoiceURL="";
 					{
 						pdfPeek = "(could not be read as text - which is what a real binary PDF looks like)";
 					}
-					info "onDemandInvoicing - PDF fetch returned, first 60 chars: [" + pdfPeek + "]. A real PDF starts with %PDF- . JSON or HTML here means Books refused the request and there is no document to attach.";
+					/* ONE OF FOUR FIXED TOKENS, never the bytes themselves: this value is
+					   concatenated into the hand-built successResponse JSON further down, and a
+					   quote or backslash in it would break the widget's parse and hide the very
+					   answer it carries. The full text stays in the log line below. */
+					pdfKind = "something else - see this execution log";
+					if(pdfPeek.contains("%PDF-"))
+					{
+						pdfKind = "a real PDF";
+					}
+					else if(pdfPeek.toUpperCase().contains("DOCTYPE"))
+					{
+						pdfKind = "an HTML page - not a document";
+					}
+					else if(pdfPeek.contains("message"))
+					{
+						pdfKind = "JSON - Books refused the request";
+					}
+					info "onDemandInvoicing - PDF fetch returned [" + pdfKind + "], first 60 chars: [" + pdfPeek + "]. A real PDF starts with %PDF- .";
 					ticketRec = Create_Case[ID == recordId.trim().toLong()];
-					if(ticketRec != null)
+					if(ticketRec == null)
+					{
+						invoicePdfSaved = "no - no Create_Case record with ID " + recordId;
+						info "onDemandInvoicing - invoice PDF NOT attached: no Create_Case record with ID " + recordId + ".";
+					}
+					else if(pdfKind != "a real PDF")
+					{
+						/* ONLY STORE WHAT IS ACTUALLY A PDF - 2026-10-06. Assigning a non-file
+						   to a File Upload field throws nothing, so the old code reported "yes"
+						   for a write that stored nothing at all. The peek decides now. */
+						invoicePdfSaved = "no - Books returned " + pdfKind;
+						info "onDemandInvoicing - invoice PDF NOT attached: Books returned " + pdfKind + " instead of a document. Nothing was written to Invoice_PDF.";
+					}
+					else
 					{
 						ticketRec.Invoice_PDF = pdfResp;
 						invoicePdfSaved = "yes";
 						info "onDemandInvoicing - invoice PDF attached to ticket " + recordId + " (Create_Case.Invoice_PDF) - it can now be opened from Creator without a Zoho Books login.";
-					}
-					else
-					{
-						info "onDemandInvoicing - invoice PDF NOT attached: no Create_Case record with ID " + recordId + ".";
 					}
 				}
 			}
@@ -1031,7 +1060,7 @@ invoiceURL="";
 		// signal to check this Custom API's own execution log (most likely
 		// causes, in order: the 4 new parameters not registered in the Custom
 		// API setup screen, or payment_mode "other" being rejected).
-		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"invoice_pdf_saved\": \"" + invoicePdfSaved + "\", \"invoice_emailed\": \"" + invoiceEmailed + "\", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"invoice_pdf_saved\": \"" + invoicePdfSaved + "\", \"invoice_pdf_type\": \"" + pdfKind + "\", \"invoice_emailed\": \"" + invoiceEmailed + "\", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
 		invoiceURL= successResponse;
 	}
 	catch (mainEx)

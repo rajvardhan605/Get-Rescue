@@ -256,16 +256,73 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		// TDS TAX ID — resolved here, before any Books write (2026-10-05).
 		//
 		// Books refuses tax_amount_withheld at payment level and wants the TDS
-		// declared on the Bill, which needs the id of a configured TDS tax. Looked
-		// up by PERCENTAGE rather than hardcoded, so a vendor on 2% and one on 10%
-		// both work with no code change.
+		// declared on the Bill, which needs the id of a configured TDS tax.
 		//
-		// The full response is logged because the exact shape Books returns for TDS
-		// taxes has never been confirmed in this project. If the match below finds
-		// nothing, that log line is the answer.
+		// Two routes, in order (2026-10-06): the TDS tax set on the vendor's own
+		// Books record, which is exact; failing that, a match by name and rate
+		// against the configured taxes, which is a guess and is kept only so a
+		// vendor with nothing set behaves as it did before. Neither is hardcoded,
+		// so vendors on different rates work with no code change.
+		//
+		// Both raw responses are logged: the shapes Books returns here have never
+		// been confirmed in this project, and if a lookup finds nothing those log
+		// lines are the answer.
 		tdsTaxId = "";
+		// -1 means "the rate behind tdsTaxId could not be read", which is NOT the
+		// same as a rate of 0 and must not be compared as though it were.
+		tdsTaxPctFound = -1.0;
 		if(preflightTds > 0)
 		{
+			// PRIMARY SOURCE: the vendor's own TDS tax in Books (2026-10-06).
+			//
+			// Their Books vendor record already carries one - "TDS: Technical Fees
+			// (2%)" - chosen by whoever does the accounts. That is an exact answer,
+			// where matching on name and percentage is a guess: Indian TDS taxes are
+			// named for their section (Technical Fees, Professional Fees, Contractor)
+			// and almost never contain the letters "TDS", which is precisely why the
+			// name rule below could not have matched this org's real tax.
+			//
+			// Raw response logged: tds_tax_id on the contact is documented for the
+			// India edition but unconfirmed in this project, and this file's history
+			// is a catalogue of what assuming a Zoho shape costs.
+			try
+			{
+				vendorTaxResp = invokeurl
+				[
+					url :books_base_url + "/contacts/" + vendor_id + "?organization_id=" + organization_id
+					type :GET
+					connection:"zoho_books_connection"
+				];
+				info "recordVendorPayment - Books vendor record read for its TDS tax, raw response: " + vendorTaxResp.toString();
+				vendorContact = vendorTaxResp.get("contact");
+				if(vendorContact != null)
+				{
+					if(vendorContact.get("tds_tax_id") != null)
+					{
+						tdsTaxId = vendorContact.get("tds_tax_id").toString().trim();
+						// Books returns "0" for a vendor with no TDS tax chosen, which would
+						// otherwise sail through as a perfectly valid-looking id.
+						if(tdsTaxId == "0")
+						{
+							tdsTaxId = "";
+						}
+					}
+				}
+				if(tdsTaxId != "")
+				{
+					info "recordVendorPayment - using the TDS tax set on the vendor's own Books record -> tax_id " + tdsTaxId;
+				}
+				else
+				{
+					info "recordVendorPayment - no TDS tax is set on the vendor's Books record; falling back to matching the configured taxes by name and rate.";
+				}
+			}
+			catch (vendorTaxEx)
+			{
+				// Treated as "not set", so a refused or oddly shaped read drops us into
+				// exactly the name match that ran before this change - never worse.
+				info "recordVendorPayment - could not read the vendor's TDS tax from Books, falling back to the name match: " + vendorTaxEx.toString();
+			}
 			try
 			{
 				taxesResp = invokeurl
@@ -280,6 +337,31 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 				{
 					for each taxEntry in taxList
 					{
+						// RATE CROSS-CHECK. Creator's TDS_Percentage decides what we deduct from
+						// the payment; the Books tax decides what the Bill withholds. If the two
+						// disagree the documents describe different money, quietly, for months.
+						// Only possible when the tax appears in this list - see the check below
+						// for what happens when it does not.
+						if(tdsTaxId != "")
+						{
+							if(taxEntry.get("tax_id") != null)
+							{
+								if(taxEntry.get("tax_id").toString() == tdsTaxId)
+								{
+									try
+									{
+										if(taxEntry.get("tax_percentage") != null)
+										{
+											tdsTaxPctFound = taxEntry.get("tax_percentage").toString().toDecimal();
+										}
+									}
+									catch (foundPctEx)
+									{
+										tdsTaxPctFound = -1.0;
+									}
+								}
+							}
+						}
 						if(tdsTaxId == "")
 						{
 							taxPct = 0.0;
@@ -333,9 +415,24 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			}
 			if(tdsTaxId == "")
 			{
-				info "recordVendorPayment PRE-FLIGHT REJECT - no configured TDS tax matches " + tdsPercentAmt + "%. Nothing was written.";
-				errMap.put("message","This vendor has TDS of " + tdsPercentAmt + "%, and Zoho Books requires the withholding to be declared on the Bill using a configured TDS tax. No TDS tax at that rate was found in Books, so NOTHING was written - no Bill, no Credit, no Payment. Create it in Zoho Books under Settings -> Taxes (name it so it contains \"TDS\", e.g. TDS 2%), then retry. To pay this vendor without any withholding instead, set TDS_Percentage to 0 on their record.");
+				info "recordVendorPayment PRE-FLIGHT REJECT - no TDS tax on the vendor record and none configured matching " + tdsPercentAmt + "%. Nothing was written.";
+				errMap.put("message","This vendor has TDS of " + tdsPercentAmt + "% in Creator, and Zoho Books requires the withholding to be declared on the Bill using a configured TDS tax - but no TDS tax could be found for them, so NOTHING was written: no Bill, no Credit, no Payment. Fix it in Zoho Books: open Purchases -> Vendors -> this vendor -> Edit, and set the TDS field (e.g. Technical Fees (2%)) to the rate that matches. To pay this vendor without any withholding instead, set TDS_Percentage to 0 on their Creator record.");
 				return errMap.toString();
+			}
+			// The two rates disagree, and that is worth stopping for: the Bill would
+			// withhold one figure while the payment deducted another, leaving the
+			// vendor over- or under-paid against their own TDS certificate.
+			// Only reached when the rate was actually readable - an unverifiable tax
+			// leaves tdsTaxPctFound at -1 and proceeds, since the accountant's own
+			// per-vendor setting in Books is the more authoritative of the two.
+			if(tdsTaxPctFound >= 0.0)
+			{
+				if(tdsTaxPctFound != tdsPercentAmt)
+				{
+					info "recordVendorPayment PRE-FLIGHT REJECT - TDS rate mismatch: Creator says " + tdsPercentAmt + "%, the Books tax " + tdsTaxId + " is " + tdsTaxPctFound + "%. Nothing was written.";
+					errMap.put("message","TDS rate mismatch, so NOTHING was written - no Bill, no Credit, no Payment. This vendor's TDS_Percentage in Creator is " + tdsPercentAmt + "%, but the TDS tax set on their Zoho Books record is " + tdsTaxPctFound + "%. The Bill would withhold one figure while the payment deducted the other. Make the two match - either change TDS_Percentage on the Creator vendor record, or change the TDS field on the vendor in Zoho Books - then retry.");
+					return errMap.toString();
+				}
 			}
 		}
 		

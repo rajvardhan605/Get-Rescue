@@ -1,0 +1,620 @@
+string whatsappWebhook(string token, string event, string from, map data, map message, map payload, list entry)
+{
+	try
+	{
+		// INBOUND WHATSAPP — created 2026-10-06. The receiving half of the
+		// WhatsPortal integration. Everything this system has sent so far has been
+		// one-way: sendWhatsAppMessage posts to api.whatsportal.io/v1/messages and
+		// nothing ever comes back, which is why the initiate_conversation CONTINUE
+		// gate (feedback item 12) could not be built and why a customer's replies
+		// are invisible to us.
+		//
+		// This endpoint is the URL WhatsPortal posts to. It does NOT make inbound
+		// work on its own - WhatsPortal still has to support outbound webhooks and
+		// be configured to call this. That question is with Chinmay. Building the
+		// receiver first means the moment they say yes, there is a URL to give them.
+		//
+		// WRITTEN AGAINST AN UNKNOWN PAYLOAD, DELIBERATELY TOLERANT.
+		// paymentWebhook is the cautionary tale: it was written against an assumed
+		// shape, the wrapper key turned out to be event_object rather than data, and
+		// because a parameter that is merely named in a Deluge signature binds null,
+		// it failed silently for weeks with no payment ever reaching a ticket. So
+		// this reads three shapes rather than betting on one:
+		//
+		//   flat      {"event":"...","from":"91...","text":{"body":"..."}}
+		//   wrapped   {"event":"...","data":{...}}  or  {"payload":{...}}
+		//   Meta      {"entry":[{"changes":[{"value":{"messages":[{...}]}}]}]}
+		//
+		// and logs the whole body regardless, so ONE test delivery from WhatsPortal
+		// tells us the real shape instead of another round of guessing.
+		//
+		// REGISTER EVERY PARAMETER ON THE CUSTOM API SETUP SCREEN with the types in
+		// the signature above - token/event/from as String, data/message/payload as
+		// Map, entry as List. A parameter that is only named here binds null.
+		//
+		// WRITTEN IN DELIBERATELY PLAIN DELUGE. The first version of this file was
+		// refused with "Improper Statement" because it used shapes Deluge's parser
+		// rejects, every one of which reads perfectly well in any other language:
+		//   - for each over an inline expression    (needs a variable first)
+		//   - for each index i in 0 to len - 1      (no arithmetic in a range bound)
+		//   - "0123456789".contains(c)              (no method call on a literal)
+		//   - ifnull(x,"").toString()               (no chaining off ifnull)
+		//   - a try nested inside a catch block
+		// None of those appear below, and none should be reintroduced. Deluge also
+		// reports the wrong line number for this error, so the fix is always to find
+		// the bad SHAPE rather than to look where it points.
+		EXPECTED_TOKEN = "wk7Qm2Ld9Rv4Xs6Tn1Yb8Hc3Jp5Ze0Ag";
+		//
+		// AUTO-REPLY IS NOT BUILT, ON PURPOSE. Item 12 wants a CONTINUE tap to
+		// release messages 2 and 3. That is a real behaviour change on the customer's
+		// phone, it contradicts this project's standing "agent clicks send" rule, and
+		// it cannot be tested until a real tap arrives here. So this records the tap
+		// and reports it; the send hooks in at the CONTINUE_TAPPED branch at the
+		// bottom once the client has confirmed they want it automatic.
+		info "=== whatsappWebhook fired ===";
+		info "  time  = " + zoho.currenttime;
+		info "  token = [" + ifnull(token,"(null)") + "]";
+		info "  event = [" + ifnull(event,"(null)") + "]";
+		info "  from  = [" + ifnull(from,"(null)") + "]";
+
+		// Every bound parameter, in full. This single block is the whole point of
+		// the first deployment: whatever WhatsPortal actually sends lands here.
+		dataText = "";
+		if(data != null)
+		{
+			dataText = data.toString();
+		}
+		messageText = "";
+		if(message != null)
+		{
+			messageText = message.toString();
+		}
+		payloadText = "";
+		if(payload != null)
+		{
+			payloadText = payload.toString();
+		}
+		entryText = "";
+		if(entry != null)
+		{
+			entryText = entry.toString();
+		}
+		info "  data    = [" + dataText + "]";
+		info "  message = [" + messageText + "]";
+		info "  payload = [" + payloadText + "]";
+		info "  entry   = [" + entryText + "]";
+
+		if(EXPECTED_TOKEN != "")
+		{
+			tokenGiven = ifnull(token,"");
+			if(tokenGiven != "")
+			{
+				if(tokenGiven != EXPECTED_TOKEN)
+				{
+					info "whatsappWebhook - TOKEN MISMATCH, nothing was read.";
+					return "{\"code\": \"SUCCESS\", \"result\": \"TOKEN_MISMATCH\", \"handled\": false, \"message\": \"A token arrived but it does not match. Nothing was processed. Check the token on the end of the webhook URL configured at WhatsPortal.\"}";
+				}
+			}
+		}
+
+		// Nothing bound at all means the body never reached this script - almost
+		// always a parameter missing from the Custom API setup screen rather than
+		// anything wrong with what WhatsPortal sent.
+		anythingBound = "no";
+		if(dataText != "")
+		{
+			anythingBound = "yes";
+		}
+		if(messageText != "")
+		{
+			anythingBound = "yes";
+		}
+		if(payloadText != "")
+		{
+			anythingBound = "yes";
+		}
+		if(entryText != "")
+		{
+			anythingBound = "yes";
+		}
+		fromGiven = ifnull(from,"");
+		if(fromGiven != "")
+		{
+			anythingBound = "yes";
+		}
+		eventGiven = ifnull(event,"");
+		if(eventGiven != "")
+		{
+			anythingBound = "yes";
+		}
+		if(anythingBound == "no")
+		{
+			info "whatsappWebhook - NOTHING BOUND. The request arrived but no parameter carried a value.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"NOTHING_BOUND\", \"handled\": false, \"message\": \"The request arrived but no parameter carried a value, so the body never reached this script. Register token, event, from, data, message, payload and entry on the Custom API setup screen - data/message/payload as Map and entry as List - then resend. A parameter that is only named in the Deluge signature binds null.\"}";
+		}
+
+		// ---------- resolve the inbound message, whatever shape it came in ----------
+		// Each unwrap is its own try/catch: a key that holds a string where we
+		// expected a map throws, and one odd key must not take the whole webhook
+		// down when another shape would have worked.
+		msgMap = Map();
+		statusMap = Map();
+		haveMsg = "no";
+		haveStatus = "no";
+
+		// Shape 1 - the message object sent directly.
+		if(messageText != "")
+		{
+			msgMap = message;
+			haveMsg = "yes";
+		}
+
+		// Shape 2 - wrapped in data or payload. Both are checked because providers
+		// are evenly split on which they use, and paymentWebhook proved that
+		// guessing the wrapper key wrong costs weeks.
+		wrapperList = List();
+		if(dataText != "")
+		{
+			wrapperList.add(data);
+		}
+		if(payloadText != "")
+		{
+			wrapperList.add(payload);
+		}
+		for each wrapper in wrapperList
+		{
+			try
+			{
+				// A wrapper holding its own messages[] / statuses[] arrays.
+				wrapMessages = wrapper.get("messages");
+				if(wrapMessages != null)
+				{
+					for each wrapMsg in wrapMessages
+					{
+						if(haveMsg == "no")
+						{
+							msgMap = wrapMsg;
+							haveMsg = "yes";
+						}
+					}
+				}
+				wrapStatuses = wrapper.get("statuses");
+				if(wrapStatuses != null)
+				{
+					for each wrapStatus in wrapStatuses
+					{
+						if(haveStatus == "no")
+						{
+							statusMap = wrapStatus;
+							haveStatus = "yes";
+						}
+					}
+				}
+				// A wrapper that IS the message - it carries a sender itself.
+				if(haveMsg == "no")
+				{
+					wrapFrom = wrapper.get("from");
+					if(wrapFrom != null)
+					{
+						msgMap = wrapper;
+						haveMsg = "yes";
+					}
+				}
+				// A wrapper holding a single nested message object.
+				if(haveMsg == "no")
+				{
+					wrapInner = wrapper.get("message");
+					if(wrapInner != null)
+					{
+						msgMap = wrapInner;
+						haveMsg = "yes";
+					}
+				}
+				// A wrapper that is a status on its own.
+				if(haveStatus == "no")
+				{
+					wrapStatusVal = wrapper.get("status");
+					if(wrapStatusVal != null)
+					{
+						statusMap = wrapper;
+						haveStatus = "yes";
+					}
+				}
+			}
+			catch (wrapEx)
+			{
+				info "whatsappWebhook - could not unwrap one payload wrapper (ignored, another shape may still match): " + wrapEx.toString();
+			}
+		}
+
+		// Shape 3 - Meta's own nesting, entry[].changes[].value.messages[].
+		// WhatsPortal sits on top of the WhatsApp Cloud API, so if they simply
+		// forward what Meta gives them, this is what arrives.
+		if(entryText != "")
+		{
+			try
+			{
+				for each entryItem in entry
+				{
+					entryChanges = entryItem.get("changes");
+					if(entryChanges != null)
+					{
+						for each entryChange in entryChanges
+						{
+							changeValue = entryChange.get("value");
+							if(changeValue != null)
+							{
+								metaMessages = changeValue.get("messages");
+								if(metaMessages != null)
+								{
+									for each metaMsg in metaMessages
+									{
+										if(haveMsg == "no")
+										{
+											msgMap = metaMsg;
+											haveMsg = "yes";
+										}
+									}
+								}
+								metaStatuses = changeValue.get("statuses");
+								if(metaStatuses != null)
+								{
+									for each metaStatus in metaStatuses
+									{
+										if(haveStatus == "no")
+										{
+											statusMap = metaStatus;
+											haveStatus = "yes";
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			catch (entryEx)
+			{
+				info "whatsappWebhook - could not walk the Meta-style entry[] structure: " + entryEx.toString();
+			}
+		}
+
+		info "whatsappWebhook - resolved message object: [" + msgMap.toString() + "]";
+		info "whatsappWebhook - resolved status object:  [" + statusMap.toString() + "]";
+
+		// ---------- delivery and read receipts ----------
+		// Logged to THIS execution log and nowhere else, on purpose. Every single
+		// message produces sent/delivered/read callbacks; writing them onto the
+		// ticket would bury the one line an agent actually cares about - what the
+		// customer said - under three machine lines per message.
+		if(haveMsg == "no")
+		{
+			if(haveStatus == "yes")
+			{
+				statusValue = "(none)";
+				statusRaw = statusMap.get("status");
+				if(statusRaw != null)
+				{
+					statusValue = statusRaw.toString();
+				}
+				statusWamid = "(none)";
+				statusIdRaw = statusMap.get("id");
+				if(statusIdRaw != null)
+				{
+					statusWamid = statusIdRaw.toString();
+				}
+				statusTo = "(none)";
+				statusToRaw = statusMap.get("recipient_id");
+				if(statusToRaw != null)
+				{
+					statusTo = statusToRaw.toString();
+				}
+				info "whatsappWebhook - delivery receipt: status=" + statusValue + " wamid=" + statusWamid + " recipient=" + statusTo;
+				return "{\"code\": \"SUCCESS\", \"result\": \"STATUS_RECEIPT\", \"handled\": true, \"status\": \"" + statusValue + "\", \"message\": \"A delivery or read receipt was received and logged. Receipts are deliberately not written onto the ticket - they would bury the customer's own replies.\"}";
+			}
+			info "whatsappWebhook - nothing recognisable in the payload. The raw body is in the log lines above.";
+			return "{\"code\": \"SUCCESS\", \"result\": \"UNRECOGNISED_SHAPE\", \"handled\": false, \"message\": \"The request arrived and parameters bound, but no message or status could be read out of it. The full raw body is in this execution log - send that over and the parser can be matched to it exactly.\"}";
+		}
+
+		// ---------- pull the pieces out of the message ----------
+		senderPhone = fromGiven;
+		try
+		{
+			msgFrom = msgMap.get("from");
+			if(msgFrom != null)
+			{
+				senderPhone = msgFrom.toString();
+			}
+			if(senderPhone == "")
+			{
+				msgWaId = msgMap.get("wa_id");
+				if(msgWaId != null)
+				{
+					senderPhone = msgWaId.toString();
+				}
+			}
+		}
+		catch (senderEx)
+		{
+			info "whatsappWebhook - could not read the sender from the message: " + senderEx.toString();
+		}
+
+		wamid = "";
+		contextWamid = "";
+		try
+		{
+			msgId = msgMap.get("id");
+			if(msgId != null)
+			{
+				wamid = msgId.toString();
+			}
+			// context.id is the wamid of OUR message the customer replied to. Worth
+			// capturing even unused: it is the only thing that ties a reply to a
+			// specific outbound message rather than just to a phone number.
+			msgContext = msgMap.get("context");
+			if(msgContext != null)
+			{
+				ctxId = msgContext.get("id");
+				if(ctxId != null)
+				{
+					contextWamid = ctxId.toString();
+				}
+			}
+		}
+		catch (idEx)
+		{
+			info "whatsappWebhook - could not read message ids: " + idEx.toString();
+		}
+
+		// A quick-reply tap - the CONTINUE button - arrives as "button" on a
+		// template reply and as "interactive.button_reply" on an interactive
+		// message. Both are read; which one WhatsPortal forwards is unknown.
+		buttonText = "";
+		btnObj = null;
+		try
+		{
+			btnObj = msgMap.get("button");
+		}
+		catch (btnGetEx)
+		{
+			btnObj = null;
+		}
+		if(btnObj != null)
+		{
+			try
+			{
+				btnTextRaw = btnObj.get("text");
+				if(btnTextRaw != null)
+				{
+					buttonText = btnTextRaw.toString();
+				}
+				if(buttonText == "")
+				{
+					btnPayloadRaw = btnObj.get("payload");
+					if(btnPayloadRaw != null)
+					{
+						buttonText = btnPayloadRaw.toString();
+					}
+				}
+			}
+			catch (btnMapEx)
+			{
+				// A provider sending button as a plain string rather than an object.
+				buttonText = "";
+			}
+			if(buttonText == "")
+			{
+				buttonText = btnObj.toString();
+			}
+		}
+		if(buttonText == "")
+		{
+			interObj = null;
+			try
+			{
+				interObj = msgMap.get("interactive");
+			}
+			catch (interGetEx)
+			{
+				interObj = null;
+			}
+			if(interObj != null)
+			{
+				try
+				{
+					brObj = interObj.get("button_reply");
+					if(brObj != null)
+					{
+						brTitle = brObj.get("title");
+						if(brTitle != null)
+						{
+							buttonText = brTitle.toString();
+						}
+						if(buttonText == "")
+						{
+							brId = brObj.get("id");
+							if(brId != null)
+							{
+								buttonText = brId.toString();
+							}
+						}
+					}
+				}
+				catch (interMapEx)
+				{
+					info "whatsappWebhook - could not read the interactive reply: " + interMapEx.toString();
+				}
+			}
+		}
+
+		bodyText = "";
+		txtObj = null;
+		try
+		{
+			txtObj = msgMap.get("text");
+		}
+		catch (txtGetEx)
+		{
+			txtObj = null;
+		}
+		if(txtObj != null)
+		{
+			try
+			{
+				txtBodyRaw = txtObj.get("body");
+				if(txtBodyRaw != null)
+				{
+					bodyText = txtBodyRaw.toString();
+				}
+			}
+			catch (txtMapEx)
+			{
+				// text sent as a plain string instead of {body:...}
+				bodyText = "";
+			}
+			if(bodyText == "")
+			{
+				bodyText = txtObj.toString();
+			}
+		}
+
+		info "whatsappWebhook - sender=[" + senderPhone + "] button=[" + buttonText + "] text=[" + bodyText + "] wamid=[" + wamid + "] replyTo=[" + contextWamid + "]";
+
+		if(senderPhone == "")
+		{
+			return "{\"code\": \"SUCCESS\", \"result\": \"NO_SENDER\", \"handled\": false, \"message\": \"A message was read out of the payload but it carries no sender number, so there is no way to tell which ticket it belongs to. The raw body is in this execution log.\"}";
+		}
+
+		// ---------- find the ticket ----------
+		// Matched on the LAST 10 DIGITS. WhatsApp reports a sender as 919876543210
+		// - country code, no plus - while the agent may have typed +91 98765 43210
+		// or 9876543210 into the ticket. Comparing the two as written would never
+		// match. Ten digits is the Indian subscriber number, so it is the longest
+		// part both forms are guaranteed to share.
+		//
+		// Taken as the last ten CHARACTERS rather than by stripping punctuation,
+		// because the WhatsApp Cloud API always reports a sender as bare digits -
+		// any prefix sits at the FRONT, which trailing ten characters discards
+		// anyway. No character loop, no regex, nothing for the parser to refuse.
+		last10 = senderPhone;
+		senderLen = senderPhone.length();
+		if(senderLen > 10)
+		{
+			cutFrom = senderLen - 10;
+			last10 = senderPhone.subString(cutFrom,senderLen);
+		}
+		info "whatsappWebhook - matching tickets on the last 10 characters: [" + last10 + "]";
+		if(last10.length() < 10)
+		{
+			return "{\"code\": \"SUCCESS\", \"result\": \"BAD_SENDER_NUMBER\", \"handled\": false, \"sender\": \"" + senderPhone + "\", \"message\": \"The sender number has fewer than 10 digits, so it cannot be matched against a ticket. Nothing was written.\"}";
+		}
+
+		// Newest matching ticket wins. A repeat customer has several, and a reply
+		// almost always concerns the one currently running.
+		matchedId = 0;
+		matchCount = 0;
+		try
+		{
+			ticketList = Create_Case[Phone_Number1.contains(last10)];
+			for each tkt in ticketList
+			{
+				matchCount = matchCount + 1;
+				tktId = tkt.ID;
+				if(tktId > matchedId)
+				{
+					matchedId = tktId;
+				}
+			}
+		}
+		catch (lookupEx)
+		{
+			info "whatsappWebhook - ticket lookup threw: " + lookupEx.toString();
+		}
+		info "whatsappWebhook - " + matchCount + " ticket(s) matched that number; newest is " + matchedId;
+
+		if(matchedId == 0)
+		{
+			return "{\"code\": \"SUCCESS\", \"result\": \"TICKET_NOT_FOUND\", \"handled\": false, \"sender\": \"" + senderPhone + "\", \"message\": \"A WhatsApp reply was received from " + senderPhone + " but no ticket carries that phone number, so there was nothing to write it to. The message itself is in this execution log.\"}";
+		}
+
+		// ---------- write it onto the ticket ----------
+		isContinue = "no";
+		if(buttonText != "")
+		{
+			buttonUpper = buttonText.toUpperCase();
+			if(buttonUpper.contains("CONTINUE"))
+			{
+				isContinue = "yes";
+			}
+		}
+		lineText = "Sent a message this system cannot display yet (see the webhook log for the raw content)";
+		if(bodyText != "")
+		{
+			lineText = "Replied: " + bodyText;
+		}
+		if(buttonText != "")
+		{
+			lineText = "Tapped button: " + buttonText;
+		}
+		stampText = zoho.currenttime.toString("dd-MMM-yyyy hh:mm a");
+		newLine = stampText + " - " + lineText;
+
+		wroteOk = "no";
+		try
+		{
+			// Direct record write rather than the Data API. paymentWebhook keeps both
+			// and its own logs show the direct write is what actually runs in this
+			// context, so there is no reason to carry the OAuth refresh dance here.
+			tktRec = Create_Case[ID == matchedId];
+			if(tktRec != null)
+			{
+				existingLog = ifnull(tktRec.WhatsApp_Inbound_Log,"");
+				existingText = existingLog.toString();
+				combined = newLine;
+				if(existingText != "")
+				{
+					// Newest first: an agent opening the ticket sees the latest reply
+					// without scrolling to the bottom of a long conversation.
+					combined = newLine + "\n" + existingText;
+				}
+				// Capped so a chatty customer cannot grow this past what the field
+				// holds and start failing the save - the recent end is the useful end.
+				if(combined.length() > 6000)
+				{
+					combined = combined.subString(0,6000);
+				}
+				tktRec.WhatsApp_Inbound_Log = combined;
+				wroteOk = "yes";
+			}
+		}
+		catch (writeEx)
+		{
+			// Reported, never thrown. A failed write must still return SUCCESS or
+			// WhatsPortal will retry the same delivery indefinitely.
+			info "whatsappWebhook - could not write to ticket " + matchedId + " (does WhatsApp_Inbound_Log exist on Create_Case?): " + writeEx.toString();
+		}
+
+		if(isContinue == "yes")
+		{
+			// ===== ITEM 12 HOOKS IN HERE =====
+			// The customer has tapped CONTINUE on initiate_conversation. The spec
+			// says messages 2 and 3 follow. Nothing is sent yet, deliberately: it
+			// changes what the customer receives without an agent acting, which is
+			// the opposite of how every other send in this system works, and it
+			// cannot be tested until a real tap has arrived and been seen here.
+			// Once the client confirms, the send goes in at this exact point.
+			info "whatsappWebhook - CONTINUE tapped on ticket " + matchedId + ". No follow-up sent (auto-send is not enabled).";
+			return "{\"code\": \"SUCCESS\", \"result\": \"CONTINUE_TAPPED\", \"handled\": true, \"recordId\": \"" + matchedId + "\", \"written\": \"" + wroteOk + "\", \"message\": \"The customer tapped CONTINUE. It has been recorded on ticket " + matchedId + ". No follow-up message was sent automatically.\"}";
+		}
+		return "{\"code\": \"SUCCESS\", \"result\": \"REPLY_LOGGED\", \"handled\": true, \"recordId\": \"" + matchedId + "\", \"written\": \"" + wroteOk + "\", \"message\": \"The customer's reply was recorded on ticket " + matchedId + ".\"}";
+	}
+	catch (e)
+	{
+		// Still SUCCESS. A non-2xx reply makes most providers retry the same
+		// delivery over and over; the error belongs in the log, not in the status
+		// code.
+		info "whatsappWebhook - EXCEPTION: " + e.toString();
+		return "{\"code\": \"SUCCESS\", \"result\": \"EXCEPTION\", \"handled\": false, \"message\": \"The script threw an error and nothing was written. See this Custom API execution log for the exception text.\"}";
+	}
+	return "{\"code\": \"SUCCESS\", \"result\": \"NO_RESULT\", \"handled\": false, \"message\": \"The script finished without reaching any known outcome. This should not happen - send the execution log over.\"}";
+}

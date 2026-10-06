@@ -207,6 +207,10 @@ img,svg{max-width:100%}
 .va-grid th.va-sort.on{color:var(--accent-ink,#7A3D0C)}
 .va-grid th.va-sort sup{font-size:9px;margin-left:2px;opacity:.75}
 .va-grid tr.va-unavail td{opacity:.55}
+/* Fee settled, GST still outstanding: selectable, but only for the GST fields.
+   Tinted rather than dimmed - dimming would read as "not actionable", which is
+   what va-unavail above means and the opposite of what this row offers. */
+.va-grid tr.va-gstonly td{background:var(--wait-soft,#fff6e5)}
 .va-grid tr.va-warn td{background:var(--worktop)}
 .va-gridbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
 .va-gridbar .spacer{flex:1}
@@ -550,8 +554,11 @@ img,svg{max-width:100%}
          accept/reject status of various mechanics linked to ticket IDs". The per-
          TICKET view already existed (Rejection History inside one closure) and the
          per-VENDOR view exists in vendorPerformance; what was missing is the
-         cross-ticket grid. Same IS_OPS_MANAGER gate and hidden-by-default pattern
-         as the three ops buttons above. -->
+         cross-ticket grid. Shown to EVERY agent as of 2026-10-06 (feedback item
+         6) — it was behind the IS_OPS_MANAGER gate, which is why it read as
+         missing; see the display assignment in boot() for why it is no longer
+         tied to that flag. Still starts hidden here and is switched on at boot,
+         so it never flashes before the agent's own context is known. -->
     <button class="btn primary" id="inviteAuditBtn" type="button" style="display:none">
       <svg viewBox="0 0 24 24"><path d="M9 11l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
       Accept / Reject
@@ -4162,7 +4169,7 @@ const CLOSURE_FIELDS=[
     when:(s)=>isOnDemandClient(s),
     hrefCompute:(r)=>zohoFileDownloadUrl(r.ID||state.recordId, "Invoice_PDF", r.Invoice_PDF, 0),
     linkLabel:"⬇ Download Invoice PDF",
-    emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, check the Invoice_PDF field exists on Create_Case." }
+    emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, generate it again — a toast now names what Zoho Books returned instead of the document." }
 ];
 // See STAGES' own "agentClosure" entry's comment — patched in here (rather
 // than inline in that array literal) because STAGES is built before this
@@ -4862,10 +4869,23 @@ async function syncInvites(recordId, vendorNames){
       // the INVITE from AGENT"). New field on the Invites form itself, not
       // Create_Case — stamped once, at the exact moment this invite record
       // is created (never touched again after).
-      await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:{
-        RSID: recordId, Vendor: vendorId, Invited_At: fmtDateTime(new Date())
-      } } });
-      console.log("[Get-Rescue] created Invites record for vendor", name, "(id "+vendorId+") on ticket", recordId);
+      // RSID IS STRING()-WRAPPED LIKE VENDOR — 2026-10-06. Both are Lookups
+      // written in this one data map, yet Vendor reads back on every row of
+      // the Accept/Reject table while RSID reads back on none, including
+      // invites created minutes ago. The one difference between them was here:
+      // vendorId goes through String(), recordId went in raw, and state.recordId
+      // is whatever rec.ID happened to be. Zoho is strict about Lookup values
+      // and drops a field it will not accept WITHOUT failing the call, so a
+      // numeric id would produce exactly what we see — a saved invite with an
+      // empty RSID and no error anywhere. This may not be the cause, but it is
+      // a free way to stop it being a candidate.
+      const invitePayload={ RSID: String(recordId), Vendor: vendorId, Invited_At: fmtDateTime(new Date()) };
+      const inviteResp=await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:invitePayload } });
+      // The exact request and the exact reply. If RSID is being dropped on the
+      // WRITE, the reply says so here; if it is not, the problem is on the READ
+      // and this line proves the write was fine — which is the split that has
+      // taken several rounds to establish from the table alone.
+      console.log("[Get-Rescue] created Invites record for vendor", name, "— sent:", JSON.stringify(invitePayload), "| Zoho replied:", JSON.stringify(inviteResp));
     }catch(e){ console.warn("[Get-Rescue] could not create Invites record for", name, e); }
   }
 }
@@ -6310,6 +6330,22 @@ function fleetIdOfVendorRaw(vraw){
   }
   return "";
 }
+/* A distance field as a number, 0 when absent or unreadable.
+   readVal() rather than Number(rec[key]): a Creator field can arrive as
+   {display_value}, and Number({}) is NaN -> ||0 -> a silent zero that reads
+   exactly like a genuine 0.0 km. */
+function vaKmValue(rec, key){
+  const n = Number(readVal(rec,key));
+  return (isFinite(n) && n>0) ? n : 0;
+}
+/* The marker shown beside a Travel Kms figure that came from
+   Distance_To_Breakdown rather than Vendor_Distance. This number sets the KM
+   Fee, so where it came from is never left implicit. */
+function rsrSrcMarker(d){
+  return (d && d.rsrKmIsFallback)
+    ? ' <span title="Vendor Distance was never calculated for this case, so this is Distance to Breakdown - the one-way distance the vendor\'s own app measured via Google when they accepted." style="color:var(--muted);cursor:help">*</span>'
+    : "";
+}
 function vaVendorFleetId(r){
   return fleetIdOfVendorRaw(vendorRawForTicket(r)) || "—";
 }
@@ -6473,10 +6509,18 @@ function vaGridRowData(r){
   // calculated round trip), and the grid used to collapse them into a single
   // "KM" cell chosen by Service_Type. `km` is kept as well, unchanged, because
   // needsKm and the fee math both already read it.
-  const rsrKm = Number(r.Vendor_Distance)||0;
+  /* Vendor_Distance first, exactly as before. Distance_To_Breakdown behind it
+     — 2026-10-06, client-reported. Vendor_Distance is only ever written by
+     runClosureDistanceCalculations(), which no-ops whenever the ticket's
+     vendor cannot be resolved, leaving a case with a perfectly good measured
+     distance priced at 0 km. */
+  const rsrKmPrimary = vaKmValue(r,"Vendor_Distance");
+  const rsrKmBackup = rsrKmPrimary>0 ? 0 : vaKmValue(r,"Distance_To_Breakdown");
+  const rsrKm = rsrKmPrimary>0 ? rsrKmPrimary : rsrKmBackup;
+  const rsrKmIsFallback = rsrKmPrimary<=0 && rsrKmBackup>0;
   const towKm = Number(r.Vendor_Round_Trip_Distance)||0;
   const km = svc==="TOW" ? towKm : rsrKm;
-  const d = { r, vendorRaw, fee, svc, km, rsrKm, towKm,
+  const d = { r, vendorRaw, fee, svc, km, rsrKm, towKm, rsrKmIsFallback,
     vendorName: vaVendorDisplayName(r),
     fleetId: vaVendorFleetId(r),
     caseId: caseLabel(r),
@@ -6559,7 +6603,7 @@ function renderVendorAcctGrid(){
     // Same ⚠ treatment the TOW km cell already uses, for the same reason: a
     // zero that is "not calculated yet" must not read as a measured zero.
     const rsrCell = d.svc==="TOW" ? "—"
-      : (d.rsrKm.toFixed(1)+(d.pendingAgentClosure?' <span title="Agent closure is still pending on this case, so its vendor distance has not been calculated yet and the KM Fee is based on 0 km. Close the case first for an accurate figure.">⚠</span>':""));
+      : (d.rsrKm.toFixed(1)+rsrSrcMarker(d)+(d.pendingAgentClosure?' <span title="Agent closure is still pending on this case, so its vendor distance has not been calculated yet and the KM Fee is based on 0 km. Close the case first for an accurate figure.">⚠</span>':""));
     const towCell = d.svc==="TOW"
       ? (d.towKm.toFixed(1)+(d.needsKm?' <span title="TOW case with no round-trip distance — its KM Fee is calculated on 0 km. Open it in List view to set the distance before approving.">⚠</span>':""))
       : "—";
@@ -6721,7 +6765,7 @@ async function bulkApproveVendorAcct(){
     let payload=null;
     try{
       payload = vendorAcctApprovalPayload(d.r, d.fee, d.r.Extras, d.r.Ops_Approval_Comments, null);
-      await apiUpdate(d.r.ID, payload);
+      await apiUpdateApproval(d.r.ID, payload);
       done++;
       VA_CASES = VA_CASES.filter(function(x){ return String(x.ID)!==String(d.r.ID); });
       VA_SELECTED.delete(String(d.r.ID));
@@ -6737,7 +6781,8 @@ async function bulkApproveVendorAcct(){
     const labels=failed.map(function(x){ return x.label; }).join(", ");
     toast(done+" approved, "+failed.length+" failed: "+labels+" — "+failed[0].why,"err");
   } else {
-    toast(done+" case"+(done===1?"":"s")+" approved","ok");
+    // The note was dropped, so this is not an unqualified success.
+    toast(done+" case"+(done===1?"":"s")+" approved"+(OPS_COMMENT_REJECTED?" — comments were NOT saved: Ops_Approval_Comments is a Number field in Zoho, change it to Multi Line":""), OPS_COMMENT_REJECTED?"err":"ok");
   }
   VA_OPEN_ID=null;
   renderVendorAcctList();
@@ -6793,6 +6838,36 @@ function vaFeeFor(r, vendorRaw, extrasOverride, roundTripOverride){
 // being paid the wrong amount. Vendor_Round_Trip_Distance is only included when
 // a value is actually supplied (the accordion's TOW input); omitting it leaves
 // whatever is stored untouched, which is the existing behaviour for RSR cases.
+/* Set when Zoho has refused Ops_Approval_Comments this session, so the toast
+   can say the note was dropped instead of reporting a clean success. */
+let OPS_COMMENT_REJECTED=false;
+/* Writes an approval, surviving a rejected Ops_Approval_Comments.
+
+   Zoho reports that field as a NUMBER in this workspace ("Enter a valid
+   number for Ops_Approval_Comments") while FIELDS.md specifies Multi-line and
+   every screen here edits it as text. Correcting the field type in Zoho is the
+   real fix; until then an optional note must not block a payout whose figures
+   are all correct.
+
+   ONLY the comment is ever dropped, and only when Zoho's own message names it.
+   A rejected fee field still throws and nothing is approved - silently
+   dropping money from the payload and reporting success would approve a vendor
+   payment at the wrong figure, which is worse than the failure this fixes. */
+async function apiUpdateApproval(id, payload){
+  try{
+    return await apiUpdate(id, payload);
+  }catch(e){
+    const msg=(e && (e.message||String(e))) || "";
+    if(!("Ops_Approval_Comments" in payload)) throw e;
+    if(msg.indexOf("Ops_Approval_Comments")<0) throw e;
+    const retry=Object.assign({},payload);
+    delete retry.Ops_Approval_Comments;
+    console.warn("[Get-Rescue] apiUpdateApproval: Zoho rejected Ops_Approval_Comments ("+msg+"). Retrying WITHOUT it so the approval itself goes through. Every other field, including all fee figures, is unchanged. FIX: Ops_Approval_Comments is a Number field in Zoho - change it to Multi Line, which is what FIELDS.md specifies and what every screen here edits it as.");
+    const out=await apiUpdate(id, retry);
+    OPS_COMMENT_REJECTED=true;
+    return out;
+  }
+}
 function vendorAcctApprovalPayload(r, fee, extras, comments, roundTripKm){
   const payload = {
     Extras: Number(extras)||0,
@@ -6847,7 +6922,7 @@ function openVendorAcctInline(id){
   const baseFee = Number(vendorRaw && vendorRaw.Base_Fee)||0;
   const roundTripField = svc==="TOW"
     ? `<div class="fld"><label>Vendor Round-trip KM (editable)</label><input type="number" id="vaRoundTripKm_${esc(r.ID)}" value="${esc(r.Vendor_Round_Trip_Distance||0)}"></div>`
-    : `<div class="crow-ro"><span class="k">Travel Kms (RSR)</span><span class="v">${esc(r.Vendor_Distance||0)} km</span></div>`;
+    : `<div class="crow-ro"><span class="k">Travel Kms (RSR)</span><span class="v">${esc(vaKmValue(r,"Vendor_Distance")||vaKmValue(r,"Distance_To_Breakdown"))} km${rsrSrcMarker({rsrKmIsFallback: vaKmValue(r,"Vendor_Distance")<=0 && vaKmValue(r,"Distance_To_Breakdown")>0})}</span></div>`;
   // Rows realigned to the "vendor payments" PDF 2026-09-17 — same three source
   // corrections the grid just got, applied here so the two views can't disagree:
   //   Date & Time  was Added_Time (ticket CREATION) -> vendor Accept time
@@ -6895,8 +6970,8 @@ async function saveVendorAcctApproval(r, vendorRaw){
     rtInput ? rtInput.value : null
   );
   try{
-    await apiUpdate(r.ID, payload);
-    toast("Approved","ok");
+    await apiUpdateApproval(r.ID, payload);
+    toast(OPS_COMMENT_REJECTED?"Approved — but the comment was NOT saved: Ops_Approval_Comments is a Number field in Zoho, change it to Multi Line":"Approved", OPS_COMMENT_REJECTED?"err":"ok");
     VA_CASES = VA_CASES.filter(function(x){ return String(x.ID)!==String(r.ID); });
     VA_OPEN_ID=null;
     renderVendorAcctList();
@@ -6974,6 +7049,20 @@ function computeVendorTdsAndPayable(netFee, tdsPercent, cashCollected){
 // (Settlement_Status="Payable") and it hasn't already been paid
 // (Vendor_Payment_Status blank or not "Paid" — no separate "Payable"
 // value needed here since Settlement_Status already carries that meaning).
+/* GST still owed on a case, after whatever has already been remitted. */
+function apGstOutstanding(r, gstApplicable){
+  const payable = vendorGstPayable(Number(readVal(r,"Vendor_Net_Fee"))||0, gstApplicable);
+  const paid = Number(readVal(r,"GST_Paid"))||0;
+  const left = Math.round((payable-paid)*100)/100;
+  return left>0 ? left : 0;
+}
+/* A case whose FEE is settled but whose GST is not. These are deliberately
+   selectable again — for the GST fields only, never for another fee payment
+   and never for another Zoho Books bill. */
+function isReadyForGstOnlyPayment(r, gstApplicable){
+  if(String(readVal(r,"Vendor_Payment_Status")).trim().toUpperCase()!=="PAID") return false;
+  return apGstOutstanding(r, gstApplicable)>0;
+}
 function isReadyForVendorPayment(r){
   const settlement=String(r.Settlement_Status||"").trim();
   if(settlement!==SETTLEMENT_STATUS_PAYABLE) return false;
@@ -7159,10 +7248,22 @@ function renderAccountsPayableList(){
     const id = esc(r.ID);
     const money = function(n){ return "₹"+Number(n||0).toFixed(2); };
     const payable = isReadyForVendorPayment(r);
-    const rsrCell = d.svc==="TOW" ? "—" : d.rsrKm.toFixed(1);
+    /* What this case has ALREADY been paid, read off the record rather than
+       left as a dash. recordVendorPayment() has always written these; nothing
+       ever read them back, so a re-search showed every paid case as unpaid. */
+    const paidAmt = Number(readVal(r,"Vendor_Amount_Paid"))||0;
+    const gstPaidAmt = Number(readVal(r,"GST_Paid"))||0;
+    const paidOn = readVal(r,"Vendor_Payment_Date");
+    const paidUtr = readVal(r,"Vendor_UTR_No");
+    const alreadyPaid = String(readVal(r,"Vendor_Payment_Status")).trim().toUpperCase()==="PAID";
+    /* Paid, but GST still outstanding — selectable for the GST fields alone.
+       Extras stays disabled: its figures were settled with the fee. */
+    const gstOnly = isReadyForGstOnlyPayment(r, apGstApplicable);
+    const selectable = payable || gstOnly;
+    const rsrCell = d.svc==="TOW" ? "—" : (d.rsrKm.toFixed(1)+rsrSrcMarker(d));
     const towCell = d.svc==="TOW" ? d.towKm.toFixed(1) : "—";
-    return `<tr data-row="${id}"${payable?"":' class="va-unavail"'}>
-      <td><input type="checkbox" class="ap-check" data-id="${id}"${payable?"":" disabled"}></td>
+    return `<tr data-row="${id}"${selectable?(gstOnly?' class="va-gstonly"':""):' class="va-unavail"'}>
+      <td><input type="checkbox" class="ap-check" data-id="${id}" data-gstonly="${gstOnly?"1":""}"${selectable?"":" disabled"}></td>
       <td>${esc(d.vendorName)}</td>
       <td>${esc(d.fleetId)}</td>
       <td><b>${esc(d.caseId)}</b></td>
@@ -7182,11 +7283,15 @@ function renderAccountsPayableList(){
       <td class="num">${money(cashCollected)}</td>
       <td class="num" id="apBal_${id}">${money(r.Vendor_Balance_Before_TDS)}</td>
       <td class="num" id="apPayable_${id}">${money(finalPayable)}</td>
-      <td class="num" id="apPaid_${id}">—</td>
+      <td class="num" id="apPaid_${id}">${paidAmt>0?money(paidAmt):"—"}</td>
       <td class="num" id="apGstPayable_${id}">${money(vendorGstPayable(netFee, apGstApplicable))}</td>
-      <td class="num" id="apGstPaid_${id}">—</td>
+      <td class="num" id="apGstPaid_${id}">${gstPaidAmt>0?money(gstPaidAmt):"—"}</td>
       <td><input type="text" class="ap-comments" data-id="${id}" value="${esc(r.Ops_Approval_Comments||"")}" placeholder="—"></td>
       <td>${esc(apPaymentStatusText(r))}</td>
+      <!-- Written per case by recordVendorPayment() since this screen existed;
+           they just had no column until 2026-10-06. -->
+      <td>${paidOn?esc(paidOn):"—"}</td>
+      <td>${paidUtr?esc(paidUtr):"—"}</td>
     </tr>`;
   }).join("");
   const anyLocked = AP_CASES.some(function(r){ return !isReadyForVendorPayment(r); });
@@ -7203,14 +7308,15 @@ function renderAccountsPayableList(){
           <th class="num">TDS Rate</th><th class="num">TDS Amount</th><th class="num">Cash Collected</th>
           <th class="num">Balance</th><th class="num">Final Payable</th><th class="num">Amount Paid</th>
           <th class="num">GST Payable</th><th class="num">GST Paid</th>
-          <th>Comments</th><th>Payment Status</th>
+          <th>Comments</th><th>Payment Status</th><th>Payment Date</th><th>UTR No.</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    ${anyLocked?'<div class="va-hint" style="margin-top:8px">Dimmed rows are not in the '+esc(SETTLEMENT_STATUS_PAYABLE)+' state — they are shown because the Payment Status filter asked for them, and cannot be selected for payment.</div>':""}
+    ${anyLocked?'<div class="va-hint" style="margin-top:8px">Dimmed rows cannot be selected for payment \u2014 either they are already <b>Paid</b> (their Payment Date and UTR No. show what was recorded), or they have not reached the '+esc(SETTLEMENT_STATUS_PAYABLE)+' state yet. They are listed because the Payment Status filter asked for them.</div>':""}
     <div class="va-hint" style="margin-top:6px"><b>Extras</b> and <b>Comments</b> are editable here. Changing Extras recalculates Net Fee, Balance, TDS and Final Payable for that case, and the revised figures are saved onto the case when you record the payment — so Creator and Zoho Books stay in agreement. Base Fee, Kms Fee, Gross Fee and Cash Collected come from the rate card and the case itself and are read-only: correct those in Operations Approval, before approval.</div>
     <div class="va-fee-box" id="apTotals" style="margin-top:14px"></div>
+    <div class="va-hint" id="apMixedHint" style="color:var(--stop)"></div>
     <div class="fld"><label>Transaction Date</label><input type="date" id="apPaymentDate"></div>
     <div class="fld"><label>UTR No.</label><input type="text" id="apUtrNo" placeholder="Bank transaction reference"></div>
     <!-- GST Paid (2026-09-26) — "Accounts" per the Vendor Accounting PDF, so it is
@@ -7219,6 +7325,12 @@ function renderAccountsPayableList(){
          actually remitted differs. Deliberately NOT part of the Record Payment
          readiness check — a vendor with no GSTIN has nothing to enter here. -->
     <div class="fld"><label>GST Paid</label><input type="number" id="apGstPaid" placeholder="Leave blank to record the full GST Payable"></div>
+    <!-- GST remittance, 2026-10-06. Its own date and reference because the GST
+         is a separate transaction from the fee; see FIELDS.md on why these are
+         not Vendor_Payment_Date/Vendor_UTR_No. Only used when every selected
+         case is an already-paid one with GST outstanding. -->
+    <div class="fld"><label>GST Paid Date</label><input type="date" id="apGstPaidDate"></div>
+    <div class="fld"><label>GST UTR No.</label><input type="text" id="apGstUtrNo" placeholder="Bank reference for the GST remittance"></div>
     <button class="btn primary" id="apRecordBtn" type="button" disabled>Record Payment</button>
     <div class="va-hint" style="margin-top:6px">Both Transaction Date and UTR No. are required before a payment can be recorded, and both apply to every selected case as one entry.</div>
   `;
@@ -7292,10 +7404,14 @@ function renderAccountsPayableList(){
   };
   $("apPaymentDate").oninput=recalcAccountsPayableTotals;
   $("apUtrNo").oninput=recalcAccountsPayableTotals;
+  // The GST pair drives readiness in GST mode exactly as the fee pair does in
+  // fee mode, so they need the same handler or the button never enables.
+  $("apGstPaidDate").oninput=recalcAccountsPayableTotals;
+  $("apGstUtrNo").oninput=recalcAccountsPayableTotals;
   // GST Paid recalculates the same way, so the per-case column tracks whatever
   // figure Accounts types rather than only updating on save (2026-09-26).
   $("apGstPaid").oninput=recalcAccountsPayableTotals;
-  $("apRecordBtn").onclick=recordVendorPayment;
+  $("apRecordBtn").onclick=function(){ if(apSelectionMode()==="gst") recordGstOnlyPayment(); else recordVendorPayment(); };
   recalcAccountsPayableTotals();
 }
 /* allocateBatchTds() — 2026-09-14. Fixes a real, measured defect found by
@@ -7378,6 +7494,20 @@ function allocateBatchTds(netFees, tdsPercent){
   const batchTds=r2(total*rate/100);
   if(!(total>0) || !(batchTds>0)) return { batchTds:0, perCase:fees.map(function(){ return 0; }) };
   return { batchTds:batchTds, perCase:allocateProportional(fees, batchTds) };
+}
+/* "fee" | "gst" | "mixed" | "" — what the ticked rows add up to.
+   Read from the checkboxes' own data-gstonly rather than recomputed, so the
+   mode can never disagree with what the row offered the user. */
+function apSelectionMode(){
+  let fee=0, gst=0;
+  document.querySelectorAll(".ap-check").forEach(function(cb){
+    if(!AP_SELECTED.has(cb.dataset.id)) return;
+    if(cb.dataset.gstonly==="1") gst++; else fee++;
+  });
+  if(fee && gst) return "mixed";
+  if(gst) return "gst";
+  if(fee) return "fee";
+  return "";
 }
 function apSelectedCasesWithFees(){
   const vendorRaw = apVendorRaw($("apVendor").value);
@@ -7486,8 +7616,87 @@ function recalcAccountsPayableTotals(){
     <div class="va-fee-row"><span>Total Final Payable</span><span>₹${totals.finalPayable.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Total GST Payable</span><span>₹${totals.gstPayable.toFixed(2)}</span></div>
   ` : `<div class="va-hint">Select at least one case to see totals</div>`;
-  const ready = selected.length>0 && !!($("apPaymentDate").value) && !!($("apUtrNo").value.trim());
-  $("apRecordBtn").disabled=!ready;
+  /* Readiness depends on WHICH kind of payment is selected — 2026-10-06.
+     A GST-only batch needs the GST date and reference, not the fee ones, and
+     a mixed selection is refused outright rather than guessed at. */
+  const apMode = apSelectionMode();
+  const recordBtn = $("apRecordBtn");
+  let ready=false;
+  if(apMode==="gst"){
+    ready = !!($("apGstPaidDate")&&$("apGstPaidDate").value) && !!($("apGstUtrNo")&&$("apGstUtrNo").value.trim());
+    recordBtn.textContent = "Record GST Payment";
+  } else if(apMode==="mixed"){
+    ready = false;
+    recordBtn.textContent = "Record Payment";
+  } else {
+    ready = selected.length>0 && !!($("apPaymentDate").value) && !!($("apUtrNo").value.trim());
+    recordBtn.textContent = "Record Payment";
+  }
+  const mixHint=$("apMixedHint");
+  if(mixHint) mixHint.textContent = apMode==="mixed"
+    ? "Unpaid cases and already-paid (GST outstanding) cases cannot be recorded together — one needs a Zoho Books bill and the other must not create a second one. Select one kind at a time."
+    : "";
+  recordBtn.disabled=!ready;
+}
+/* Records a GST remittance against cases whose fee is already settled.
+
+   Writes three fields and nothing else. In particular it does NOT call the
+   recordVendorPayment Custom API: that creates a Bill and a Payment in Zoho
+   Books, and every case here has already been billed — routing GST through it
+   would put a duplicate vendor bill in the live Books org.
+
+   Vendor_Payment_Date and Vendor_UTR_No are left exactly as they are. They
+   record the fee payment, which genuinely happened on a different day against
+   a different reference, and the Books bill still points at it. */
+async function recordGstOnlyPayment(){
+  const vendorRaw = apVendorRaw($("apVendor").value);
+  const gstApplicable = vendorGstApplicable(vendorRaw);
+  const selected = AP_CASES.filter(function(r){ return AP_SELECTED.has(String(r.ID)); });
+  if(!selected.length){ toast("Select at least one case","err"); return; }
+  const gstDate=$("apGstPaidDate").value, gstUtr=$("apGstUtrNo").value.trim();
+  if(!gstDate || !gstUtr){ toast("GST Paid Date and GST UTR No. are both required","err"); return; }
+  /* Typed figure splits across the batch exactly as the fee-path GST does,
+     through the same largest-remainder allocator, so the per-case column sums
+     to what was actually remitted. Blank means "the full outstanding amount". */
+  const outstanding = selected.map(function(r){ return apGstOutstanding(r, gstApplicable); });
+  const outstandingTotal = outstanding.reduce(function(a,b){ return a+b; },0);
+  const typedEl=$("apGstPaid");
+  const typedRaw = typedEl ? String(typedEl.value).trim() : "";
+  const typed = typedRaw==="" ? null : Number(typedRaw);
+  if(typed!=null && !(typed>0)){ toast("GST Paid must be a positive amount, or blank for the full outstanding GST","err"); return; }
+  const shares = allocateProportional(outstanding, typed==null ? outstandingTotal : typed);
+  const btn=$("apRecordBtn"); btn.disabled=true; btn.textContent="Recording…";
+  let done=0; const failed=[];
+  for(let i=0;i<selected.length;i++){
+    const r=selected[i];
+    const already=Number(readVal(r,"GST_Paid"))||0;
+    try{
+      await apiUpdateApproval(r.ID, {
+        // Added to whatever was remitted before, not overwritten — a case can
+        // be settled across more than one GST payment.
+        GST_Paid: Math.round((already+(shares[i]||0))*100)/100,
+        GST_Paid_Date: fmtDate(gstDate),
+        GST_UTR_No: gstUtr
+      });
+      r.GST_Paid = Math.round((already+(shares[i]||0))*100)/100;
+      r.GST_Paid_Date = fmtDate(gstDate);
+      r.GST_UTR_No = gstUtr;
+      AP_SELECTED.delete(String(r.ID));
+      done++;
+    }catch(e){
+      const why=(e&&e.message)||String(e||"unknown error");
+      console.warn("[Get-Rescue] recordGstOnlyPayment: failed on "+caseLabel(r)+" — "+why, e);
+      failed.push({ label:caseLabel(r), why:why });
+    }
+  }
+  btn.disabled=false; btn.textContent="Record GST Payment";
+  if(failed.length){
+    toast(done+" GST payment"+(done===1?"":"s")+" recorded, "+failed.length+" failed: "+failed.map(function(x){ return x.label; }).join(", ")+" — "+failed[0].why,"err");
+  } else {
+    toast(done+" GST payment"+(done===1?"":"s")+" recorded","ok");
+  }
+  // Same refresh the fee path uses, so both land the screen in one known state.
+  searchAccountsPayable();
 }
 async function recordVendorPayment(){
   const fn=resolve("invokeCustomApi");
@@ -7556,7 +7765,12 @@ async function recordVendorPayment(){
                                                gstPaidTypedVal==null ? gstPayableTotal : gstPaidTypedVal);
     console.log("[Get-Rescue] recordVendorPayment: GST payable total", gstPayableTotal, "| GST paid total", (gstPaidTypedVal==null?gstPayableTotal:gstPaidTypedVal), "| per-case shares", gstPaidShares);
     for(const x of selected){
-      await apiUpdate(x.r.ID, {
+      // apiUpdateApproval, not apiUpdate — 2026-10-06. This write happens AFTER
+      // the Zoho Books bill and payment already exist, so losing it to a
+      // rejected Ops_Approval_Comments would leave a real payment recorded in
+      // Books with the case still reading unpaid here. Only the comment is ever
+      // dropped; a rejected money field still throws, exactly as before.
+      await apiUpdateApproval(x.r.ID, {
         // Extras / Vendor_Net_Fee / Vendor_Balance_Before_TDS written back
         // 2026-09-18, alongside the payment. The payments team can now edit
         // Extras on this screen (per the PDF), and that edit rewrites Net Fee
@@ -8008,6 +8222,23 @@ async function loadInviteStatuses(recordId){
 // ("RSP REJECT", written on Reject — see updateMyInvite() call sites)
 // wins over Service_Acceptance_Next ("Yes", written on Accept) since a vendor
 // can't do both; anything else still just means "invited, no response yet".
+/* When an invite went out, as a Date, or null. Invited_At first; Added_Time
+   behind it, because a field can be on the FORM and missing from the REPORT
+   LAYOUT, and then every read is undefined while every write succeeds. This
+   file already applies the same ladder in loadInviteAudit() — it just never
+   reached the two places that decide whether an invite reads as Timed Out. */
+function inviteStartedAtDate(inv){
+  if(!inv) return null;
+  /* parseAnyDateTime, NOT parseDateTime24 — 2026-10-06. Zoho renders this
+     field in the org's own display format, which here is 12-hour
+     ("07-Sep-2026 06:41:00 PM"). parseDateTime24's pattern is anchored with
+     no AM/PM branch, so every such stamp parsed to null and "Timed Out" could
+     never appear — on this table or on the per-ticket panel, which has had
+     the bug since the label was introduced. parseAnyDateTime tries a native
+     parse, then 12-hour, then 24-hour, so it is a strict superset: nothing
+     that parsed before stops parsing. */
+  return parseAnyDateTime(inv.Invited_At) || parseAnyDateTime(inv.Added_Time) || null;
+}
 function inviteStatusFor(inv){
   if(String(inv.Status||"").trim().toUpperCase()==="RSP REJECT") return {label:"Rejected", color:"var(--stop)"};
   if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return {label:"Accepted", color:"var(--ok)"};
@@ -8025,7 +8256,12 @@ function inviteStatusFor(inv){
   // Display-only: nothing is written back to Zoho here, so this has zero
   // effect on Vendors1/rejectedVendorIds() (which only ever matches the
   // "Rejected" label above) or anything else that saves — purely additive.
-  const invitedAt = parseDateTime24(inv.Invited_At);
+  // Added_Time fallback — 2026-10-06. Invited_At can be absent from the
+  // Invites REPORT LAYOUT while present on the form, in which case this read
+  // is undefined and "Timed Out" could never appear, no matter how long an
+  // invite sat unanswered. Same fix, same day, as vendorTicket's own 2-minute
+  // timeout, which was dead for exactly this reason.
+  const invitedAt = inviteStartedAtDate(inv);
   if(invitedAt && (Date.now()-invitedAt.getTime()) > INVITE_TIMEOUT_MS) return {label:"Timed Out", color:"var(--muted)"};
   return {label:"Awaiting response", color:"var(--wait)"};
 }
@@ -8104,12 +8340,19 @@ function assignInviteStatusHtml(){
     // elapsed time there wouldn't add anything.
     let elapsed = "";
     if(st.label==="Awaiting response" || st.label==="Timed Out"){
-      const invitedAt = parseDateTime24(inv.Invited_At);
+      const invitedAt = inviteStartedAtDate(inv);
       if(invitedAt) elapsed = " ("+fmtDurationShort(Date.now()-invitedAt.getTime())+" ago)";
     }
+    /* Re-invite — only for an expired invite. See this change's own note for
+       why Rejected deliberately has no button: vendorTicket keeps a local
+       reject stamp this write cannot clear, so it would look resent and stay
+       hidden on the vendor's phone. */
+    const reinviteBtn = (st.label==="Timed Out" && inv.ID!=null)
+      ? `<button type="button" class="btn ghost sm" data-reinvite="${esc(inv.ID)}" style="margin-left:10px;padding:1px 8px;font-size:11px">Re-invite</button>`
+      : "";
     return `<div class="crow" style="cursor:default">
       <span class="k">${esc(name)}</span>
-      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${esc(elapsed)}${reason?(" — "+esc(reason)):""}</span>
+      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${esc(elapsed)}${reason?(" — "+esc(reason)):""}${reinviteBtn}</span>
     </div>`;
   }).join("");
   return `<div class="form-card" style="margin-top:14px">
@@ -9561,6 +9804,26 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
         }
       }
     }
+    /* PDF OUTCOME SURFACED — 2026-10-06, client-reported: "invoice pdf not
+       show when we are generating the invoice". onDemandInvoicing.deluge has
+       returned invoice_pdf_saved since item 16 and NOTHING here ever read it,
+       so a PDF that never attached was completely silent: the Invoice PDF row
+       simply stayed empty under a generic hint blaming a missing field.
+
+       The Deluge now also returns invoice_pdf_type, which names what Books
+       actually handed back. Same console.warn + toast treatment the
+       payments_recorded check above already uses — and the same reasoning:
+       the invoice itself is still created and its URL still returned, because
+       a missing PDF is a reconciliation problem, not a reason to withhold the
+       invoice. */
+    const pdfSaved = String((data && data.invoice_pdf_saved) || "");
+    const pdfType  = String((data && data.invoice_pdf_type) || "");
+    if(invoiceId && !pdfSaved){
+      console.warn("[Get-Rescue] onDemandInvoicing: the response carried no invoice_pdf_saved field — the deployed onDemandInvoicing.deluge predates the PDF work. Re-paste the current file from the repo.");
+    } else if(invoiceId && pdfSaved.indexOf("yes")!==0){
+      console.warn("[Get-Rescue] onDemandInvoicing: the invoice PDF was NOT stored on the ticket. invoice_pdf_saved=", pdfSaved, "| invoice_pdf_type=", pdfType, "— a real PDF starts %PDF-; JSON or HTML means Zoho Books refused the ?accept=pdf request. The Custom API execution log carries the first 60 characters verbatim.");
+      toast("Invoice created, but the PDF was not stored"+(pdfType?(" — Books returned "+pdfType):""),"err");
+    }
     // Split into TWO chained writes 2026-09-14 (was a single combined
     // apiUpdate) — a correctness fix, not a style change. Zoho Creator rejects
     // an update wholesale if ANY field name in it is unknown, and
@@ -9997,11 +10260,60 @@ function sortTicketsNewestFirst(recs){
     return String(b && b.ID).localeCompare(String(a && a.ID),undefined,{numeric:true});
   });
 }
+/* ticket id -> what its invites add up to. Rebuilt on each dashboard load.
+   Empty is a valid, safe state: every consumer treats "no entry" as "say
+   nothing extra", which is exactly the pre-2026-10-06 dashboard. */
+let INVITE_STATE_BY_TICKET={};
+async function loadInviteStateForDashboard(){
+  const next={};
+  try{
+    const fn=resolve("getRecords");
+    if(fn){
+      const r=await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:1000 });
+      const invites=(r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+      invites.forEach(function(inv){
+        // Vendor invites only. A Technician row is the vendor's own fleet
+        // hand-off, a different concept that says nothing about whether the
+        // OFFICE still has somebody to hear back from.
+        if(inv.Vendor==null || inv.Vendor==="") return;
+        const tid=String(unwrapLookup(inv.RSID)||"");
+        if(!tid) return;
+        const slot = next[tid] || (next[tid]={ total:0, accepted:0, rejected:0, expired:0, live:0 });
+        slot.total++;
+        // Same precedence inviteStatusFor() uses, so the dashboard and the
+        // per-ticket panel can never describe one invite differently.
+        const label=inviteStatusFor(inv).label;
+        if(label==="Accepted") slot.accepted++;
+        else if(label==="Rejected") slot.rejected++;
+        else if(label==="Timed Out") slot.expired++;
+        else slot.live++;
+      });
+    }
+  }catch(e){
+    console.warn("[Get-Rescue] loadInviteStateForDashboard failed — rows will render without the invite chip, exactly as before this existed", e);
+  }
+  INVITE_STATE_BY_TICKET=next;
+}
+/* The chip text for a ticket whose invites have all closed with no acceptance,
+   or "" when there is nothing worth saying. */
+function staleInviteChip(r){
+  const stage=String(r[CONFIG.stageField]||"").trim().toUpperCase();
+  if(stage!=="RSP IRA (INVITE RESPONSE AWAITED)") return "";
+  const s=INVITE_STATE_BY_TICKET[String(r.ID)];
+  if(!s || !s.total) return "";
+  if(s.accepted) return "";          // somebody took it; the pill will catch up
+  if(s.live) return "";              // still inside somebody's 2 minutes
+  if(s.rejected && !s.expired) return s.rejected===1 ? "1 vendor rejected" : "All "+s.rejected+" vendors rejected";
+  if(s.expired && !s.rejected) return s.expired===1 ? "Invite timed out" : "All "+s.expired+" invites timed out";
+  return "No vendor responded";
+}
 async function loadDashboard(){
   showView("dashboard");
   $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
   let recs = await getTickets(null);
   await autoPromoteScheduledTickets(recs);
+  // Before renderReportLists(), which is what calls rowHtml().
+  await loadInviteStateForDashboard();
   sortTicketsNewestFirst(recs);
   renderReportLists(recs);
   // Real-time-ish mechanic-update notifications (2026-08-07) — silently
@@ -10224,6 +10536,10 @@ function rowHtml(r){
   const ageUrgentMs = (bucket && bucket.name==="New & Open") ? TICKET_AGE_URGENT_MS_NEW : TICKET_AGE_URGENT_MS_MODERATE;
   const ageInfo = showTimer ? ticketAgeText(r, ageUrgentMs) : null;
   const schedInfo = showTimer ? scheduledCountdownText(r) : null;
+  // Sits with the timers rather than replacing the pill: the pill reports the
+  // stored Status, which is genuinely still RSP IRA, and overwriting that text
+  // would misreport the field every other screen reads.
+  const staleInvites = staleInviteChip(r);
   return `<button class="rrow" data-id="${esc(r.ID)}" type="button">
     <span class="avatar">${esc(initials(name))}</span>
     <span class="main">
@@ -10231,9 +10547,10 @@ function rowHtml(r){
       <span class="meta">${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${svc}</span> `:""}${esc(lookupNamesFor(r[CONFIG.vehicleField],OPTIONS.vehicles)||"")} · ${esc(lookupNamesFor(r.Vehicle_Issue,OPTIONS.issues)||"")}</span>
       ${showVendor && vendor ? `<span class="meta">Vendor: ${esc(vendor)}</span>` : ""}
       ${serviceTime ? `<span class="meta">Service Time: ${esc(serviceTime)}</span>` : ""}
-      ${(ageInfo || schedInfo) ? `<span class="meta timers">
+      ${(ageInfo || schedInfo || staleInvites) ? `<span class="meta timers">
         ${ageInfo ? `<span class="timer-badge${ageInfo.urgent?" timer-urgent":""}" data-timer-age="${esc(r.Added_Time||"")}" data-timer-urgent-ms="${ageUrgentMs}">⏱ ${esc(ageInfo.text)}</span>` : ""}
         ${schedInfo ? `<span class="timer-badge${schedInfo.urgent?" timer-urgent":""}" data-timer-sched="${esc(serviceTime||"")}">📅 ${esc(schedInfo.text)}</span>` : ""}
+        ${staleInvites ? `<span class="timer-badge timer-urgent" title="Every vendor invited to this case has either rejected it or run out of time. Open the ticket and use Re-invite, or assign a different vendor.">⚠ ${esc(staleInvites)}</span>` : ""}
       </span>` : ""}
       ${showFlags ? `<span class="flags">
         <span class="flag ${paid?"on":""}">${paid?FLAG_ON:FLAG_OFF}Paid</span>
@@ -13797,6 +14114,11 @@ $("opsMapServiceFilter").onchange=renderOpsMapMarkers;
    closure or payouts.
    ========================================================================= */
 let INVITE_AUDIT_ROWS=null;   // cached per visit; Refresh clears it
+/* What the Invites read actually produced, kept so renderInviteAudit() can
+   show it on screen. A console warning has been asked for twice without one
+   coming back, and screenshots have — so the finding goes where it will
+   actually be seen. Null until a load has run. */
+let INVITE_AUDIT_DIAG=null;
 /* Reads a Zoho date-time into something sortable. Falls back to 0 rather than
    dropping the row — an invite with an unparseable stamp still matters. */
 function iaTimeOf(v){
@@ -13806,10 +14128,23 @@ function iaTimeOf(v){
 /* One row per INVITE. Status is derived from the two fields vendorTicket
    actually writes on Accept/Reject (Service_Acceptance_Next="Yes" and
    Status="RSP REJECT") — see loadInviteStatuses()'s own comment for why those
-   are the reliable signals. Anything else is genuinely still pending. */
+   are the reliable signals.
+
+   "Timed Out" added 2026-10-06, client-reported ("status not showing
+   correct"): invites sent YESTERDAY were still reading PENDING. Unanswered
+   past INVITE_TIMEOUT_MS is not the same thing as awaiting a reply — the
+   vendor stopped being able to accept it two minutes after it was sent.
+   inviteStatusFor(), the per-ticket panel over this same data, has drawn that
+   distinction since 2026-09-10; this table simply never got it. Same source,
+   same constant, so the two screens cannot disagree.
+
+   Resolved states are checked FIRST: a vendor who accepted or rejected an
+   hour ago has responded, and must never be relabelled as having timed out. */
 function iaStatusOf(inv){
   if(String(inv.Service_Acceptance_Next||"").trim().toLowerCase()==="yes") return "Accepted";
   if(String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1) return "Rejected";
+  const sentAt = inviteStartedAtDate(inv);
+  if(sentAt && (Date.now()-sentAt.getTime()) > INVITE_TIMEOUT_MS) return "Timed Out";
   return "Pending";
 }
 async function loadInviteAudit(){
@@ -13831,10 +14166,31 @@ async function loadInviteAudit(){
       const rjRes=await fn({ app_name:CONFIG.appName, report_name:CONFIG.taskRejectionsReport, field_config:"all", max_records:1000 });
       if(rjRes && rjRes.code===3000 && Array.isArray(rjRes.data)) rejections=rjRes.data;
     }catch(e){ console.warn("[Get-Rescue] loadInviteAudit: Task_Rejections read failed — reasons/times will be blank", e); }
-    // Ticket id -> Case ID label, from whatever the dashboard already holds.
-    // Never fetched again: this screen is an audit view, not a ticket loader.
+    // Ticket id -> Case ID label. The dashboard list is used first because it
+    // is already in memory and free.
     const labelById={};
     (state.tickets||[]).forEach(function(t){ if(t && t.ID!=null) labelById[String(t.ID)]=caseLabel(t); });
+    // ...then the tickets it does NOT hold are fetched — 2026-10-06. This map
+    // used to be dashboard-only ("never fetched again"), but an audit spans
+    // closed and older cases the dashboard list does not carry, so those rows
+    // fell through to a bare numeric record id. One extra read, wrapped so a
+    // failure degrades to exactly the previous behaviour rather than emptying
+    // the table.
+    const wantedIds={};
+    invites.forEach(function(inv){
+      const tid=String(unwrapLookup(inv.RSID)||"");
+      if(tid && labelById[tid]==null) wantedIds[tid]=true;
+    });
+    if(Object.keys(wantedIds).length){
+      try{
+        const tkRes=await fn({ app_name:CONFIG.appName, report_name:CONFIG.reportName, field_config:"all", max_records:1000 });
+        if(tkRes && tkRes.code===3000 && Array.isArray(tkRes.data)){
+          tkRes.data.forEach(function(t){
+            if(t && t.ID!=null && labelById[String(t.ID)]==null) labelById[String(t.ID)]=caseLabel(t);
+          });
+        }
+      }catch(e){ console.warn("[Get-Rescue] loadInviteAudit: could not resolve Case ID labels — the Ticket column will show record ids instead", e); }
+    }
     INVITE_AUDIT_ROWS=invites.map(function(inv){
       const ticketId=String(unwrapLookup(inv.RSID)||"");
       const who=lookupNamesFor(inv.Vendor, OPTIONS.vendors)
@@ -13863,6 +14219,29 @@ async function loadInviteAudit(){
     // Newest activity first — an ops manager is looking at what just happened.
     INVITE_AUDIT_ROWS.sort(function(a,b){ return b.sortAt-a.sortAt; });
     console.log("[Get-Rescue] loadInviteAudit:", INVITE_AUDIT_ROWS.length, "invite row(s) from", invites.length, "Invites and", rejections.length, "Task_Rejections.");
+    /* HOW MANY ROWS COULD NAME THEIR TICKET? — 2026-10-06.
+       Every Ticket cell showing "—" means unwrapLookup(inv.RSID) returned
+       nothing, which the Mechanic column rules out as a helper or read
+       problem: it resolves inv.Vendor the same way, on the same row, from the
+       same response. The remaining explanation is that RSID is missing from
+       the Invites REPORT LAYOUT while present on the form — writes keep
+       succeeding, reads come back undefined, and nothing errors.
+       This is also what would empty every ticket's Vendor Invite Status
+       panel, since loadInviteStatuses() filters on this exact value.
+       The first raw row is printed so the real field names are visible rather
+       than inferred. */
+    const withTicket=INVITE_AUDIT_ROWS.filter(function(r){ return r.ticketId; }).length;
+    INVITE_AUDIT_DIAG = {
+      total: invites.length,
+      withTicket: withTicket,
+      fields: invites.length ? Object.keys(invites[0]) : [],
+      rawRsid: invites.length ? JSON.stringify(invites[0].RSID) : "(no rows)"
+    };
+    if(invites.length && withTicket===0){
+      console.warn("[Get-Rescue] loadInviteAudit: NOT ONE of "+invites.length+" invites could resolve its RSID, so the Ticket column is blank and every per-ticket Vendor Invite Status panel will also be empty. RSID is almost certainly missing from the "+CONFIG.invitesReport+" LAYOUT (it exists on the form — syncInvites writes it successfully). FIX: Zoho Creator -> "+CONFIG.invitesReport+" -> Configure Fields -> add RSID (and check Invited_At while there). Raw RSID on the first row:", invites[0] && invites[0].RSID, "| every field name that report actually returned:", invites[0] && Object.keys(invites[0]));
+    } else if(withTicket < invites.length){
+      console.warn("[Get-Rescue] loadInviteAudit: "+(invites.length-withTicket)+" of "+invites.length+" invites have no readable RSID and will show a blank Ticket. Raw RSID on the first such row:", (invites.find(function(x){ return !String(unwrapLookup(x.RSID)||""); })||{}).RSID);
+    }
   }catch(e){
     console.warn("[Get-Rescue] loadInviteAudit failed", e);
     INVITE_AUDIT_ROWS=[];
@@ -13876,10 +14255,14 @@ function renderInviteAudit(){
   const shown=q ? rows.filter(function(r){
     return (r.ticket+" "+r.ticketId+" "+r.who+" "+r.status+" "+r.reason).toLowerCase().indexOf(q)!==-1;
   }) : rows;
-  const counts={Accepted:0,Rejected:0,Pending:0};
+  const counts={Accepted:0,Rejected:0,"Timed Out":0,Pending:0};
   shown.forEach(function(r){ counts[r.status]=(counts[r.status]||0)+1; });
+  // Timed out is only named when there ARE any, so the usual case reads
+  // exactly as it did before rather than carrying a permanent "0 timed out".
+  const timedOut = counts["Timed Out"];
   $("iaSub").textContent = shown.length+" invite"+(shown.length===1?"":"s")+" · "+
-    counts.Accepted+" accepted · "+counts.Rejected+" rejected · "+counts.Pending+" pending";
+    counts.Accepted+" accepted · "+counts.Rejected+" rejected · "+
+    (timedOut ? (timedOut+" timed out · ") : "")+counts.Pending+" pending";
   if(!shown.length){
     host.innerHTML=`<div class="hint" style="display:block;padding:16px">${rows.length?"No invite matches that filter.":"No invites have been sent yet."}</div>`;
     return;
@@ -13887,8 +14270,11 @@ function renderInviteAudit(){
   const TH='style="text-align:left;padding:8px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--worktop);border-bottom:1px solid var(--line)"';
   const TD='style="padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top"';
   const pill=function(st){
-    const c = st==="Accepted" ? "var(--ok)" : (st==="Rejected" ? "var(--stop)" : "var(--wait)");
-    const bg= st==="Accepted" ? "var(--ok-soft)" : (st==="Rejected" ? "var(--stop-soft)" : "var(--wait-soft)");
+    // Timed Out is deliberately MUTED, not red: nobody did anything wrong, the
+    // invite simply expired. Same colour inviteStatusFor() gives it on the
+    // per-ticket panel, so one state never reads as two different things.
+    const c = st==="Accepted" ? "var(--ok)" : (st==="Rejected" ? "var(--stop)" : (st==="Timed Out" ? "var(--muted)" : "var(--wait)"));
+    const bg= st==="Accepted" ? "var(--ok-soft)" : (st==="Rejected" ? "var(--stop-soft)" : (st==="Timed Out" ? "var(--worktop)" : "var(--wait-soft)"));
     return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${bg};color:${c};font-family:var(--f-mono);font-size:10px;letter-spacing:.04em">${esc(st.toUpperCase())}</span>`;
   };
   const cell=function(v){ const t=String(v==null?"":v).trim(); return t?esc(t):`<span style="color:var(--muted)">—</span>`; };
@@ -13898,11 +14284,76 @@ function renderInviteAudit(){
     return "<tr>"+[cell(r.ticket),cell(r.who),pill(r.status),cell(r.invitedAt),cell(r.respondedAt),cell(r.reason)]
       .map(function(v){ return "<td "+TD+">"+v+"</td>"; }).join("")+"</tr>";
   }).join("");
-  host.innerHTML=`<div style="overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)">`+
+  /* Shown whenever ANY row cannot name its ticket — 2026-10-06, second pass.
+     The first version fired only when NOT ONE row resolved, which hid it in
+     precisely the case that is actually happening: older invites resolve, the
+     newest do not. That mix is the most useful fact on this screen. A missing
+     report column would blank EVERY row equally — it cannot blank only the
+     recent ones — so a partial failure rules the layout out and points at the
+     write instead. Suppressing the banner there threw the answer away. */
+  let diagBanner="";
+  const diag=INVITE_AUDIT_DIAG;
+  const missingTickets = diag ? (diag.total - diag.withTicket) : 0;
+  if(diag && diag.total && missingTickets>0){
+    const hasRsid = diag.fields.indexOf("RSID")>=0;
+    let why;
+    if(!hasRsid){
+      why = "RSID is <b>not</b> among the fields this report returned, so it is not on the <b>"+esc(CONFIG.invitesReport)+"</b> layout. Zoho Creator \u2192 Reports \u2192 "+esc(CONFIG.invitesReport)+" \u2192 edit the report \u2192 add RSID to the displayed columns. The form builder is a different screen \u2014 RSID being there is not enough.";
+    } else if(diag.withTicket===0){
+      why = "RSID <b>is</b> on the layout but is empty on every row, so no invite is linked to a ticket at all. Raw value read back: <code>"+esc(diag.rawRsid)+"</code>.";
+    } else {
+      /* The decisive case. Some rows carry a ticket and some do not, out of
+         ONE report read — so the field is being returned and the layout is
+         fine. What differs is the data, meaning those invites were saved
+         without a usable RSID. */
+      why = "RSID <b>is</b> on the layout and <b>"+diag.withTicket+"</b> invite(s) resolve their ticket correctly, so the report is fine \u2014 these "+missingTickets+" were <b>saved without a usable RSID</b>. That is a write problem, not a layout one. Assign a vendor to a ticket now and refresh: if the new row shows its ticket, it is already fixed and only older invites are affected.";
+    }
+    diagBanner = `<div class="hint" style="display:block;padding:12px 14px;margin-bottom:12px;border:1px solid var(--line);border-radius:12px;background:var(--worktop);font-size:12px;line-height:1.6">`+
+      `<b>${missingTickets} of ${diag.total} invites cannot name their ticket.</b><br>${why}<br>`+
+      `<span style="color:var(--muted)">Fields this report returned: <code>${esc(diag.fields.join(", ")||"(none)")}</code></span></div>`;
+  }
+  host.innerHTML=diagBanner+`<div style="overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)">`+
     `<table style="border-collapse:collapse;width:100%;font-size:12.5px">`+
     `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 $("vendorAcctBtn").onclick=loadVendorAcct;
+/* Sends an expired invite back out by moving its clock to now.
+
+   Invited_At is the ONLY thing that decides expiry — the vendor app's own
+   2-minute filter and this panel's Timed Out label both derive from it, and
+   nothing was ever written to the ticket or the invite when it lapsed. So
+   re-stamping it is the whole operation: the existing row is reused rather
+   than duplicated, and the case reappears on that vendor's dashboard on their
+   next poll.
+
+   Status and Service_Acceptance_Next are explicitly NOT cleared. A timed-out
+   invite has neither set (that is what makes it timed out), so clearing them
+   would write blanks over nothing while risking an "Invalid column value" on
+   this report's own strictness — a failure mode this project has paid for
+   several times. */
+async function reinviteVendor(inviteId, btn){
+  if(!inviteId) return;
+  if(btn){ btn.disabled=true; btn.textContent="Sending…"; }
+  try{
+    await apiUpdateReport(CONFIG.invitesReport, inviteId, { Invited_At: fmtDateTime(new Date()) });
+    // Re-read rather than patching the cached row, so the panel shows what
+    // Zoho actually stored rather than what we hoped it stored.
+    await loadInviteStatuses(state.recordId);
+    const host=$("assignInviteStatus"); if(host) host.innerHTML=assignInviteStatusHtml();
+    toast("Invite sent again — the vendor has 2 minutes","ok");
+  }catch(e){
+    console.warn("[Get-Rescue] reinviteVendor failed for invite", inviteId, e);
+    if(btn){ btn.disabled=false; btn.textContent="Re-invite"; }
+    toast((e&&e.message)||"Could not re-invite","err");
+  }
+}
+/* Delegated: the panel is re-rendered on every step change, so a listener
+   bound to the buttons themselves would be lost. #assignInviteStatus is in the
+   static markup and survives. */
+$("assignInviteStatus").addEventListener("click", function(e){
+  const btn = e.target.closest("[data-reinvite]");
+  if(btn) reinviteVendor(btn.getAttribute("data-reinvite"), btn);
+});
 $("inviteAuditBtn").onclick=loadInviteAudit;
 $("inviteAuditBack").onclick=function(){ showView("dashboard"); };
 $("inviteAuditRefresh").onclick=function(){ INVITE_AUDIT_ROWS=null; loadInviteAudit(); };
@@ -14184,7 +14635,18 @@ async function boot(){
   $("opsMapBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // Vendor Accounting Level 1 (2026-09-04) — same gate as Ops Map above.
   $("vendorAcctBtn").style.display = IS_OPS_MANAGER ? "" : "none";
-  $("inviteAuditBtn").style.display = IS_OPS_MANAGER ? "" : "none";
+  // VISIBLE TO EVERY AGENT — 2026-10-06, client feedback item 6 ("identify
+  // where the Reject/Accept table is located... and where it can be
+  // accessed"). It existed and worked; it was simply behind the same
+  // IS_OPS_MANAGER gate as Ops Map and Vendor Accounting, so most agents had
+  // no way to reach it and it read as missing. Unlike those two it carries no
+  // money and no controls — it is a read-only record of who was invited and
+  // what they answered, which is exactly what an agent chasing a case needs.
+  // Deliberately NOT folded into IS_OPS_MANAGER: that flag has a live,
+  // unresolved risk recorded against it (LOGIN_EMAIL may resolve to the app's
+  // own account rather than the portal user), and leaving this dependent on
+  // it would mean the table silently vanishes again if that resurfaces.
+  $("inviteAuditBtn").style.display = "";
   // Vendor Accounting Level 2 (2026-09-04) — same gate as Level 1 above.
   $("accountsPayableBtn").style.display = IS_OPS_MANAGER ? "" : "none";
   // GST export (2026-09-25) — same gate as the three ops buttons above.
