@@ -2478,7 +2478,7 @@ async function acceptService(){
        Template 9 takes no parameters. Failures are logged, never toasted: SEND 8
        already reports its own outcome and this must not turn one failure into two
        error messages on the vendor's screen. */
-    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_VENDOR_NAME||"-", MY_VENDOR_PHONE||"-", (dist&&dist.etaMins)?String(Math.round((dist.etaMins/60)*10)/10):"-"])
+    sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_VENDOR_NAME||"-", MY_VENDOR_PHONE||"-", customerEtaText(dist&&dist.etaMins)||"-"])
       .then(function(){ return sendWhatsAppTemplate(r[CONFIG.phoneField], "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []); })
       .then(function(ok9){ if(!ok9) console.warn("[GR] SEND 9 extra-charges advisory failed (non-blocking) for ticket", r.ID); })
       .catch(function(e){ console.warn("[GR] SEND 8/9 chain threw (non-blocking)", e); });
@@ -4764,6 +4764,21 @@ async function onToggleClick(){
 $("availToggle").onclick=onToggleClick;
 
 const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+/* The customer-facing ETA - 2026-10-08, see this change's own note, including
+   the WhatsApp template dependency. Flip ETA_AS_CLOCK_TIME to false to go back
+   to the hours-to-one-decimal the approved template text still expects. */
+const ETA_AS_CLOCK_TIME = true;
+const ETA_CUSTOMER_PAD_MINS = 10;   // spec 5.4, vendor-app cases only
+function fmtClockTime24(d){ return pad(d.getHours())+":"+pad(d.getMinutes()); }
+/* This app only ever sends at the moment the VENDOR accepts in their own app,
+   so acceptance time is now and the +10 always applies - the agent-on-behalf
+   half of the rule lives in getRescueTicket, which is where that case runs. */
+function customerEtaText(etaMins){
+  const mins=Number(etaMins);
+  if(!mins || isNaN(mins)) return "";
+  if(!ETA_AS_CLOCK_TIME) return String(Math.round((mins/60)*10)/10);
+  return fmtClockTime24(new Date(Date.now()+(mins+ETA_CUSTOMER_PAD_MINS)*60000));
+}
 function pad(n){ return n<10?"0"+n:""+n; }
 function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":00"; }
 

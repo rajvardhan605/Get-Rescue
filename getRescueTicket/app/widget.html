@@ -2899,7 +2899,10 @@ const STAGES = [
         // expectedArrivalTime() is still used for the AGENT-facing toast (a
         // clock time is what an agent wants to see confirmed); the customer's
         // message carries the ETA in hours, per the template.
-        const eta=expectedArrivalTime(r);
+        // The value actually SENT - 2026-10-08. This used to show
+        // expectedArrivalTime(), which is a different rule and a different
+        // format, so the agent could be told one time and the customer another.
+        const eta=customerEtaText(r)||expectedArrivalTime(r);
         sendRescuerEtaMessage(r)
           .then(function(ok){ toast(ok?(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer"):"Couldn't send the WhatsApp ETA message — check console", ok?"ok":"err"); });
       } },
@@ -3217,7 +3220,10 @@ const STAGES = [
         // expectedArrivalTime() is still used for the AGENT-facing toast (a
         // clock time is what an agent wants to see confirmed); the customer's
         // message carries the ETA in hours, per the template.
-        const eta=expectedArrivalTime(r);
+        // The value actually SENT - 2026-10-08. This used to show
+        // expectedArrivalTime(), which is a different rule and a different
+        // format, so the agent could be told one time and the customer another.
+        const eta=customerEtaText(r)||expectedArrivalTime(r);
         sendRescuerEtaMessage(r)
           .then(function(ok){ toast(ok?(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer"):"Couldn't send the WhatsApp ETA message — check console", ok?"ok":"err"); });
       } },
@@ -5224,12 +5230,71 @@ function vendorOriginFor(record, base){
    agent-entered location otherwise. An agent running a ticket on a vendor's
    behalf never produces a Reach GPS, so that path is unchanged — this can
    only ever make the figure more accurate, never less. */
+/* The spec's locations E, F and B as raw points - null when the vendor did not
+   run the ticket in their app, or the fix was never recorded. Separate from
+   vendorReachPointFor() below, which always returns SOMETHING (falling back to
+   the agent-entered breakdown location): the branch conditions added 2026-10-08
+   need to know whether the vendor's own position actually exists. */
+function vendorReachGps(record){
+  if(!vendorRanTicketInApp(record)) return null;
+  const lat=parseCoord(record.Reach_Location_Lat), lon=parseCoord(record.Reach_Location_Lon);
+  return (lat!=null && lon!=null) ? {lat:lat, lon:lon} : null;
+}
+function vendorCancelGps(record){
+  if(!vendorRanTicketInApp(record)) return null;
+  const lat=parseCoord(record.Cancel_Location_Lat), lon=parseCoord(record.Cancel_Location_Lon);
+  return (lat!=null && lon!=null) ? {lat:lat, lon:lon} : null;
+}
+/* Location B - where the vendor actually stood when they tapped Reached Drop. */
+function vendorDropGps(record){
+  if(!vendorRanTicketInApp(record)) return null;
+  const lat=parseCoord(record.RSP_Drop_Latitude), lon=parseCoord(record.RSP_Drop_Longitude);
+  return (lat!=null && lon!=null) ? {lat:lat, lon:lon} : null;
+}
 function vendorReachPointFor(record, bLat, bLon){
   if(vendorRanTicketInApp(record)){
     const lat=parseCoord(record.Reach_Location_Lat), lon=parseCoord(record.Reach_Location_Lon);
     if(lat!=null && lon!=null) return { lat:lat, lon:lon, source:"vendor arrival GPS (Reach_Location_*)" };
   }
   return { lat:bLat, lon:bLon, source:"breakdown location (agent entry)" };
+}
+/* Roundtrip_Distance, written the moment the ticket is CONFIRMED - 2026-10-08,
+   client's edited spec: "the trigger will be when the ticket is confirmed @ the
+   time that Task Confirmation Time is updated."
+
+   Office-based and agent-entry-based in both service types, exactly as the
+   spec's two Roundtrip_Distance rows state - no vendor GPS is involved, which
+   is why it can be computed this early at all.
+
+   THE CLOSURE BACKFILL IS LEFT ALONE. It only ever fills this field when it is
+   empty, so once this has written a value that pass skips it. Every case this
+   cannot serve - a TOW confirmed before its drop location is known, a ticket
+   with no breakdown coordinates yet - returns without writing and is still
+   filled at closure exactly as before. */
+async function writeRoundtripAtConfirmation(){
+  const r=state.record;
+  if(!state.recordId || !r) return;
+  if(!String(r.Confirmation_Time||"").trim()) return;              // not confirmed yet
+  if(!(r.Roundtrip_Distance==null || r.Roundtrip_Distance==="")) return;  // never overwritten
+  const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+  if(bLat==null || bLon==null) return;
+  const office={lat:OFFICE_LAT, lon:OFFICE_LON};
+  let legs=[office,{lat:bLat,lon:bLon},office];
+  if(String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"){
+    const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
+    // No drop location yet - the TOW formula needs one, so this is left for
+    // the closure backfill rather than writing a repair-shaped figure.
+    if(dLat==null || dLon==null){
+      console.log("[Get-Rescue] writeRoundtripAtConfirmation: TOW ticket confirmed with no drop location yet - Roundtrip_Distance is left for Agent Closure to fill.");
+      return;
+    }
+    legs=[office,{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},office];
+  }
+  const km=await legDistanceKm(legs);
+  if(km==null) return;
+  r.Roundtrip_Distance=km;
+  await updateTicket(state.recordId, { Roundtrip_Distance: km });
+  console.log("[Get-Rescue] writeRoundtripAtConfirmation: Roundtrip_Distance set to "+km+" km at Task Confirmation Time "+r.Confirmation_Time+".");
 }
 async function runClosureDistanceCalculations(record){
   try{
@@ -5306,6 +5371,18 @@ async function runClosureDistanceCalculations(record){
               console.log("[Get-Rescue] TOW cancel round-trip mid-point:", midSource, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
               legs=[base,mid,base];
             }
+            /* SPEC BRANCH 2 - 2026-10-08. "vendor reach location not null and
+               vendor drop location = null: Vendor Base -> vendor reach ->
+               Vendor Base." Only reached when neither branch above produced
+               legs, so it can add a figure where there was none and can never
+               replace one - see this change's own note on the ordering. */
+            if(!legs){
+              const reachGps=vendorReachGps(record);
+              if(reachGps && !vendorDropGps(record)){
+                console.log("[Get-Rescue] TOW round-trip: spec branch 2 - vendor reached (Reach_Location_*) but never recorded a drop position, so the trip is base -> reach -> base. Closure_Status:", record.Closure_Status||"(blank)");
+                legs=[base,reachGps,base];
+              }
+            }
             if(legs){ const km=await legDistanceKm(legs); if(km!=null) record.Vendor_Round_Trip_Distance=km; }
           }
         } else {
@@ -5323,6 +5400,33 @@ async function runClosureDistanceCalculations(record){
               console.log("[Get-Rescue] Vendor_Distance origin:", origin.source, "-> destination:", dest.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
               const km=await legDistanceKm([origin,{lat:dest.lat,lon:dest.lon}]);
               if(km!=null) record.Vendor_Distance=km;
+            }
+          }
+          /* SPEC BRANCH 2 - 2026-10-08. "Else If vendor cancel location = not
+             null: = Cancel Distance (from point no.3)." The block above only
+             ever runs for a COMPLETED repair, so a cancelled one left this
+             empty and the vendor KM fee had nothing to read. Cancel_Distance
+             is the figure the vendor app already wrote for exactly this leg
+             (vendor start -> where they cancelled); it is reused rather than
+             recomputed, which is what the spec says and costs no Google call.
+             Recomputed only if that field is missing. */
+          if(record.Vendor_Distance==null || record.Vendor_Distance===""){
+            const cancelGps=vendorCancelGps(record);
+            if(cancelGps){
+              const already=Number(record.Cancel_Distance);
+              if(!isNaN(already) && already>0){
+                console.log("[Get-Rescue] Vendor_Distance: spec branch 2 - reusing Cancel_Distance ("+already+" km) for a repair ticket the vendor cancelled.");
+                record.Vendor_Distance=already;
+              } else {
+                const origin=vendorOriginFor(record, base);
+                if(origin){
+                  const km=await legDistanceKm([origin,cancelGps]);
+                  if(km!=null){
+                    console.log("[Get-Rescue] Vendor_Distance: spec branch 2 - Cancel_Distance was empty, so vendor start -> cancel point was measured instead:", km, "km.");
+                    record.Vendor_Distance=km;
+                  }
+                }
+              }
             }
           }
         }
@@ -5420,6 +5524,39 @@ function sendCustomerFeedbackRequest(record){
    placeholder must receive a real value and that "Empty strings do not count -
    send a real value, or a dash", with a mismatch returning 422
    message_rejected. */
+/* The customer-facing ETA - 2026-10-08. See this change's own note for the
+   WhatsApp template dependency; ETA_AS_CLOCK_TIME is the one word to flip back
+   to the hours the approved template text still expects. */
+const ETA_AS_CLOCK_TIME = true;
+const ETA_CUSTOMER_PAD_MINS = 10;   // spec 5.4, vendor-app cases only
+function fmtClockTime24(d){ return pad(d.getHours())+":"+pad(d.getMinutes()); }
+/* Spec 5.4, both halves:
+     vendor ran it in their app -> acceptance time + calculated ETA + 10 min
+     agent on behalf            -> acceptance time + Agent ETA override
+   Deliberately NOT expectedArrivalTime(): that one always prefers the override
+   and formats 12-hour, which is right for the agent-facing field and for ETA
+   Met/Missed and wrong for this message. Returns "" when the acceptance time or
+   the minutes are missing, so the caller still sends a dash rather than junk. */
+function customerEtaClock(r){
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  if(!acceptAt) return "";
+  const ranInApp = vendorRanTicketInApp(r);
+  const overrideRaw = isTow ? r.Agent_ETA_Override_TOW : r.Agent_ETA_Override;
+  const hasOverride = overrideRaw!=null && overrideRaw!=="" && !isNaN(Number(overrideRaw));
+  const mins = (!ranInApp && hasOverride) ? Number(overrideRaw) : Number(isTow ? r.ETA_TOW : r.ETA);
+  if(!mins || isNaN(mins)) return "";
+  const padMins = ranInApp ? ETA_CUSTOMER_PAD_MINS : 0;
+  return fmtClockTime24(new Date(acceptAt.getTime()+(mins+padMins)*60000));
+}
+/* What actually goes into {{3}}. Falls back to the hours text whenever the
+   clock time cannot be worked out (no parseable acceptance time yet), which is
+   exactly what was sent before this change. */
+function customerEtaText(r){
+  if(!ETA_AS_CLOCK_TIME) return etaHoursText(r);
+  return customerEtaClock(r) || etaHoursText(r);
+}
 function etaHoursText(r){
   const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const mins=Number(isTow ? r.ETA_TOW : r.ETA)||0;
@@ -5430,14 +5567,14 @@ function sendRescuerEtaMessage(r){
   const rescuerName=lookupNamesFor(r.Assigned_Vendor, OPTIONS.vendors)||"-";
   const vendorRaw=vendorRawForTicket(r);
   const rescuerPhone=(vendorRaw && vendorRaw[CONFIG.vendorPhoneField])||"-";
-  const hrs=etaHoursText(r)||"-";
-  console.log("[Get-Rescue] sendRescuerEtaMessage: template share_rescue_service_details_and_eta | rescuer:", rescuerName, "| phone:", rescuerPhone, "| eta(hrs):", hrs);
+  const etaText=customerEtaText(r)||"-";
+  console.log("[Get-Rescue] sendRescuerEtaMessage: template share_rescue_service_details_and_eta | rescuer:", rescuerName, "| phone:", rescuerPhone, "| eta sent as:", etaText, "| clock format:", ETA_AS_CLOCK_TIME, "| vendor ran it in app:", vendorRanTicketInApp(r));
   /* SEND 8, then SEND 9 — "SEND 8 with vendor/mechanic name and number, AND then
      send 9 after 5 minutes". SEND 9 goes immediately: see the vendor apps' own
      matching comment for why the 5-minute gap needs a scheduled Deluge function
      rather than a timer in a page that will be closed. The resolved value stays
      SEND 8's own result so every existing caller behaves exactly as before. */
-  return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, hrs])
+  return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, etaText])
     .then(function(ok8){
       return sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", [])
         .then(function(ok9){ if(!ok9) console.warn("[Get-Rescue] SEND 9 extra-charges advisory failed (non-blocking)"); return ok8; },
@@ -13869,6 +14006,13 @@ async function saveStep(advance){
     // Invites (2026-08-03) — one record per invited vendor, created right
     // after a successful Assignment-step save. Best-effort/non-blocking,
     // same pattern as the Task_Rejections log the field widgets already use.
+    /* Roundtrip_Distance at Task Confirmation - 2026-10-08. Not tied to one
+       step: Confirmation_Time is stamped by whichever of `create` and
+       `locations` gets there first, so this runs after every save and lets the
+       function itself decide. Non-blocking - a failure here must never cost
+       the agent the save that just succeeded, and closure still backfills. */
+    try{ await writeRoundtripAtConfirmation(); }
+    catch(e){ console.warn("[Get-Rescue] writeRoundtripAtConfirmation failed (non-blocking - Agent Closure will still fill it)", e); }
     if(step.key==="assignment"){
       try{ await syncInvites(state.recordId, state.record.Vendors1); }
       catch(e){ console.warn("[Get-Rescue] syncInvites failed (non-blocking)", e); }
