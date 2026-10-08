@@ -529,6 +529,31 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 			if(isBookingFee)
 			{
 				fieldMap.put("Booking_Fee_Receipt_Time",zoho.currenttime.toString("dd-MMM-yyyy HH:mm:ss"));
+				/* ADVANCE THE TICKET STATUS - 2026-10-08, client-reported: a ticket shows
+				   the green PAID flag and the pill BOOKING FEE PENDING at the same time.
+				
+				   Both are right about their own field, which is the problem. The flag
+				   reads Payment_Status, which this webhook sets. The pill reads Status,
+				   which this webhook never touched - it was only ever recomputed by
+				   quoteStatus() when an AGENT reopened the Quote step and saved. Nobody
+				   does that after a gateway payment, so the ticket sat contradicting
+				   itself on the dashboard until someone happened to open it.
+				
+				   LOCATION PENDING is exactly what quoteStatus() returns for a paid
+				   booking fee, so this writes the value the app would have written.
+				   Guarded on the ticket still being at one of the two early statuses -
+				   the same statusStillEarly() rule quoteStatus uses - so a ticket that
+				   has since been assigned, accepted or closed is never dragged back. */
+				curStatus = ifnull(ticketRec.Status,"").toString().trim().toUpperCase();
+				if(curStatus == "SERVICE FEE QUOTE" || curStatus == "BOOKING FEE PENDING")
+				{
+					fieldMap.put("Status","LOCATION PENDING");
+					info "paymentWebhook - advancing Status from [" + curStatus + "] to LOCATION PENDING, matching what the Quote step would set for a paid booking fee.";
+				}
+				else
+				{
+					info "paymentWebhook - Status left as [" + curStatus + "]: the ticket has already moved past the booking-fee stage, so advancing it would undo real progress.";
+				}
 			}
 			if(isBookingFee)
 			{
@@ -643,6 +668,13 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 				if(isBookingFee)
 				{
 					updateRec.Booking_Fee_Receipt_Time = zoho.currenttime;
+					// Same Status advance as the PATCH path - the two write paths must not
+					// disagree, which this file has been bitten by before.
+					curStatusD = ifnull(updateRec.Status,"").toString().trim().toUpperCase();
+					if(curStatusD == "SERVICE FEE QUOTE" || curStatusD == "BOOKING FEE PENDING")
+					{
+						updateRec.Status = "LOCATION PENDING";
+					}
 				}
 				// Payment_Method was MISSING from this fallback — 2026-10-05. The PATCH
 				// path above has always set it (fieldMap.put("Payment_Method",...)), so

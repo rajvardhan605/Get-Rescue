@@ -395,6 +395,49 @@ async function sendWhatsAppTemplate(phone, templateName, params){
 }
 // Writes to THIS technician's own Invites record for a given ticket — see
 // vendorTicket's own updateMyInvite() for the fuller comment (same pattern).
+/* Finds this login's invite for a ticket WITHOUT needing their record id.
+   Only called once the id-based paths in updateMyInvite() have failed - see
+   that call site's own note for why they can, and why neither rule here can
+   pick somebody else's row. */
+async function findMyInviteByTicket(ticketId){
+  try{
+    const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
+    // Only rows of this app's own kind: one ticket carries both vendor and
+    // technician invites, and they are different people.
+    const forTicket=all.filter(function(inv){
+      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      const who=lookupId(inv.Technician);
+      return who!=null && String(who).trim()!=="";
+    });
+    if(!forTicket.length){ console.warn("[Get-Rescue] findMyInviteByTicket: ticket "+ticketId+" has no Technician invite row at all, so there is nothing to mark."); return null; }
+    if(forTicket.length===1){
+      console.warn("[Get-Rescue] findMyInviteByTicket: identity never resolved, but ticket "+ticketId+" has exactly ONE technician invite (row "+forTicket[0].ID+"), and this device is holding that ticket - so the response is being recorded against it.");
+      return forTicket[0];
+    }
+    const myName=String(MY_TECH_NAME||"").trim().toLowerCase();
+    if(!myName){ console.warn("[Get-Rescue] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and this login has no resolved name to tell them apart, so the response is NOT being recorded. Giving up rather than guessing a row."); return null; }
+    const byName=forTicket.filter(function(inv){
+      const v=inv.Technician;
+      const shown=(v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.Name||"") : "";
+      return shown.trim().toLowerCase()===myName;
+    });
+    if(byName.length===1){
+      console.warn("[Get-Rescue] findMyInviteByTicket: identity never resolved, but exactly one of this ticket's "+forTicket.length+" invites names \""+MY_TECH_NAME+"\" (row "+byName[0].ID+") - recording the response against it.");
+      return byName[0];
+    }
+    console.warn("[Get-Rescue] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and "+byName.length+" of them match the name \""+MY_TECH_NAME+"\", so there is no single right row. The response is NOT being recorded.");
+    return null;
+  }catch(e){ console.warn("[Get-Rescue] findMyInviteByTicket threw - the response is not being recorded, exactly as before this fallback existed", e); return null; }
+}
+/* The agent's RESPONDED column. A reject has always had a time (joined from
+   Task_Rejections.Rejected_At); an accept has never had one anywhere. Its OWN
+   update, deliberately: an unknown column can fail a whole Creator update,
+   and the accept itself has already landed by the time this runs. */
+async function stampInviteResponse(inviteId, data){
+  if(!data || (!data.Service_Acceptance_Next && !data.Status)) return;
+  try{ await apiUpdateReport(CONFIG.invitesReport, inviteId, { Responded_At: fmtDateTime(new Date()) }); }
+  catch(e){ console.warn("[Get-Rescue] stampInviteResponse: Responded_At was not written on invite "+inviteId+" - the response itself IS saved. If the agent's RESPONDED column stays blank, add Responded_At (Single Line) to the Invites FORM and to the Invites report layout.", e); }
+}
 async function updateMyInvite(ticketId, data){
   let invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
   if(!invite || invite.ID==null){
@@ -407,7 +450,7 @@ async function updateMyInvite(ticketId, data){
     // instead of trusting the possibly-stale cache.
     if(currentTechRecord){
       try{
-        const all=await apiGetReport(CONFIG.invitesReport, null, 200);
+        const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
         const fresh=all.find(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Technician))===String(currentTechRecord.id); });
         if(fresh){
           invite=fresh;
@@ -418,9 +461,14 @@ async function updateMyInvite(ticketId, data){
       }catch(e){ console.warn("[Get-Rescue] updateMyInvite: retry lookup failed", e); }
     }
   }
+  // Last resort, and the one that does not need an id - see
+  // findMyInviteByTicket() above. Reached only when both paths above came
+  // back empty, which is precisely when nothing used to be written at all.
+  if(!invite || invite.ID==null) invite = await findMyInviteByTicket(ticketId);
   if(!invite || invite.ID==null){ console.warn("[Get-Rescue] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentTechRecord resolved:", !!currentTechRecord); return; }
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
+  await stampInviteResponse(invite.ID, data);
 }
 // Real bug fixed (2026-08-07, same root cause diagnosed live in getRescueTicket
 // — "Invalid Configuration...!!!" on every upload) — see vendorTicket's own
@@ -1258,7 +1306,7 @@ const state = { tickets:[], current:null, photos:{}, files:{}, inviteByTicketId:
 // that field for a technician invite (a Zoho Lookup can't point at two
 // different forms) — matching now uses the new, correct `Technician` field.
 async function loadMyInvites(){
-  const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+  const all = await apiGetReport(CONFIG.invitesReport, null, 1000);
   console.log("[Get-Rescue] loadMyInvites: fetched "+all.length+" total Invites records; currentTechRecord.id="+(currentTechRecord&&currentTechRecord.id));
   // Real bug fixed (2026-08-05, same root cause found in vendorTicket's own
   // matching comment the same day): inv.Technician is a bare Technicians_Report

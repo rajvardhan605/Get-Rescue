@@ -724,7 +724,7 @@ img,svg{max-width:100%}
 
 <div class="modal" id="modal"><div class="box">
   <h4 id="mTitle">Are you sure?</h4>
-  <p id="mMsg"></p>
+  <p id="mMsg" style="white-space:pre-line"></p>
   <div class="row"><button class="btn ghost" id="mNo" type="button">No</button><button class="btn danger" id="mYes" type="button">Yes</button></div>
 </div></div>
 
@@ -1378,6 +1378,21 @@ const EARLY_STATUSES=["","SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQ
    STAGES, alongside EARLY_STATUSES/quoteStatus() — the other status/payment
    predicates STAGES entries reference) rather than inline inside the array
    itself, which can only ever hold object-literal elements, not statements. */
+/* One name for "the booking fee has been collected" - 2026-10-08. Both the
+   readonly lock and Payment_Method's own default key off this exact test, and
+   they were drifting apart as separate inline copies. Payment_Status is the
+   field the Booking Fee stage owns at this point in the flow; bookingFeeConfirmedPaid()
+   below is a DIFFERENT question (asked at Closure, long after this same field
+   has been overwritten by the Remaining Fee stage - see its own comment). */
+function bookingFeeAlreadyPaid(s){ return String((s&&s.Payment_Status)||"").toUpperCase()==="PAID"; }
+/* The BF Payment Method the agent is actually looking at: the stored value,
+   or the same default the dropdown falls back to. Read-only - see this
+   change's own note for why a hint must not read the raw record here. */
+function bfMethodShown(s){
+  const stored=String((s&&s.Payment_Method)||"").trim();
+  if(stored) return stored;
+  return (Number(s && s.Booking_Fee)>0 && !bookingFeeAlreadyPaid(s)) ? "Cash" : "";
+}
 function remainingFeePaidOnline(s){ return s.Payment_Method_Final==="Payment Gateway" && s.Payment_received==="Yes"; }
 /* bookingFeeConfirmedPaid(r) / remainingFeeConfirmedPaid(r) (2026-08-31, user
    spec — "VALIDATIONS ON AGENT CLOSURE") — both feed saveClosure()'s own
@@ -1720,7 +1735,11 @@ const STAGES = [
     // itself stays editable per the earlier user-confirmed decision — this
     // only locks Booking_Fee once that flip has actually been made.
     { n:"Booking_Fee", l:"Booking Fee", t:"number", recompute:true, row:"rate3",
-      readonly:(s)=>String(s.Payment_Status||"").toUpperCase()==="PAID" },
+      // The grey box now says why - 2026-10-08, client asked exactly this
+      // ("why booking fee is not editable"). Not TOW-specific: this stage and
+      // this field are shared by both service types, and PAID is the only lock.
+      readonly:(s)=>bookingFeeAlreadyPaid(s),
+      hint:(s)=> bookingFeeAlreadyPaid(s) ? "Locked because the booking fee is marked PAID - the amount cannot be changed once it has been collected. Set BF Payment Status back to Pending to edit it." : "" },
     { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true, row:"rate3" },
     /* Client_Charge / Rescue_Charge (2026-08-17, user-provided spec — On-Demand
        Invoicing / Vendor & Client Accounting prep): "Add 2 fields next to each
@@ -2144,7 +2163,16 @@ const STAGES = [
        reqFile below - so a fee of 0 could not be saved at all without attaching
        a receipt for money nobody collected. The default only ever applied when
        nothing was stored, so a method an agent actually picked is untouched. */
-    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:(s)=> (Number(s && s.Booking_Fee)>0) ? "Cash" : "", row:"rate5" },
+    /* bookingFeeAlreadyPaid added to the default 2026-10-08 - see this
+       change's own note. PAID with nothing stored means the method is
+       genuinely unknown (paymentWebhook's retry drops it), and guessing Cash
+       is what made the receipt photo mandatory on a gateway payment. */
+    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"],
+      default:(s)=> (Number(s && s.Booking_Fee)>0 && !bookingFeeAlreadyPaid(s)) ? "Cash" : "",
+      hint:(s)=> bookingFeeAlreadyPaid(s) && !(s && s.Payment_Method)
+        ? "This booking fee is already marked PAID but no method was recorded - pick how it was actually paid."
+        : "",
+      row:"rate5" },
     // ⚠ NEW field, added 2026-08-07 (user request: "add booking fee
     // transaction id field") — does NOT exist yet in Create_Case; needs
     // creating in Zoho Studio (Single Line Text) before this can actually
@@ -2193,7 +2221,17 @@ const STAGES = [
       // original conditions are unchanged behind it, so a real fee still needs a
       // receipt for every method except Payment Gateway.
       reqFile:(s)=> Number(s && s.Booking_Fee)>0 && !!s.Payment_Method && s.Payment_Method!=="Payment Gateway",
-      hint:"Required unless paid via Payment Gateway." },
+      /* The hint now matches reqFile above, record by record - 2026-10-08.
+         It used to print "Required unless paid via Payment Gateway." on every
+         ticket, including a zero booking fee (excluded since 2026-10-07) and a
+         ticket with no method picked at all. */
+      hint:(s)=> !(Number(s && s.Booking_Fee)>0)
+        ? "No booking fee to collect - a receipt is not required."
+        : (!bfMethodShown(s)
+            ? "Pick a BF Payment Method above; a receipt is then required for every method except Payment Gateway."
+            : (bfMethodShown(s)==="Payment Gateway"
+                ? "Paid through the gateway - a receipt is not required."
+                : "Required for " + bfMethodShown(s) + ".")) },
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
     // editable both here and on `create` (see that stage's own Remarks).
@@ -4950,7 +4988,7 @@ async function syncInvites(recordId, vendorNames){
   // matching RSID's own unwrapped id instead — same pattern loadMyInvites()
   // in vendorTicket already uses successfully for this identical field.
   try{
-    const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+    const all = await apiGetReport(CONFIG.invitesReport, null, 1000);
     const existing = all.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
     existingVendorIds = existing.map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); }).filter(Boolean);
   }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
@@ -8294,7 +8332,7 @@ async function loadInviteStatuses(recordId){
     // worried about, now confirmed real). Fetches with NO server-side
     // criteria and filters client-side by RSID's own unwrapped id instead —
     // same fix applied to syncInvites()'s own matching read.
-    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:200 });
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:1000 });
     if(r && r.code===3000 && Array.isArray(r.data)){
       state.inviteStatuses = r.data.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
       // Diagnostic (2026-08-07, user-reported live: a vendor's rejection
@@ -8423,7 +8461,20 @@ function pruneSingleVendorIfTicketRejected(){
 }
 function assignInviteStatusHtml(){
   const invites = (state.inviteStatuses||[]).filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; });
-  if(!invites.length) return "";
+  /* An empty panel used to render as nothing at all, which reads the same as
+     "no vendors invited" and the same as a read that came back empty - and was
+     reported as the status simply not showing. It now names which it is. */
+  if(!invites.length){
+    const picked=(Array.isArray(state.record.Vendors1)?state.record.Vendors1:[]).filter(Boolean);
+    if(!picked.length) return "";
+    return `<div class="form-card" style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Vendor Invite Status</h3>
+      <div class="va-hint" style="display:block;margin:0;color:var(--muted)">
+        ${picked.length} vendor(s) are selected above, but no invite record could be read back for this ticket, so there is no accept or reject status to show yet.
+        An invite record is created when this Assignment step is <b>saved</b> — if it has been saved already, open <b>Accept / Reject</b> from the dashboard: the banner there says whether the invites exist and whether they can name their ticket.
+      </div>
+    </div>`;
+  }
   /* IS THIS CASE ALREADY TAKEN? - 2026-10-07. Two independent signals,
      either sufficient. An invite marked Accepted is direct. A non-blank
      Assigned_Vendor is the second, and it earns its place here because
@@ -9382,6 +9433,23 @@ async function logCallAttempt(recordId, data){
    compare equal. Returns "" for anything shorter than 10 digits, and "" never
    matches — without that guard a 3-digit fragment would pull half the call log
    onto a ticket. */
+/* The ticket's own phone keys, normalised the same way a call row is. Both
+   spellings are read because Create_Case has carried each at different times. */
+function ticketPhoneKeys(record){
+  const keys=[];
+  [record && record.Phone_Number1, record && record[CONFIG.phoneField]].forEach(function(v){
+    const key=callLogPhoneKey(v);
+    if(key && keys.indexOf(key)===-1) keys.push(key);
+  });
+  return keys;
+}
+/* Does this call row come from a number on the ticket? A ticket with no usable
+   phone returns false - unknown is not a match, and saying so is the point. */
+function callLogPhoneMatchesTicket(call, record){
+  const rowKey=callLogPhoneKey(call && call.Phone_Number);
+  if(!rowKey) return false;
+  return ticketPhoneKeys(record).indexOf(rowKey)!==-1;
+}
 function callLogPhoneKey(v){
   const d=String(v==null?"":v).replace(/\D/g,"");
   return d.length>=10 ? d.slice(-10) : "";
@@ -9436,6 +9504,16 @@ async function linkCallByUcid(ucid, recordId){
     const okLink = await writeCallLink(row.ID, recordId);
     if(!okLink) return false;
     console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" linked to ticket "+recordId+".");
+    /* Said out loud when the numbers differ - 2026-10-08. This path links on
+       page load with no confirmation at all, so a pop carrying the wrong UCID
+       attached a call nobody saw. The link still goes through (Ozonetel naming
+       the UCID is the better authority), it is just no longer invisible. */
+    try{
+      const tRec=(typeof state!=="undefined" && state.record && String(state.record.ID||"")===String(recordId)) ? state.record : null;
+      if(tRec && !callLogPhoneMatchesTicket(row, tRec)){
+        toast("Linked the call from "+(String(row.Phone_Number||"").trim()||"an unknown number")+" — note this ticket's number is "+(String(tRec.Phone_Number1||"").trim()||"not set"),"err");
+      }
+    }catch(e){}
     return true;
   }catch(e){
     console.warn("[Get-Rescue] linkCallByUcid failed (non-blocking - the header Link Call button still works)", e);
@@ -9454,7 +9532,7 @@ async function findLinkableCall(recordId, record){
        call id was ever passed. */
     if(POP_CALL_UCID){
       const exact = unlinked.find(function(c){ return String(c.UCID==null?"":c.UCID).trim()===POP_CALL_UCID; });
-      if(exact) return exact;
+      if(exact){ exact._matchedBy="ucid"; return exact; }
       console.log("[Get-Rescue] findLinkableCall: this page carried UCID", POP_CALL_UCID, "but no UNLINKED call log row matches it (already linked, or not written yet) - falling back to phone and recency.");
     }
     if(!unlinked.length) return null;
@@ -9470,7 +9548,17 @@ async function findLinkableCall(recordId, record){
       const k = callLogPhoneKey(c.Phone_Number);
       return k && keys.indexOf(k)!==-1;
     });
-    return sameNumber[0] || newestFirst[0] || null;
+    /* Tagged, not filtered - 2026-10-08, see this change's own note. A phone
+       match is offered exactly as before. The recency fallback is still
+       offered, but carries _matchedBy:"recency" so every surface that shows
+       it can say the number does not match this ticket. */
+    if(sameNumber[0]){ sameNumber[0]._matchedBy="phone"; return sameNumber[0]; }
+    if(newestFirst[0]){
+      newestFirst[0]._matchedBy="recency";
+      console.warn("[Get-Rescue] findLinkableCall: no unlinked call matches this ticket's number, so the NEWEST unlinked call (row "+newestFirst[0].ID+", from "+(newestFirst[0].Phone_Number||"an unknown number")+") is being offered instead. Linking it attaches a call from a different number - the button and the confirmation both say so.");
+      return newestFirst[0];
+    }
+    return null;
   }catch(e){
     console.warn("[Get-Rescue] findLinkableCall: could not read "+CONFIG.callLogReport+" (the Link Call button stays hidden)", e);
     return null;
@@ -9496,7 +9584,14 @@ async function refreshLinkCallButton(){
   if(!call) return;
   LINK_CALL_CANDIDATE = call;
   const who = String(call.Phone_Number||"").trim() || "unknown number";
-  btn.title = "Link the call from "+who+" to this ticket. It will then appear in this ticket's own call history.";
+  /* The label itself carries the warning - 2026-10-08. A title attribute is
+     invisible on a touch screen, and this is the moment the wrong call gets
+     attached. */
+  const phoneOk = call._matchedBy!=="recency" || callLogPhoneMatchesTicket(call, state.record);
+  btn.textContent = phoneOk ? "Link Call" : "Link Call ⚠";
+  btn.title = phoneOk
+    ? ("Link the call from "+who+" to this ticket. It will then appear in this ticket's own call history.")
+    : ("This call is from "+who+", which is NOT this ticket's number ("+(String(state.record&&state.record.Phone_Number1||"").trim()||"not set")+"). It is only being offered because it is the most recent unlinked call. Check it belongs to this ticket before linking.");
   btn.style.display = "";
 }
 /* Writes the link — one field on the CALL row, nothing on the ticket. */
@@ -9506,9 +9601,18 @@ async function linkCallToTicket(){
   if(!call || !state.recordId){ toast("No unlinked call to attach","err"); return; }
   const who = String(call.Phone_Number||"").trim() || "unknown number";
   const when = String(call.Added_Time||"").trim();
-  const ok = await confirmBox("Link this call?",
-    "Attach the call from "+who+(when?(" ("+when+")"):"")+" to "+caseLabel(state.record)+"? It will show in this ticket's call history.",
-    "Link Call");
+  const ticketPhone = String((state.record && state.record.Phone_Number1)||"").trim();
+  const mismatch = !callLogPhoneMatchesTicket(call, state.record);
+  /* A mismatch is stated first and in full - 2026-10-08. This dialog already
+     named the number; it was one clause in a sentence about something else,
+     which is how a call from another number got attached unnoticed. */
+  const body = (mismatch
+      ? ("This call is from "+who+".\nThis ticket's number is "+(ticketPhone||"not set")+".\nThey do NOT match.\n\n")
+      : "")
+    + "Attach the call from "+who+(when?(" ("+when+")"):"")+" to "+caseLabel(state.record)+"? It will show in this ticket's call history.";
+  const ok = await confirmBox(mismatch ? "Link a call from a DIFFERENT number?" : "Link this call?",
+    body,
+    mismatch ? "Link Anyway" : "Link Call");
   if(!ok) return;
   if(btn){ btn.disabled = true; btn.textContent = "Linking…"; }
   try{
@@ -9521,7 +9625,10 @@ async function linkCallToTicket(){
     console.warn("[Get-Rescue] linkCallToTicket failed", e);
     toast((e&&e.message)||"Could not link the call","err");
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = "Link Call"; }
+    // refreshLinkCallButton() restores the right label, warning included -
+    // hardcoding "Link Call" here used to wipe the mismatch marker.
+    if(btn) btn.disabled = false;
+    refreshLinkCallButton();
   }
 }
 async function loadCallLogsForTicket(recordId, record){
@@ -11641,6 +11748,10 @@ function buildField(f){
     // always being truthy (any function is truthy in a ?: check).
     wrap.innerHTML=lab+`<select id="${id}"${(f.disabled||isReadonly(f))?" disabled":""}><option value="">— select —</option>${opts}</select>`
       + (f.other ? `<input type="text" id="${id}_other" placeholder="Please specify ${esc(f.l)}" value="${esc(isCustom?effectiveCur:"")}" style="margin-top:8px${showOther?"":";display:none"}"${isReadonly(f)?" disabled":""}>` : "");
+    // f.hint on a plain select - 2026-10-08, see this change's own note.
+    // Function-or-string, same as the file and text branches.
+    const selHint = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
+    if(selHint) wrap.innerHTML += `<span class="hint">${esc(selHint)}</span>`;
   } else if(f.t==="radio"){
     // f.default pre-selects an option when nothing's been picked yet (e.g.
     // Preferred_Vendor defaults to "No") — same effectiveCur pattern the
@@ -11812,7 +11923,12 @@ function buildField(f){
     // fileCountFor(), which correctly treats `[]` as 0 — using it here
     // instead of raw `cur` makes the hint text agree with the thumbnail
     // count (which was already correct; only the hint text was wrong).
-    const noFileHintText = (!has && !fileCount && f.hint) ? `<span class="hint">${esc(f.hint)}</span>` : "";
+    // f.hint may be a function of the record - 2026-10-08. The multiselect
+    // branch above has always allowed that; a file field is where a
+    // conditional rule most needs saying, so it allows it too now. A string
+    // hint behaves exactly as before.
+    const fileHint = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
+    const noFileHintText = (!has && !fileCount && fileHint) ? `<span class="hint">${esc(fileHint)}</span>` : "";
     // Hint text now names the actual count (2026-09-07) — "Already uploaded"
     // alone gave no indication multiple photos existed, part of the same
     // confusion the thumbnail bug above caused.
@@ -11930,7 +12046,10 @@ function buildField(f){
     // above (unchanged) — opt-in via f.ozonetelCall, so no other field is
     // affected.
     const ozonetelCallHtml = (f.t==="tel" && f.ozonetelCall && cur) ? ` <a href="#" id="${id}_ozonetelCall" style="display:inline-block;margin-top:6px;margin-left:10px;font-family:var(--f-mono);font-size:12px;color:var(--accent-ink,#7A3D0C);text-decoration:none" title="Call ${esc(cur)} via Ozonetel">📲 Call via System</a>` : "";
-    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+ozonetelCallHtml+(f.hint?`<span class="hint">${esc(f.hint)}</span>`:"");
+    // Same function-or-string hint as the file branch above (2026-10-08) -
+    // Booking_Fee uses it to say why it is locked rather than just greying out.
+    const inputHint = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+ozonetelCallHtml+(inputHint?`<span class="hint">${esc(inputHint)}</span>`:"");
     if(f.t==="tel" && f.ozonetelCall && cur){
       setTimeout(function(){
         const ozBtn=$(id+"_ozonetelCall");
@@ -14477,14 +14596,18 @@ async function loadInviteAudit(){
       const status=iaStatusOf(inv);
       // Matched on ticket AND mechanic: one ticket can be rejected by several
       // mechanics, so matching on ticket alone would show the wrong reason.
-      let reason=String(inv.Reject_Reason||"").trim(), respondedAt="";
+      let reason=String(inv.Reject_Reason||"").trim();
+      /* The invite row's own response time comes first - it covers an ACCEPT,
+         which the Task_Rejections join below never could. Older invites have
+         no Responded_At, so that join stays exactly as it was. */
+      let respondedAt=String(readVal(inv,"Responded_At")||"").trim();
       if(status==="Rejected"){
         const rj=rejections.find(function(x){
           return String(unwrapLookup(x.RSID)||"")===ticketId &&
                  String(x.RSP_Name||"").trim().toLowerCase()===String(who).trim().toLowerCase();
         });
         if(rj){
-          respondedAt=String(rj.Rejected_At||"").trim();
+          if(!respondedAt) respondedAt=String(rj.Rejected_At||"").trim();
           if(!reason) reason=String(rj.Reason||"").trim();
         }
       }

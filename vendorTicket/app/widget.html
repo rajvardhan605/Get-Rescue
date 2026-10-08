@@ -589,6 +589,49 @@ async function generateZohoPaymentLink(record, amount, referenceId, description)
 // non-blocking, same "never let a log/side-write break the real action"
 // pattern as the Task_Rejections call. If no Invites record was found for
 // this ticket (e.g. it predates the Invites mechanism), this quietly no-ops.
+/* Finds this login's invite for a ticket WITHOUT needing their record id.
+   Only called once the id-based paths in updateMyInvite() have failed - see
+   that call site's own note for why they can, and why neither rule here can
+   pick somebody else's row. */
+async function findMyInviteByTicket(ticketId){
+  try{
+    const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
+    // Only rows of this app's own kind: one ticket carries both vendor and
+    // technician invites, and they are different people.
+    const forTicket=all.filter(function(inv){
+      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      const who=lookupId(inv.Vendor);
+      return who!=null && String(who).trim()!=="";
+    });
+    if(!forTicket.length){ console.warn("[GR-Vendor] findMyInviteByTicket: ticket "+ticketId+" has no Vendor invite row at all, so there is nothing to mark."); return null; }
+    if(forTicket.length===1){
+      console.warn("[GR-Vendor] findMyInviteByTicket: identity never resolved, but ticket "+ticketId+" has exactly ONE vendor invite (row "+forTicket[0].ID+"), and this device is holding that ticket - so the response is being recorded against it.");
+      return forTicket[0];
+    }
+    const myName=String(MY_VENDOR_NAME||"").trim().toLowerCase();
+    if(!myName){ console.warn("[GR-Vendor] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and this login has no resolved name to tell them apart, so the response is NOT being recorded. Giving up rather than guessing a row."); return null; }
+    const byName=forTicket.filter(function(inv){
+      const v=inv.Vendor;
+      const shown=(v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.Name||"") : "";
+      return shown.trim().toLowerCase()===myName;
+    });
+    if(byName.length===1){
+      console.warn("[GR-Vendor] findMyInviteByTicket: identity never resolved, but exactly one of this ticket's "+forTicket.length+" invites names \""+MY_VENDOR_NAME+"\" (row "+byName[0].ID+") - recording the response against it.");
+      return byName[0];
+    }
+    console.warn("[GR-Vendor] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and "+byName.length+" of them match the name \""+MY_VENDOR_NAME+"\", so there is no single right row. The response is NOT being recorded.");
+    return null;
+  }catch(e){ console.warn("[GR-Vendor] findMyInviteByTicket threw - the response is not being recorded, exactly as before this fallback existed", e); return null; }
+}
+/* The agent's RESPONDED column. A reject has always had a time (joined from
+   Task_Rejections.Rejected_At); an accept has never had one anywhere. Its OWN
+   update, deliberately: an unknown column can fail a whole Creator update,
+   and the accept itself has already landed by the time this runs. */
+async function stampInviteResponse(inviteId, data){
+  if(!data || (!data.Service_Acceptance_Next && !data.Status)) return;
+  try{ await apiUpdateReport(CONFIG.invitesReport, inviteId, { Responded_At: fmtDateTime(new Date()) }); }
+  catch(e){ console.warn("[GR-Vendor] stampInviteResponse: Responded_At was not written on invite "+inviteId+" - the response itself IS saved. If the agent's RESPONDED column stays blank, add Responded_At (Single Line) to the Invites FORM and to the Invites report layout.", e); }
+}
 async function updateMyInvite(ticketId, data){
   let invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
   if(!invite || invite.ID==null){
@@ -608,7 +651,7 @@ async function updateMyInvite(ticketId, data){
     // everywhere else in this app for this exact report.
     if(currentVendorRecord){
       try{
-        const all=await apiGetReport(CONFIG.invitesReport, null, 200);
+        const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
         const fresh=all.find(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Vendor))===String(currentVendorRecord.id); });
         if(fresh){
           invite=fresh;
@@ -619,9 +662,14 @@ async function updateMyInvite(ticketId, data){
       }catch(e){ console.warn("[GR-Vendor] updateMyInvite: retry lookup failed", e); }
     }
   }
+  // Last resort, and the one that does not need an id - see
+  // findMyInviteByTicket() above. Reached only when both paths above came
+  // back empty, which is precisely when nothing used to be written at all.
+  if(!invite || invite.ID==null) invite = await findMyInviteByTicket(ticketId);
   if(!invite || invite.ID==null){ console.warn("[GR-Vendor] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentVendorRecord resolved:", !!currentVendorRecord); return; }
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[GR-Vendor] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
+  await stampInviteResponse(invite.ID, data);
 }
 // Real bug fixed (2026-08-07, same root cause diagnosed live in getRescueTicket
 // — "Invalid Configuration...!!!" on every upload) — resolve()'s generic
@@ -1541,7 +1589,7 @@ const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], in
 // (e.g. one assigned before this mechanism existed), so nothing that used to
 // show up silently disappears.
 async function loadMyInvites(){
-  const all = await apiGetReport(CONFIG.invitesReport, null, 200);
+  const all = await apiGetReport(CONFIG.invitesReport, null, 1000);
   console.log("[GR-Vendor] loadMyInvites: fetched "+all.length+" total Invites records; currentVendorRecord.id="+(currentVendorRecord&&currentVendorRecord.id));
   // Real bug fixed (2026-08-05, user-reported live: "assigning vendor...
   // ticket not showing to the vendor") — root cause of the whole report.
@@ -1615,7 +1663,7 @@ function locallyRejected(ticketId){
 /* Is any OTHER invited vendor still able to take this ticket? */
 async function otherInvitesStillLive(ticketId){
   try{
-    const all=await apiGetReport(CONFIG.invitesReport, null, 200);
+    const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
     const myId=currentVendorRecord ? String(currentVendorRecord.id) : null;
     const others=all.filter(function(inv){
       if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
@@ -4579,9 +4627,14 @@ async function resolveVendorRecord(logContext){
            agent's screen is worse than a blank one. An Invites row whose
            Vendor lookup equals this id is that proof, taken from real data
            in this workspace rather than from a comment that may be stale. */
+        /* Read the name BEFORE the id proof below - see this change's own
+           note. vendor_name is lowercase on the real form (FIELDS.md records
+           the planned rename never landed), so both spellings are tried. */
+        MY_VENDOR_NAME = readVal(myAvail,CONFIG.vendorNameField) || readVal(myAvail,"vendor_name") || MY_VENDOR_NAME || "";
+        if($("techName") && MY_VENDOR_NAME) $("techName").textContent = MY_VENDOR_NAME;
         let proven=false;
         try{
-          const invs=await apiGetReport(CONFIG.invitesReport, null, 200);
+          const invs=await apiGetReport(CONFIG.invitesReport, null, 1000);
           proven=invs.some(function(inv){ return String(lookupId(inv.Vendor))===String(myAvail.ID); });
         }catch(e){ proven=false; }
         if(!proven){
