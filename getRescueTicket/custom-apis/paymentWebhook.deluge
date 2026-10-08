@@ -522,6 +522,14 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 		else
 		{
 			fieldMap.put("Payment_Status","PAID");
+			// Booking fee receipt time - 2026-10-07, LOCATIONS-DISTANCES-DATETIME
+			// spec #3 ("BOOKING FEE SUCCESS TIME FROM ZOHO PAYMENT"). Only on the
+			// booking-fee branch: the remaining fee has its own field, already wired
+			// at the Final Payment stage.
+			if(isBookingFee)
+			{
+				fieldMap.put("Booking_Fee_Receipt_Time",zoho.currenttime.toString("dd-MMM-yyyy HH:mm:ss"));
+			}
 			if(isBookingFee)
 			{
 				/* Payment_Method / Payment_Method_Final (2026-09-22, client feedback:
@@ -630,6 +638,12 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 			else
 			{
 				updateRec.Payment_Status = "PAID";
+				// Same stamp as the PATCH path above - the two write paths must not
+				// disagree, which this file has been bitten by before.
+				if(isBookingFee)
+				{
+					updateRec.Booking_Fee_Receipt_Time = zoho.currenttime;
+				}
 				// Payment_Method was MISSING from this fallback — 2026-10-05. The PATCH
 				// path above has always set it (fieldMap.put("Payment_Method",...)), so
 				// the two paths wrote different things and only this one was running.

@@ -100,6 +100,11 @@ img,svg{max-width:100%}
 .photo-field .lab .cnt{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
 .photo-field .lab .cnt.ok{color:var(--ok)}
 .photo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+/* Armed state for the two-tap photo controls - the ONLY visual cue a phone
+   gets that the next tap will delete, since there is no dialog. Deliberately
+   loud: red, bigger, and wide enough to read the word on a small remove pill. */
+.rm.armed{background:#c0392b!important;color:#fff!important;border-color:#c0392b!important;transform:scale(1.25)}
+.photo-clearall.armed{background:#c0392b!important;color:#fff!important;border-color:#c0392b!important}
 .photo-slot{aspect-ratio:1;border-radius:10px;overflow:hidden;position:relative;background:var(--worktop)}
 .photo-slot img{width:100%;height:100%;object-fit:cover;display:block}
 .photo-slot.add{border:1.5px dashed var(--line-strong);display:grid;place-items:center;cursor:pointer;color:var(--muted-2);background:#fff}
@@ -497,7 +502,12 @@ function loadGoogleMaps(){
   // never even requested, so there's no network call and no billing risk
   // from this widget at all. To re-enable, delete this one early return —
   // the original script-loading logic right below is untouched.
-  return Promise.resolve(false);
+  // Re-enabled 2026-10-07. This used to be an unconditional
+  // "return Promise.resolve(false)" which made every line below dead code and
+  // every distance in this app a straight line. Google is wanted again for four
+  // specific calculations, so the loader works - but WHICH calls use it is
+  // decided per call site now, by the useGoogle argument on calcDistanceETA()
+  // below, not by switching the whole app on.
   if(mapsApiReady) return mapsApiReady;
   mapsApiReady=new Promise(function(res){
     if(window.google && window.google.maps && window.google.maps.DistanceMatrixService){ res(true); return; }
@@ -548,9 +558,14 @@ function googleDistanceMatrix(origins,destinations,travelMode){
 function travelModeFor(record){
   return "TWO_WHEELER";
 }
-async function calcDistanceETA(fromLat,fromLon,toLat,toLon,travelMode){
+/* useGoogle (2026-10-07) - OPT IN, not opt out. Google is scoped to four
+   calculations; this helper serves five, so the choice belongs to the caller.
+   Omitted means straight-line, which is what every unlisted caller already did
+   and must keep doing. Only Accept (start -> breakdown) and Vehicle Picked
+   (breakdown -> drop) pass true. */
+async function calcDistanceETA(fromLat,fromLon,toLat,toLon,travelMode,useGoogle){
   if([fromLat,fromLon,toLat,toLon].some(function(n){ return n==null || isNaN(n); })) return null;
-  const rows=await googleDistanceMatrix([{lat:fromLat,lon:fromLon}],[{lat:toLat,lon:toLon}],travelMode);
+  const rows = useGoogle ? await googleDistanceMatrix([{lat:fromLat,lon:fromLon}],[{lat:toLat,lon:toLon}],travelMode) : null;
   const el=rows && rows[0] && rows[0].elements && rows[0].elements[0];
   if(el && el.status==="OK") return { distanceKm:Math.round((el.distance.value/1000)*10)/10, etaMins:Math.max(1,Math.round(el.duration.value/60)) };
   const distanceKm=Math.round(haversineKm(fromLat,fromLon,toLat,toLon)*10)/10;
@@ -1619,7 +1634,8 @@ async function acceptService(){
     const pos = await getPositionSafe();
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
-    const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon,travelModeFor(r)) : null;
+    // Google ON - Accept: start -> breakdown (item 1).
+    const dist = pos ? await calcDistanceETA(pos.lat,pos.lon,bLat,bLon,travelModeFor(r),true) : null;
     const payload={
       Service_Acceptance: fmtDateTime(new Date()),
       Status: "RSP ON THE WAY"
@@ -2276,10 +2292,9 @@ async function clearAllPhotos(fieldName, max){
   const r=state.current;
   if(!r || r.ID==null){ toast("No ticket open","err"); return; }
   const n=fileCountFor(state.current && state.current[fieldName]) + (state.photos[fieldName]||[]).length;
-  let go=true;
-  try{ if(typeof confirm==="function") go=confirm("Remove all "+n+" photo"+(n===1?"":"s")+" from this field? You will need to take them again."); }
-  catch(e){ go=true; }
-  if(!go) return;
+  // No confirm() here - the button arms itself on first tap instead. A WebView
+  // that suppresses dialogs returns false from confirm() without throwing, which
+  // silently cancelled this on every phone. See armTwoTap().
   try{
     const payload={}; payload[fieldName]="";
     await apiUpdate(r.ID, payload);
@@ -2319,6 +2334,35 @@ function photoClearAllBtnHtml(fieldName, max){
     + 'title="These photos were saved earlier, so they cannot be removed one at a time. This clears all of them so you can take better ones.">'
     + 'Clear all '+n+' photo'+(n===1?"":"s")+' and re-take</button>';
 }
+/* Tap once to arm, tap again to do it. Replaces confirm(), which a phone
+   WebView answers "false" to without throwing - the tap then did nothing at
+   all, with no dialog and no error.
+
+   Disarms itself after four seconds, so a vendor who taps once and puts the
+   phone down has not left a photo one stray touch from deletion. */
+var ARM_MS = 4000;
+function armTwoTap(btn, armedText, run){
+  if(!btn){ run(); return; }
+  if(btn.dataset.armed === "1"){
+    try{ clearTimeout(Number(btn.dataset.armTimer||0)); }catch(e){}
+    btn.dataset.armed = "";
+    if(btn.dataset.restLabel) btn.textContent = btn.dataset.restLabel;
+    btn.classList.remove("armed");
+    run();
+    return;
+  }
+  btn.dataset.restLabel = btn.textContent;
+  btn.dataset.armed = "1";
+  btn.textContent = armedText;
+  btn.classList.add("armed");
+  var t = setTimeout(function(){
+    btn.dataset.armed = "";
+    if(btn.dataset.restLabel) btn.textContent = btn.dataset.restLabel;
+    btn.classList.remove("armed");
+  }, ARM_MS);
+  btn.dataset.armTimer = String(t);
+  if(typeof toast==="function") toast("Tap again to confirm","err");
+}
 function photoRmBtnHtml(kind, idx, allowed){
   if(!allowed) return "";
   return '<button type="button" class="rm" data-kind="'+kind+'" data-i="'+idx+'" title="Remove this photo">✕</button>';
@@ -2340,10 +2384,7 @@ async function deletePhotoAt(fieldName, max, kind, index){
     toast("This photo was saved earlier and can't be removed here — ask an agent to clear it on the ticket","err");
     return;
   }
-  let go=true;
-  try{ if(typeof confirm==="function") go=confirm("Remove this photo from the ticket?"); }
-  catch(e){ go=true; } // a WebView that blocks confirm() must not block the action
-  if(!go) return;
+  // No confirm() here either - see clearAllPhotos() and armTwoTap().
 
   const sessionFiles=(state.photos[fieldName]||[]).slice();
   const removedFile=(kind==="session") ? sessionFiles[index] : null;
@@ -2406,7 +2447,18 @@ function renderPhotoGrid(fieldName,max){
   for(let i=0;i<alreadyCount;i++){
     // ✕ on an already-saved photo — 2026-10-05, client item 21. Only offered
     // where photoDeleteAllowed() says the end state is rebuildable.
-    html += `<div class="photo-slot" data-already-field="${esc(fieldName)}" data-already-idx="${i}"><span class="up-badge ok" title="Already saved">✓ Saved</span>${photoRmBtnHtml("saved",i,rmAllowed)}</div>`;
+    /* A VIEW link on every saved tile - 2026-10-07. The thumbnail is fetched
+       by an <img> inside the widget iframe and is reverting to the plain
+       "Saved" badge on real devices, so the vendor cannot see WHICH photo a
+       tile holds and cannot judge whether to re-take it. The same URL opened
+       in a new tab carries the browser session the iframe request lacks, so
+       this works where the inline thumbnail does not. Additive: the tile,
+       its badge and its remove button are unchanged. */
+    const savedUrl = zohoFileDownloadUrl(state.current && state.current.ID, fieldName, alreadyRaw, i);
+    const viewLink = savedUrl
+      ? `<a href="${esc(savedUrl)}" target="_blank" rel="noopener" class="photo-view" title="Open this saved photo in a new tab" style="position:absolute;left:4px;bottom:4px;font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;text-decoration:none">View</a>`
+      : "";
+    html += `<div class="photo-slot" style="position:relative" data-already-field="${esc(fieldName)}" data-already-idx="${i}"><span class="up-badge ok" title="Already saved">✓ Saved</span>${viewLink}${photoRmBtnHtml("saved",i,rmAllowed)}</div>`;
   }
   files.forEach(function(f,i){
     html+=`<div class="photo-slot"><img src="${URL.createObjectURL(f)}">${uploadBadgeHtml(f)}${photoRmBtnHtml("session",i,true)}</div>`;
@@ -2440,20 +2492,24 @@ function renderPhotoGrid(fieldName,max){
     clearHost.innerHTML=photoClearAllBtnHtml(fieldName,max);
     const clearBtn=clearHost.querySelector(".photo-clearall");
     if(clearBtn) clearBtn.onclick=function(){
-      clearBtn.disabled=true;
-      clearAllPhotos(fieldName,max)
-        .catch(function(e){ console.warn("[GR] clearAllPhotos threw", e); toast("Couldn't remove the photos","err"); })
-        .then(function(){ if(clearBtn) clearBtn.disabled=false; });
+      armTwoTap(clearBtn, "Tap again to clear", function(){
+        clearBtn.disabled=true;
+        clearAllPhotos(fieldName,max)
+          .catch(function(e){ console.warn("[GR] clearAllPhotos threw", e); toast("Couldn't remove the photos","err"); })
+          .then(function(){ if(clearBtn) clearBtn.disabled=false; });
+      });
     };
   }
   grid.querySelectorAll(".rm").forEach(function(btn){
     // Was files.splice() alone — which only ever removed the TILE, while the
     // photo stayed on the ticket because uploadPhotoNow() had already sent it.
     btn.onclick=function(){
-      btn.disabled=true;
-      deletePhotoAt(fieldName, max, btn.dataset.kind||"session", Number(btn.dataset.i))
-        .catch(function(e){ console.warn("[Get-Rescue] deletePhotoAt threw", e); toast("Couldn't remove the photo","err"); })
-        .then(function(){ if(btn) btn.disabled=false; });
+      armTwoTap(btn, "✓", function(){
+        btn.disabled=true;
+        deletePhotoAt(fieldName, max, btn.dataset.kind||"session", Number(btn.dataset.i))
+          .catch(function(e){ console.warn("[GR] deletePhotoAt threw", e); toast("Couldn't remove the photo","err"); })
+          .then(function(){ if(btn) btn.disabled=false; });
+      });
     };
   });
   const cntEl=$("pf_"+fieldName+"_cnt");

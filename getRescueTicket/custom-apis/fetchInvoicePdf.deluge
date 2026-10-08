@@ -1,0 +1,187 @@
+string fetchInvoicePdf(string recordId, string invoiceId)
+{
+	// PULLS THE ZOHO BOOKS INVOICE PDF ONTO A TICKET, ON DEMAND — 2026-10-07.
+	//
+	// WHY THIS EXISTS SEPARATELY FROM onDemandInvoicing. That function captures
+	// the PDF as the last step of CREATING an invoice, so the only way to retry a
+	// capture that failed is to create a second invoice — a real duplicate in the
+	// live Books org, for a ticket that is already billed. Every invoice raised
+	// before the PDF work therefore has no document and no way to get one.
+	//
+	// This does the capture and nothing else: no invoice, no payment, no email.
+	// It can be run on any ticket that already carries a Zoho_Books_Invoice_ID,
+	// as many times as needed, and the worst case is that it overwrites
+	// Invoice_PDF with the same document.
+	//
+	// ⚠ REGISTER BOTH PARAMETERS (recordId, invoiceId) on the Custom API setup
+	// screen. A parameter named only in this signature arrives null no matter
+	// what the widget sends — this project has lost days to that three times.
+	organization_id = "60078911104";
+	books_base_url = "https://www.zohoapis.in/books/v3";
+	try
+	{
+		info "fetchInvoicePdf called with recordId=" + recordId + " | invoiceId=" + invoiceId;
+		if(recordId == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"recordId is missing.\"}";
+		}
+		recId = recordId.trim();
+		if(recId == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"recordId is empty.\"}";
+		}
+		ticketRec = Create_Case[ID == recId.toLong()];
+		if(ticketRec == null)
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"No Create_Case record has ID " + recId + ".\"}";
+		}
+		// The caller may pass the invoice id, but the ticket already stores it -
+		// so a blank parameter is not an error, just a reason to read the record.
+		invId = "";
+		if(invoiceId != null)
+		{
+			invId = invoiceId.trim();
+		}
+		if(invId == "")
+		{
+			if(ticketRec.Zoho_Books_Invoice_ID != null)
+			{
+				invId = ticketRec.Zoho_Books_Invoice_ID.toString().trim();
+			}
+		}
+		if(invId == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"This ticket has no Zoho Books invoice yet, so there is no PDF to fetch. Generate the invoice first.\"}";
+		}
+
+		// SAME TWO REQUEST FORMS onDemandInvoicing USES, in the same order. Books
+		// takes the query parameter or the Accept header; which one actually
+		// returns a document has not been established for this org, so both are
+		// tried and the log says which won.
+		pdfResp = invokeurl
+		[
+			url :books_base_url + "/invoices/" + invId + "?organization_id=" + organization_id + "&accept=pdf"
+			type :GET
+			connection:"zoho_books_connection"
+		];
+		// A response that cannot be read as text IS the document: JSON and HTML
+		// stringify cleanly, a PDF's bytes do not.
+		pdfThrew = "no";
+		pdfPeek = "";
+		try
+		{
+			pdfPeek = pdfResp.toString();
+			if(pdfPeek.length() > 60)
+			{
+				pdfPeek = pdfPeek.subString(0,60);
+			}
+		}
+		catch (peekEx)
+		{
+			pdfThrew = "yes";
+			pdfPeek = "(not readable as text)";
+		}
+		pdfKind = "something else - see this execution log";
+		if(pdfThrew == "yes")
+		{
+			pdfKind = "a real PDF";
+		}
+		else if(pdfPeek.contains("%PDF-"))
+		{
+			pdfKind = "a real PDF";
+		}
+		else if(pdfPeek.toUpperCase().contains("DOCTYPE"))
+		{
+			pdfKind = "an HTML page - not a document";
+		}
+		else if(pdfPeek.contains("message"))
+		{
+			pdfKind = "JSON - Books refused the request";
+		}
+		info "fetchInvoicePdf - ?accept=pdf returned [" + pdfKind + "], first 60 chars: [" + pdfPeek + "]";
+		usedForm = "accept=pdf query parameter";
+		if(pdfKind != "a real PDF")
+		{
+			try
+			{
+				pdfRespAlt = invokeurl
+				[
+					url :books_base_url + "/invoices/" + invId + "?organization_id=" + organization_id
+					type :GET
+					headers:{"Accept":"application/pdf"}
+					connection:"zoho_books_connection"
+				];
+				altThrew = "no";
+				peekAlt = "";
+				try
+				{
+					peekAlt = pdfRespAlt.toString();
+					if(peekAlt.length() > 60)
+					{
+						peekAlt = peekAlt.subString(0,60);
+					}
+				}
+				catch (peekAltEx)
+				{
+					altThrew = "yes";
+					peekAlt = "(not readable as text)";
+				}
+				info "fetchInvoicePdf - Accept header returned, first 60 chars: [" + peekAlt + "]";
+				if(altThrew == "yes")
+				{
+					pdfResp = pdfRespAlt;
+					pdfKind = "a real PDF";
+					usedForm = "Accept: application/pdf header";
+				}
+				else if(peekAlt.contains("%PDF-"))
+				{
+					pdfResp = pdfRespAlt;
+					pdfKind = "a real PDF";
+					usedForm = "Accept: application/pdf header";
+				}
+			}
+			catch (altEx)
+			{
+				info "fetchInvoicePdf - Accept header attempt threw (non-fatal): " + altEx.toString();
+			}
+		}
+		if(pdfKind != "a real PDF")
+		{
+			info "fetchInvoicePdf - NOTHING WRITTEN. Neither request form returned a document for invoice " + invId + ".";
+			return "{\"code\": \"ERROR\", \"message\": \"Zoho Books returned " + pdfKind + " instead of a document, for both request forms. Nothing was written to Invoice_PDF. The execution log holds the first 60 characters of each response.\", \"invoice_pdf_type\": \"" + pdfKind + "\"}";
+		}
+		/* THE ASSIGNMENT GETS ITS OWN GUARD - 2026-10-07, from a live error:
+		   "Value of the field Invoice_PDF length should be lesser than or equal to
+		   MaxLength 255." That length check only exists on a TEXT field, so it says
+		   plainly that Invoice_PDF was created as Single Line rather than File
+		   Upload - and the raw exception that surfaced it named a line number, not
+		   the cause. Reaching this line at all proves the fetch WORKED: nothing gets
+		   here unless Books returned a real document. */
+		try
+		{
+			ticketRec.Invoice_PDF = pdfResp;
+		}
+		catch (attachEx)
+		{
+			attachMsg = attachEx.toString();
+			info "fetchInvoicePdf - the PDF was fetched successfully but could NOT be stored: " + attachMsg;
+			if(attachMsg.contains("MaxLength"))
+			{
+				return "{\"code\": \"ERROR\", \"message\": \"Zoho Books returned the invoice PDF correctly, but it could not be saved: Invoice_PDF on Create_Case is a TEXT field (max 255 characters) and a text field cannot hold a file. Change Invoice_PDF to a FILE UPLOAD field in Zoho Creator, then press Fetch PDF again. Nothing else about the invoice is affected.\"}";
+			}
+			return "{\"code\": \"ERROR\", \"message\": \"The invoice PDF was fetched but could not be saved onto the ticket. See this Custom API execution log for what Zoho refused.\"}";
+		}
+		info "fetchInvoicePdf - invoice " + invId + " PDF attached to ticket " + recId + " using the " + usedForm + ".";
+		return "{\"code\": \"SUCCESS\", \"message\": \"Invoice PDF attached to the ticket.\", \"invoice_id\": \"" + invId + "\", \"used_form\": \"" + usedForm + "\"}";
+	}
+	catch (mainEx)
+	{
+		info "fetchInvoicePdf - EXCEPTION: " + mainEx.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"Exception: " + mainEx.toString() + "\"}";
+	}
+	// Deluge requires a terminal return for a `string` function even when every
+	// path above already returns one - it will not save without this. Same
+	// closing shape paymentWebhook.deluge and onDemandInvoicing.deluge both use,
+	// and reaching it would mean a path was added above without a return.
+	return "{\"code\": \"ERROR\", \"message\": \"fetchInvoicePdf finished without reaching any known outcome. This should not happen - send the execution log over.\"}";
+}

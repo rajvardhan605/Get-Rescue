@@ -641,6 +641,12 @@ img,svg{max-width:100%}
       <div class="wiz-title">
         <h2 id="wizStageTitle">New Ticket</h2>
         <span class="cid" id="wizCaseId">unsaved</span>
+        <!-- LINK CALL — Ozonetel doc point 3, option 2: "Ticket needs to have a
+             LINK CALL button in the header (visible on all pages of the ticket).
+             Button can be placed next to the RSID." It sits in .wiz-title, which is
+             outside the step body, so it shows on every step without any per-step
+             wiring. Hidden until refreshLinkCallButton() finds a call to offer. -->
+        <button class="btn ghost sm" id="wizLinkCall" type="button" style="display:none;margin-left:8px;padding:2px 10px;font-size:11px">Link Call</button>
         <button class="close-x" id="wizClose" type="button" aria-label="Back to dashboard"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
       </div>
       <div class="progress">
@@ -1644,6 +1650,18 @@ const STAGES = [
     // nothing of that status to resume here anymore. A "LATER" ticket now
     // resumes here on plain "SERVICE FEE QUOTE", identically to a "NOW" one.
     statuses:["SERVICE FEE QUOTE","BOOKING FEE PENDING"], status:quoteStatus,
+     /* Booking_Fee_Receipt_Time - 2026-10-07, LOCATIONS-DISTANCES-DATETIME
+        spec #3. The gateway path is stamped by paymentWebhook when Zoho
+        Payments confirms; this covers the CASH/manual path, where an agent sets
+        BF Payment Status to PAID on this step and no webhook ever fires.
+
+        Mirrors Remaining_Fee_Receipt_Time exactly (see the Final Payment stage):
+        stamped once, only on the genuine transition, and guarded on the field
+        still being empty so a resave never re-stamps it. Returns {} otherwise,
+        so nothing is written on any other save of this step. */
+     extra:(r)=> (r && r.Payment_Status==="PAID" && !r.Booking_Fee_Receipt_Time)
+       ? { Booking_Fee_Receipt_Time: fmtDateTime(new Date()) }
+       : {},
     // can't advance to Capture Locations until the required action for this
     // ticket's fee situation has actually been done (see quoteStatus above)
     // not a hard block anymore — Save & Continue always saves. If the required
@@ -2119,7 +2137,14 @@ const STAGES = [
     // the same option; this brings the booking-fee field in line with it.
     // ⚠ The matching option must also be added to the Payment_Method dropdown
     // on the Create_Case form in Zoho, or the webhook's write is rejected.
-    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:"Cash", row:"rate5" },
+    /* No method pre-selected when there is no booking fee - 2026-10-07, client:
+       "if booking fee is zero then the receipt photo should not be mandatory and
+       the BF payment method should be NULL." Cash was pre-selected on every
+       ticket, which then made the receipt photo mandatory through its own
+       reqFile below - so a fee of 0 could not be saved at all without attaching
+       a receipt for money nobody collected. The default only ever applied when
+       nothing was stored, so a method an agent actually picked is untouched. */
+    { n:"Payment_Method", l:"BF Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:(s)=> (Number(s && s.Booking_Fee)>0) ? "Cash" : "", row:"rate5" },
     // ⚠ NEW field, added 2026-08-07 (user request: "add booking fee
     // transaction id field") — does NOT exist yet in Create_Case; needs
     // creating in Zoho Studio (Single Line Text) before this can actually
@@ -2163,7 +2188,11 @@ const STAGES = [
     // unaffected. See Upload_Photo_of_receipt's own matching label change
     // (Final Payment stage) for its counterpart.
     { n:"Image_Upload", l:"BF Receipt Photo", t:"file", full:true,
-      reqFile:(s)=> !!s.Payment_Method && s.Payment_Method!=="Payment Gateway",
+      // Booking_Fee>0 added 2026-10-07 (same client report as the default above):
+      // there is no receipt to attach for a fee that was never charged. The two
+      // original conditions are unchanged behind it, so a real fee still needs a
+      // receipt for every method except Payment Gateway.
+      reqFile:(s)=> Number(s && s.Booking_Fee)>0 && !!s.Payment_Method && s.Payment_Method!=="Payment Gateway",
       hint:"Required unless paid via Payment Gateway." },
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
@@ -2903,8 +2932,8 @@ const STAGES = [
     // 'Distance to Breakdown (km, RSR)' field instead"). Still fully live on
     // this Reach step itself.
     { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
-    // Distance_Cancel_To_Breakdown is a BRAND NEW field — ⚠️ does not exist
-    // in Create_Case yet, see FIELDS.md's own note. No field or calculation
+    // Distance_Cancel_To_Breakdown - CONFIRMED to exist in Create_Case
+    // (user-confirmed 2026-10-08). This note previously warned it did not.
     // for "Cancel location → breakdown location" existed anywhere before
     // this — Cancel_Distance (just above) is deliberately a DIFFERENT
     // measurement (Accept location → Cancel location, see that field's own
@@ -4153,8 +4182,36 @@ const CLOSURE_FIELDS=[
     },
     emptyHint:"No calls recorded for this ticket." },
   { n:"__OnDemandInvoiceLinkDisplay", l:"Invoice Link", t:"navlink", full:true,
-    when:(s)=>isOnDemandClient(s),
-    hrefField:"Zoho_Books_Invoice_URL", linkLabel:"🧾 Open Invoice",
+    /* HIDDEN - 2026-10-07, at the client's request. This opened the Zoho Books
+       customer-portal page, which shows a Balance Due summary card rather than
+       the invoice document. Now that Invoice PDF holds the real PDF, the portal
+       page is redundant and was being mistaken for the invoice.
+
+       The field is kept rather than deleted: its hrefCompute still prefers the
+       stored PDF and falls back to the portal URL, so restoring the row is
+       changing false back to isOnDemandClient(s) on this one line. */
+    when:()=>false,
+    /* THE STORED PDF WINS - 2026-10-07, client-reported: "when I click Open
+       Invoice it shows [the portal page]". Zoho_Books_Invoice_URL is the Books
+       customer-portal page: it needs no login, which was the point of switching
+       to it, but it renders a Balance Due summary card rather than the invoice
+       document the agent asked for.
+
+       Create_Case.Invoice_PDF holds the RENDERED invoice - the same document the
+       customer is emailed, on the org's own TAX INVOICE template. Opening that
+       gives the agent the actual PDF with no Books account and no portal page.
+
+       Falls straight back to the portal URL when no PDF is stored, so a ticket
+       invoiced before the PDF work, or one where Books refused the document,
+       behaves exactly as it does today. The separate Invoice PDF row below is
+       untouched. */
+    hrefCompute:function(r){
+      const pdf = r && r.Invoice_PDF;
+      const pdfUrl = pdf ? zohoFileDownloadUrl(r.ID, "Invoice_PDF", pdf, 0) : null;
+      if(pdfUrl) return pdfUrl;
+      return r && r.Zoho_Books_Invoice_URL ? String(r.Zoho_Books_Invoice_URL) : "";
+    },
+    linkLabel:"🧾 Open Invoice",
     emptyMsg:"Not available yet — click \"Generate Invoice\" above." },
   /* The invoice as a file ON THE TICKET — 2026-10-05, client item 16. The row
      above opens Zoho Books, which needs a Books login; this one downloads the
@@ -4169,7 +4226,45 @@ const CLOSURE_FIELDS=[
     when:(s)=>isOnDemandClient(s),
     hrefCompute:(r)=>zohoFileDownloadUrl(r.ID||state.recordId, "Invoice_PDF", r.Invoice_PDF, 0),
     linkLabel:"⬇ Download Invoice PDF",
-    emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, generate it again — a toast now names what Zoho Books returned instead of the document." }
+    emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, use Fetch PDF below — it pulls the document from Zoho Books for the invoice this ticket already has, without creating another one." },
+  /* FETCH PDF - 2026-10-07, client: "we need to show zoho book invoice pdf in
+     the click of the open invoice".
+
+     The PDF used to be captured only as the last step of CREATING an invoice,
+     so the only way to retry a failed capture was to raise a SECOND invoice in
+     the live Books org for a ticket already billed. Every invoice raised before
+     that work therefore had no document and no way to get one.
+
+     This calls fetchInvoicePdf, which does the capture and nothing else - no
+     invoice, no payment, no email - against the Zoho_Books_Invoice_ID the ticket
+     already carries. Safe to press repeatedly: the worst case is overwriting
+     Invoice_PDF with the same document. */
+  { n:"Fetch_Invoice_PDF", l:"Fetch PDF", t:"button", full:true, repeatable:true, agentEditable:true, ephemeral:true,
+    when:(s)=>isOnDemandClient(s) && !!s.Zoho_Books_Invoice_ID,
+    buttonLabel:"⬇ Fetch PDF", doneLabel:"PDF Fetched",
+    hint:"Pulls the rendered invoice onto this ticket so Open Invoice shows the PDF itself.",
+    action:async function(r){
+      const fn=resolve("invokeCustomApi");
+      if(!fn){ toast("Can't fetch the PDF - invokeCustomApi unavailable","err"); return; }
+      toast("Fetching the invoice PDF…","ok");
+      try{
+        const res=await fn({ api_name:"fetchInvoicePdf", workspace_name:"getrescued", http_method:"POST", content_type:"application/json",
+          payload:{ recordId:String(r.ID||state.recordId||""), invoiceId:String(r.Zoho_Books_Invoice_ID||"") } });
+        let data=res;
+        if(data && typeof data.result==="string"){ try{ data=JSON.parse(data.result); }catch(e){} }
+        console.log("[Get-Rescue] fetchInvoicePdf response:", data);
+        if(data && data.code==="SUCCESS"){
+          // Re-read so the two rows above pick the stored file up without reopening.
+          try{ const fresh=await apiGetById(r.ID||state.recordId); if(fresh){ state.record.Invoice_PDF=fresh.Invoice_PDF; renderWizard(); } }catch(e){}
+          toast("Invoice PDF attached - Open Invoice now shows the document","ok");
+        } else {
+          toast((data && data.message) || "Could not fetch the invoice PDF - see console","err");
+        }
+      }catch(e){
+        console.warn("[Get-Rescue] fetchInvoicePdf threw", e);
+        toast((e&&e.message)||"Could not fetch the invoice PDF","err");
+      }
+    } },
 ];
 // See STAGES' own "agentClosure" entry's comment — patched in here (rather
 // than inline in that array literal) because STAGES is built before this
@@ -8329,6 +8424,21 @@ function pruneSingleVendorIfTicketRejected(){
 function assignInviteStatusHtml(){
   const invites = (state.inviteStatuses||[]).filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; });
   if(!invites.length) return "";
+  /* IS THIS CASE ALREADY TAKEN? - 2026-10-07. Two independent signals,
+     either sufficient. An invite marked Accepted is direct. A non-blank
+     Assigned_Vendor is the second, and it earns its place here because
+     acceptService() writes the two separately and this workspace has had
+     spells where only one of them landed.
+
+     Used ONLY to withhold the Re-invite button and to add a line of text.
+     Nothing is written, no row is hidden, and no other screen reads it. */
+  const acceptedInvite = invites.find(function(inv){ return inviteStatusFor(inv).label==="Accepted"; }) || null;
+  const assignedId = lookupId(state.record && state.record.Assigned_Vendor);
+  const takenByAssigned = !!(assignedId!=null && String(assignedId).trim()!=="");
+  const alreadyTaken = !!acceptedInvite || takenByAssigned;
+  const takenByName = acceptedInvite
+    ? (lookupNamesFor(acceptedInvite.Vendor, OPTIONS.vendors) || "a vendor")
+    : (lookupNamesFor(state.record && state.record.Assigned_Vendor, OPTIONS.vendors) || "a vendor");
   const rows = invites.map(function(inv){
     const name = lookupNamesFor(inv.Vendor, OPTIONS.vendors) || "—";
     const st = inviteStatusFor(inv);
@@ -8343,11 +8453,11 @@ function assignInviteStatusHtml(){
       const invitedAt = inviteStartedAtDate(inv);
       if(invitedAt) elapsed = " ("+fmtDurationShort(Date.now()-invitedAt.getTime())+" ago)";
     }
-    /* Re-invite — only for an expired invite. See this change's own note for
+    /* Re-invite — only for an expired invite on a case NOBODY has taken.
        why Rejected deliberately has no button: vendorTicket keeps a local
        reject stamp this write cannot clear, so it would look resent and stay
        hidden on the vendor's phone. */
-    const reinviteBtn = (st.label==="Timed Out" && inv.ID!=null)
+    const reinviteBtn = (st.label==="Timed Out" && inv.ID!=null && !alreadyTaken)
       ? `<button type="button" class="btn ghost sm" data-reinvite="${esc(inv.ID)}" style="margin-left:10px;padding:1px 8px;font-size:11px">Re-invite</button>`
       : "";
     return `<div class="crow" style="cursor:default">
@@ -8357,6 +8467,7 @@ function assignInviteStatusHtml(){
   }).join("");
   return `<div class="form-card" style="margin-top:14px">
     <h3 style="margin:0 0 8px">Vendor Invite Status</h3>
+    ${alreadyTaken ? `<div class="va-hint" style="display:block;margin:0 0 10px;color:var(--ok)">✓ <b>${esc(takenByName)}</b> accepted this case. The other vendors below can no longer act on it, and it cannot be sent out again.</div>` : ""}
     <div class="summary editable">${rows}</div>
   </div>`;
 }
@@ -8505,7 +8616,13 @@ async function calcAcceptanceDistanceToBreakdown(r, distField, etaField, vendorI
   // whenever Google's call failed to return a duration — not a new
   // behavior, the same pre-existing "no ETA available" path).
   try{
-    const rows = null;
+    /* Google ON - 2026-10-07, item 1 of the scoped list: Start-to-Breakdown
+       distance and ETA, for the agent-accepting-on-behalf path. This was
+       hardcoded to null on 2026-09-08, which left the distance straight-line
+       and the ETA permanently blank for the agent to type. The vendor picker a
+       few hundred lines up keeps ITS null - browsing vendors is not on the list
+       and is a many-times-per-session lookup. */
+    const rows = await googleDistanceMatrix([{lat:vLL.lat,lon:vLL.lon}],[{lat:bLat,lon:bLon}]);
     const el = rows && rows[0] && rows[0].elements && rows[0].elements[0];
     if(el && el.status==="OK"){
       distanceKm = Math.round((el.distance.value/1000)*10)/10;
@@ -9274,6 +9391,139 @@ function callLogPhoneKey(v){
    calls from one switchboard number would otherwise pull hundreds of unrelated
    calls onto every single ticket. */
 const CALL_LOG_PHONE_MATCH_MAX = 20;
+/* The call this ticket could be linked to, or null — Ozonetel doc point 3.
+
+   UNLINKED ROWS ONLY (no Create_Case). A call already attached to another
+   ticket is somebody else's record of work; re-pointing it would silently
+   remove it from that ticket's own history.
+
+   A number matching this ticket's customer wins over a newer call that does
+   not: an agent on a ticket is almost always on that customer's call, and the
+   newest-overall row could belong to a colleague who answered seconds ago. */
+/* The Call_Log row for one UCID, or null. */
+async function findCallByUcid(ucid){
+  const want = String(ucid||"").trim();
+  if(!want) return null;
+  const all = await apiGetReport(CONFIG.callLogReport, null, 500);
+  return all.find(function(c){ return String(c.UCID==null?"":c.UCID).trim()===want; }) || null;
+}
+/* Links one call to one ticket, by UCID. Used by the pop for both routes.
+   Never re-points a call that already belongs to a ticket - that row is another
+   ticket's record of work. Returns true only when a link was actually written. */
+/* Writes the ticket onto a call row and confirms it landed. See this change's
+   own note for why the id is stringified and why the row is read back. */
+async function writeCallLink(callRowId, recordId){
+  await apiUpdateReport(CONFIG.callLogReport, callRowId, { Create_Case: String(recordId) });
+  try{
+    const after = await apiGetReport(CONFIG.callLogReport, null, 500);
+    const row = after.find(function(c){ return String(c.ID)===String(callRowId); });
+    const linked = row ? String(unwrapLookup(row.Create_Case)||"").trim() : "";
+    if(String(linked)===String(recordId)) return true;
+    console.warn("[Get-Rescue] writeCallLink: the update was accepted but Create_Case on call row "+callRowId+" reads "+JSON.stringify(linked)+", not "+recordId+". Most likely Create_Case is not on the "+CONFIG.callLogReport+" LAYOUT - a field missing from a layout reads back empty however it was written.");
+    return false;
+  }catch(e){
+    // Only the read-back failed; the write itself did not throw. Treated as
+    // success rather than alarming the agent over a verification problem.
+    console.warn("[Get-Rescue] writeCallLink: could not verify the link (the write itself succeeded)", e);
+    return true;
+  }
+}
+async function linkCallByUcid(ucid, recordId){
+  try{
+    const row = await findCallByUcid(ucid);
+    if(!row){ console.warn("[Get-Rescue] linkCallByUcid: no "+CONFIG.callLogReport+" row carries UCID "+ucid+" yet. Use the Link Call button in the ticket header once it appears."); return false; }
+    if(String(unwrapLookup(row.Create_Case)||"").trim()){ console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" is already linked to a ticket - left alone."); return false; }
+    const okLink = await writeCallLink(row.ID, recordId);
+    if(!okLink) return false;
+    console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" linked to ticket "+recordId+".");
+    return true;
+  }catch(e){
+    console.warn("[Get-Rescue] linkCallByUcid failed (non-blocking - the header Link Call button still works)", e);
+    return false;
+  }
+}
+async function findLinkableCall(recordId, record){
+  if(!recordId) return null;
+  try{
+    const all = await apiGetReport(CONFIG.callLogReport, null, 500);
+    const unlinked = all.filter(function(c){ return !String(unwrapLookup(c.Create_Case)||"").trim(); });
+    /* THE CALL THIS PAGE WAS OPENED WITH WINS - 2026-10-07. When the agent
+       arrived from an Ozonetel pop we know the exact UCID, so there is nothing
+       to infer: linking the right call beats linking the most recent one. The
+       phone-and-recency rules below stay for the ALL TICKETS route, where no
+       call id was ever passed. */
+    if(POP_CALL_UCID){
+      const exact = unlinked.find(function(c){ return String(c.UCID==null?"":c.UCID).trim()===POP_CALL_UCID; });
+      if(exact) return exact;
+      console.log("[Get-Rescue] findLinkableCall: this page carried UCID", POP_CALL_UCID, "but no UNLINKED call log row matches it (already linked, or not written yet) - falling back to phone and recency.");
+    }
+    if(!unlinked.length) return null;
+    const keys = [];
+    [record && record.Phone_Number1, record && record[CONFIG.phoneField]].forEach(function(v){
+      const k = callLogPhoneKey(v);
+      if(k && keys.indexOf(k)===-1) keys.push(k);
+    });
+    const newestFirst = unlinked.slice().sort(function(a,b){
+      return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true});
+    });
+    const sameNumber = newestFirst.filter(function(c){
+      const k = callLogPhoneKey(c.Phone_Number);
+      return k && keys.indexOf(k)!==-1;
+    });
+    return sameNumber[0] || newestFirst[0] || null;
+  }catch(e){
+    console.warn("[Get-Rescue] findLinkableCall: could not read "+CONFIG.callLogReport+" (the Link Call button stays hidden)", e);
+    return null;
+  }
+}
+/* Shows or hides the header button. Called from renderWizard(), so it follows
+   the ticket onto every step. Never shown on an unsaved ticket: there is no
+   record id to link a call to yet. */
+let LINK_CALL_CANDIDATE = null;
+/* UCID handed over by the Ozonetel pop, linked once the ticket is created. */
+let PENDING_CALL_UCID = "";
+/* The UCID this page was opened with, kept for the whole session so the header
+   Link Call button can offer THAT call rather than guessing. Unlike
+   PENDING_CALL_UCID it is never cleared: the agent may link, navigate and come
+   back, and the call they are on has not changed. */
+let POP_CALL_UCID = "";
+async function refreshLinkCallButton(){
+  const btn = $("wizLinkCall"); if(!btn) return;
+  LINK_CALL_CANDIDATE = null;
+  btn.style.display = "none";
+  if(!state.recordId) return;
+  const call = await findLinkableCall(state.recordId, state.record);
+  if(!call) return;
+  LINK_CALL_CANDIDATE = call;
+  const who = String(call.Phone_Number||"").trim() || "unknown number";
+  btn.title = "Link the call from "+who+" to this ticket. It will then appear in this ticket's own call history.";
+  btn.style.display = "";
+}
+/* Writes the link — one field on the CALL row, nothing on the ticket. */
+async function linkCallToTicket(){
+  const btn = $("wizLinkCall");
+  const call = LINK_CALL_CANDIDATE;
+  if(!call || !state.recordId){ toast("No unlinked call to attach","err"); return; }
+  const who = String(call.Phone_Number||"").trim() || "unknown number";
+  const when = String(call.Added_Time||"").trim();
+  const ok = await confirmBox("Link this call?",
+    "Attach the call from "+who+(when?(" ("+when+")"):"")+" to "+caseLabel(state.record)+"? It will show in this ticket's call history.",
+    "Link Call");
+  if(!ok) return;
+  if(btn){ btn.disabled = true; btn.textContent = "Linking…"; }
+  try{
+    const linkedOk = await writeCallLink(call.ID, state.recordId);
+    if(!linkedOk){ toast("Zoho accepted the update but the call still shows no ticket - check that Create_Case is on the "+CONFIG.callLogReport+" layout","err"); return; }
+    toast("Call linked to "+caseLabel(state.record),"ok");
+    try{ await loadCallLogsForTicket(state.recordId, state.record); }catch(e){}
+    await refreshLinkCallButton();
+  }catch(e){
+    console.warn("[Get-Rescue] linkCallToTicket failed", e);
+    toast((e&&e.message)||"Could not link the call","err");
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = "Link Call"; }
+  }
+}
 async function loadCallLogsForTicket(recordId, record){
   if(!recordId) return [];
   // `record` is optional so both existing call sites keep working untouched.
@@ -11225,6 +11475,9 @@ function renderWizard(){
   // assignInviteStatusHtml() already returns "" when a ticket has no invites
   // — so a single-vendor or un-assigned ticket shows nothing extra.
   $("assignInviteStatus").innerHTML = assignInviteStatusHtml();
+  // Not awaited: the header button appearing a moment late is invisible, while
+  // a report read blocking every step render would not be.
+  refreshLinkCallButton();
   // Real bug fixed (2026-08-07, user-reported live: Receipt Photo on the
   // Payment step showed "Already uploaded" text but the thumbnail above it
   // stayed a placeholder icon forever) — this was WRONGLY believed to only
@@ -11307,6 +11560,19 @@ function renderFields(step, targetId){
     }
   }
 }
+/* f.default, resolved. It has always been a plain value; a FUNCTION is now
+   allowed too, so a default can depend on the record - Payment Method must not
+   pre-select Cash on a ticket with no booking fee to collect. A plain value
+   behaves exactly as before, which is every other field that sets one. */
+function fieldDefault(f, r){
+  if(!f || f.default==null) return "";
+  if(typeof f.default==="function"){
+    try{ return f.default(r||state.record||{}) || ""; }
+    catch(e){ console.warn("[Get-Rescue] fieldDefault threw for", f.n, e); return ""; }
+  }
+  return f.default;
+}
+
 function buildField(f){
   const wrap=document.createElement("div");
   wrap.className="fld"+(f.full?" full":"");
@@ -11329,7 +11595,7 @@ function buildField(f){
       (f.readonly?"":`<div class="remarks-add"><textarea id="${id}_new" placeholder="Add a note…" rows="2"></textarea><button type="button" class="btn primary" id="${id}_add">Add</button></div>`);
   } else if(f.t==="select" && f.searchable){
     const baseOpts=resolveOptions(f);
-    const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
+    const effectiveCur = (cur!=null && cur!=="") ? cur : fieldDefault(f, state.record);
     // Real bug fixed (2026-08-05, user-reported live: "Client"/"Vehicle"
     // combo box always shows blank ("Search Client…"/"Search Vehicle…")
     // instead of the saved value when reopening an existing ticket) — same
@@ -11348,7 +11614,7 @@ function buildField(f){
   } else if(f.t==="select"){
     const baseOpts=resolveOptions(f);
     const knownVals=baseOpts.map(o=>String(o.v));
-    const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
+    const effectiveCur = (cur!=null && cur!=="") ? cur : fieldDefault(f, state.record);
     const isCustom = !!(f.other && effectiveCur!=="" && knownVals.indexOf(String(effectiveCur))===-1);
     const selVal = isCustom ? "Other" : effectiveCur;
     // Real bug fixed (2026-08-05, user-reported live: "Assigned Vendor"/
@@ -11381,7 +11647,7 @@ function buildField(f){
     // select/searchable-select branches already use above. collectStep reads
     // whichever option carries ".sel" at save time, so a default that's never
     // touched still saves as that value, not blank.
-    const effectiveCur = (cur!=null && cur!=="") ? cur : (f.default||"");
+    const effectiveCur = (cur!=null && cur!=="") ? cur : fieldDefault(f, state.record);
     const sel = effectiveCur!=null?String(effectiveCur):"";
     // Proper Tab order (2026-07-31, user request): only ONE option per group
     // is a tab stop (the selected one, or the first if none picked yet) —
@@ -13427,6 +13693,18 @@ async function saveStep(advance){
          Deliberately not awaited: the agent is mid-create and a slow lock write
          must not stall moving to the next step. acquireLock() swallows its own
          errors, and the heartbeat re-attempts every 60s regardless. */
+      /* The call that produced this ticket — Ozonetel doc point 4. Runs here,
+         at the first moment a record id exists. Fire-and-forget and fully
+         guarded: a failed link must never disturb a create that just
+         succeeded, and the header Link Call button remains as the manual way
+         to do the same thing. */
+      if(PENDING_CALL_UCID){
+        const ucidToLink = PENDING_CALL_UCID;
+        PENDING_CALL_UCID = "";
+        // Fire-and-forget: a failed link must never disturb a create that just
+        // succeeded, and the header Link Call button remains the manual route.
+        linkCallByUcid(ucidToLink, id);
+      }
       acquireLock(id);
       startLockHeartbeat(id);
       // Real bug fixed (2026-08-05, user request, reapplied after it was
@@ -14354,6 +14632,7 @@ $("assignInviteStatus").addEventListener("click", function(e){
   const btn = e.target.closest("[data-reinvite]");
   if(btn) reinviteVendor(btn.getAttribute("data-reinvite"), btn);
 });
+$("wizLinkCall").onclick=linkCallToTicket;
 $("inviteAuditBtn").onclick=loadInviteAudit;
 $("inviteAuditBack").onclick=function(){ showView("dashboard"); };
 $("inviteAuditRefresh").onclick=function(){ INVITE_AUDIT_ROWS=null; loadInviteAudit(); };
@@ -14567,27 +14846,57 @@ async function handleCallCenterHandoff(){
   let p = {};
   try{ p = (await fn()) || {}; }
   catch(e){ console.warn("[Get-Rescue] call-centre handoff: getQueryParams() threw (non-blocking)", e); return; }
-  const openId  = String(p.ccOpenTicket||"").trim();
+  /* Reads the page variables that are actually DECLARED on the Dashboard page
+     - ticketId (Number) and ucid (Text). getQueryParams() returns only declared
+       variables, so the cc* names this function used to read were always
+       undefined and none of this ever ran. They are kept as aliases so an
+       Ozonetel config still sending them works the moment they are declared. */
+  const openId  = String(p.ticketId||p.ccOpenTicket||"").trim();
+  const popUcid = String(p.ucid||p.ccUcid||"").trim();
+  // Held for the Link Call button too, not just the create-then-link path.
+  if(popUcid) POP_CALL_UCID = popUcid;
   const wantNew = String(p.ccNewTicket||"").trim();
-  const phone   = String(p.ccPhone||"").replace(/D/g,"").slice(-10);
+  let phone     = String(p.ccPhone||"").replace(/\D/g,"").slice(-10);
+  if(!openId && !popUcid && !wantNew) return;
+
+  /* OPTIONS 1 AND 2 - open the ticket, and link the call to it if one came
+     with the pop. The link is awaited before opening so the ticket renders with
+     its call history already correct. */
   if(openId){
-    console.log("[Get-Rescue] call-centre handoff: opening ticket", openId);
+    console.log("[Get-Rescue] call pop: opening ticket", openId, popUcid?("and linking call "+popUcid):"(no call id sent)");
+    if(popUcid){ await linkCallByUcid(popUcid, openId); }
     const rec = await apiGetById(openId);
     if(rec){ openTicketOrClosure(rec); }
-    else { toast("Couldn't open that ticket from the call pop — it may have been deleted","err"); }
+    else { toast("Couldn't open that ticket from the call pop - it may have been deleted","err"); }
     return;
   }
-  if(wantNew){
-    console.log("[Get-Rescue] call-centre handoff: new ticket for caller", phone||"(no number)");
-    newTicket();
-    if(phone){
-      // Both names written, the same pair every other create path in this file
-      // sets: Phone_Number1 is the field the form shows, CONFIG.phoneField is the
-      // one Agent_Ticket_Report actually searches on.
-      state.record.Phone_Number1 = phone;
-      state.record[CONFIG.phoneField] = phone;
-      renderWizard();
-    }
+
+  /* POINT 4 - a ucid with no ticketId means "create a new ticket for this
+     call". The caller number comes off the call row rather than a separate
+     parameter: recordRingingCall.deluge wrote it when the phone rang. */
+  if(popUcid && !phone){
+    try{
+      const row = await findCallByUcid(popUcid);
+      const fromRow = String((row && row.Phone_Number)||"").replace(/\D/g,"").slice(-10);
+      if(fromRow){ phone = fromRow; console.log("[Get-Rescue] call pop: caller number read from the call log:", phone); }
+      else console.warn("[Get-Rescue] call pop: no phone number on the call row for UCID "+popUcid+" - the new ticket opens with the number blank.");
+    }catch(e){ console.warn("[Get-Rescue] call pop: could not read the caller number from the call log (non-blocking)", e); }
+  }
+  console.log("[Get-Rescue] call pop: new ticket for caller", phone||"(no number)");
+  newTicket();
+  if(popUcid){
+    // Held until the ticket exists - there is no record id to link to until the
+    // agent saves the Create step.
+    PENDING_CALL_UCID = popUcid;
+    console.log("[Get-Rescue] call pop: will link call UCID", popUcid, "once this ticket is created.");
+  }
+  if(phone){
+    // Both names written, the same pair every other create path in this file
+    // sets: Phone_Number1 is the field the form shows, CONFIG.phoneField is the
+    // one Agent_Ticket_Report actually searches on.
+    state.record.Phone_Number1 = phone;
+    state.record[CONFIG.phoneField] = phone;
+    renderWizard();
   }
 }
 async function boot(){
