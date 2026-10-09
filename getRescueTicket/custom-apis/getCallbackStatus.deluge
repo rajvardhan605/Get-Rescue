@@ -404,11 +404,11 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 			}
 			if(matchedTicketId > 0)
 			{
-				info "  Linked to ticket " + matchedTicketId + " (newest ticket carrying this phone number).";
+				info "  Caller's newest ticket with this number is " + matchedTicketId + " - logged for diagnosis only, NOT linked. The RSID is attached when the agent creates the case or saves the assignment.";
 			}
 			else
 			{
-				info "  No ticket carries this phone number, so the row is created unlinked. It is still captured, and an agent can attach it by hand.";
+				info "  No ticket carries this phone number. The row is created unlinked either way - the RSID is attached at step 2.";
 			}
 			createMap = Map();
 			createMap.put("Phone_Number",resolvedPhone);
@@ -420,10 +420,10 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 			{
 				createMap.put("Call_Direction",vType);
 			}
-			if(matchedTicketId > 0)
-			{
-				createMap.put("Create_Case",matchedTicketId.toString());
-			}
+			// DELIBERATELY NOT LINKED - 2026-10-09. The RSID is attached at step 2,
+			// when the agent creates the case or saves the assignment. Guessing it
+			// from the phone number here attached calls to old cases and blocked the
+			// real link. See this change's own note.
 			createBody = Map();
 			createBody.put("data",createMap);
 			createResp = invokeurl

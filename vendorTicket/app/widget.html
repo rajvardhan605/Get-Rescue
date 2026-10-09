@@ -593,13 +593,37 @@ async function generateZohoPaymentLink(record, amount, referenceId, description)
    Only called once the id-based paths in updateMyInvite() have failed - see
    that call site's own note for why they can, and why neither rule here can
    pick somebody else's row. */
+/* The id this login MIGHT be, when identity could not be confirmed well enough
+   to write it onto a ticket. Never written anywhere - only ever compared
+   against invite rows, where a match is itself the proof. See the 2026-10-09
+   note on findMyInviteByTicket(). */
+let MY_VENDOR_ID_UNPROVEN = "";
+/* id -> display name for the people this app invites, built from whichever
+   report this login can actually read. Zoho returns Invites.Vendor as a
+   BARE id, so a name comparison has nothing to read without this. */
+async function inviteeNameById(){
+  const map={};
+  const reports=[CONFIG.availabilityReport, CONFIG.vendorReport].filter(Boolean);
+  for(const rep of reports){
+    try{
+      const recs=await apiGetReport(rep, null, 1000);
+      recs.forEach(function(r){
+        if(r && r.ID!=null && map[String(r.ID)]==null){
+          const nm=readVal(r,CONFIG.vendorNameField) || readVal(r,"vendor_name") || readVal(r,"Name") || "";
+          if(nm) map[String(r.ID)]=nm;
+        }
+      });
+    }catch(e){ /* an unreadable report just contributes nothing */ }
+  }
+  return map;
+}
 async function findMyInviteByTicket(ticketId){
   try{
     const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
     // Only rows of this app's own kind: one ticket carries both vendor and
     // technician invites, and they are different people.
     const forTicket=all.filter(function(inv){
-      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      if(String(lookupId(inv.RSID)||"")!==String(ticketId)) return false;
       const who=lookupId(inv.Vendor);
       return who!=null && String(who).trim()!=="";
     });
@@ -608,11 +632,25 @@ async function findMyInviteByTicket(ticketId){
       console.warn("[GR-Vendor] findMyInviteByTicket: identity never resolved, but ticket "+ticketId+" has exactly ONE vendor invite (row "+forTicket[0].ID+"), and this device is holding that ticket - so the response is being recorded against it.");
       return forTicket[0];
     }
+    /* THE ID RULE - 2026-10-09, and the one that actually resolves a
+       multi-vendor ticket. Tried before any name comparison because an id is
+       exact where a display name is a guess at formatting. */
+    const myId = (currentVendorRecord && currentVendorRecord.id) || MY_VENDOR_ID_UNPROVEN || "";
+    if(myId){
+      const byId=forTicket.filter(function(inv){ return String(lookupId(inv.Vendor))===String(myId); });
+      if(byId.length===1){
+        console.warn("[GR-Vendor] findMyInviteByTicket: matched invite row "+byId[0].ID+" on this login's own record id ("+myId+") among "+forTicket.length+" invites for ticket "+ticketId+".");
+        return byId[0];
+      }
+    }
     const myName=String(MY_VENDOR_NAME||"").trim().toLowerCase();
     if(!myName){ console.warn("[GR-Vendor] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and this login has no resolved name to tell them apart, so the response is NOT being recorded. Giving up rather than guessing a row."); return null; }
+    /* NAMES RESOLVED THROUGH A REPORT - 2026-10-09. This used to read
+       inv.Vendor.display_value, but Zoho returns that lookup as a BARE id,
+       so the comparison was against "" on every row and never matched. */
+    const nameById=await inviteeNameById();
     const byName=forTicket.filter(function(inv){
-      const v=inv.Vendor;
-      const shown=(v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.Name||"") : "";
+      const shown=String(nameById[String(lookupId(inv.Vendor))]||"");
       return shown.trim().toLowerCase()===myName;
     });
     if(byName.length===1){
@@ -652,7 +690,7 @@ async function updateMyInvite(ticketId, data){
     if(currentVendorRecord){
       try{
         const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
-        const fresh=all.find(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Vendor))===String(currentVendorRecord.id); });
+        const fresh=all.find(function(inv){ return String(lookupId(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Vendor))===String(currentVendorRecord.id); });
         if(fresh){
           invite=fresh;
           state.inviteByTicketId=state.inviteByTicketId||{};
@@ -666,7 +704,14 @@ async function updateMyInvite(ticketId, data){
   // findMyInviteByTicket() above. Reached only when both paths above came
   // back empty, which is precisely when nothing used to be written at all.
   if(!invite || invite.ID==null) invite = await findMyInviteByTicket(ticketId);
-  if(!invite || invite.ID==null){ console.warn("[GR-Vendor] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentVendorRecord resolved:", !!currentVendorRecord); return; }
+  if(!invite || invite.ID==null){ console.warn("[GR-Vendor] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentVendorRecord resolved:", !!currentVendorRecord); 
+    /* VISIBLE, not only logged - 2026-10-09. There is no console inside the
+       Creator mobile app, so this failure has twice reached a client test
+       unseen. The action itself has already gone through; what did not happen
+       is the office being told, and that is worth a message. */
+    try{ toast("Your response was saved on the case, but the office's Accept/Reject list could not be updated - tell dispatch","err"); }catch(e){}
+    return;
+  }
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[GR-Vendor] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
   await stampInviteResponse(invite.ID, data);
@@ -1666,7 +1711,7 @@ async function otherInvitesStillLive(ticketId){
     const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
     const myId=currentVendorRecord ? String(currentVendorRecord.id) : null;
     const others=all.filter(function(inv){
-      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      if(String(lookupId(inv.RSID)||"")!==String(ticketId)) return false;
       return myId==null || String(lookupId(inv.Vendor))!==myId;
     });
     const live=others.filter(function(inv){ return !inviteIsRejected(inv); });
@@ -3128,7 +3173,19 @@ async function vehiclePicked(){
     // Driver" (not the ticket's static breakdown Lat/Lon) — use a live fix,
     // falling back to the breakdown location if GPS isn't available.
     const pos = await getPositionSafe();
-    const bLat=pos?pos.lat:Number(r.Latitude), bLon=pos?pos.lon:Number(r.Longitude);
+    /* MEASURED FROM THE STORED REACH POSITION - 2026-10-09, per the spec:
+       "from vendor REACH BREAKDOWN location to Drop Location". This used to
+       use the live fix taken at the Picked-Up tap. The two are metres apart in
+       practice - the vendor is standing at the vehicle - but the stored point
+       is the one the specification names, and it is also the point the closure
+       round-trip already measures from, so the two now agree.
+       The live fix stays as the fallback, so a case where Reach was never
+       recorded behaves exactly as it does today. Pickup_Location_Lat/Lon below
+       is untouched and still records the live position. */
+    const reachLat=parseCoord(r.Reach_Location_Lat), reachLon=parseCoord(r.Reach_Location_Lon);
+    const bLat = (reachLat!=null) ? reachLat : (pos?pos.lat:Number(r.Latitude));
+    const bLon = (reachLon!=null) ? reachLon : (pos?pos.lon:Number(r.Longitude));
+    console.log("[GR] breakdown->drop origin:", (reachLat!=null?"stored Reach position (Reach_Location_*)":(pos?"live GPS at Picked-Up":"the ticket's breakdown location")));
     const dLat=parseCoord(r.DropLocationLat), dLon=parseCoord(r.DropLocationLong);
     // Google ON - Vehicle Picked: breakdown -> drop (item 4).
     const dist=await calcDistanceETA(bLat,bLon,dLat,dLon,travelModeFor(r),true);
@@ -4631,6 +4688,10 @@ async function resolveVendorRecord(logContext){
            note. vendor_name is lowercase on the real form (FIELDS.md records
            the planned rename never landed), so both spellings are tried. */
         MY_VENDOR_NAME = readVal(myAvail,CONFIG.vendorNameField) || readVal(myAvail,"vendor_name") || MY_VENDOR_NAME || "";
+        /* The candidate id, kept but NOT trusted for Assigned_Vendor - see
+           findMyInviteByTicket()'s own 2026-10-09 note. Only ever compared
+           against invite rows, never written to a record. */
+        MY_VENDOR_ID_UNPROVEN = String(myAvail.ID||"");
         if($("techName") && MY_VENDOR_NAME) $("techName").textContent = MY_VENDOR_NAME;
         let proven=false;
         try{

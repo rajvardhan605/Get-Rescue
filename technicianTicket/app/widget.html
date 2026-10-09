@@ -399,13 +399,37 @@ async function sendWhatsAppTemplate(phone, templateName, params){
    Only called once the id-based paths in updateMyInvite() have failed - see
    that call site's own note for why they can, and why neither rule here can
    pick somebody else's row. */
+/* The id this login MIGHT be, when identity could not be confirmed well enough
+   to write it onto a ticket. Never written anywhere - only ever compared
+   against invite rows, where a match is itself the proof. See the 2026-10-09
+   note on findMyInviteByTicket(). */
+let MY_TECH_ID_UNPROVEN = "";
+/* id -> display name for the people this app invites, built from whichever
+   report this login can actually read. Zoho returns Invites.Technician as a
+   BARE id, so a name comparison has nothing to read without this. */
+async function inviteeNameById(){
+  const map={};
+  const reports=[CONFIG.techReport].filter(Boolean);
+  for(const rep of reports){
+    try{
+      const recs=await apiGetReport(rep, null, 1000);
+      recs.forEach(function(r){
+        if(r && r.ID!=null && map[String(r.ID)]==null){
+          const nm=readVal(r,CONFIG.techNameField) || readVal(r,"vendor_name") || readVal(r,"Name") || "";
+          if(nm) map[String(r.ID)]=nm;
+        }
+      });
+    }catch(e){ /* an unreadable report just contributes nothing */ }
+  }
+  return map;
+}
 async function findMyInviteByTicket(ticketId){
   try{
     const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
     // Only rows of this app's own kind: one ticket carries both vendor and
     // technician invites, and they are different people.
     const forTicket=all.filter(function(inv){
-      if(String(unwrapLookup(inv.RSID)||"")!==String(ticketId)) return false;
+      if(String(lookupId(inv.RSID)||"")!==String(ticketId)) return false;
       const who=lookupId(inv.Technician);
       return who!=null && String(who).trim()!=="";
     });
@@ -414,11 +438,25 @@ async function findMyInviteByTicket(ticketId){
       console.warn("[Get-Rescue] findMyInviteByTicket: identity never resolved, but ticket "+ticketId+" has exactly ONE technician invite (row "+forTicket[0].ID+"), and this device is holding that ticket - so the response is being recorded against it.");
       return forTicket[0];
     }
+    /* THE ID RULE - 2026-10-09, and the one that actually resolves a
+       multi-vendor ticket. Tried before any name comparison because an id is
+       exact where a display name is a guess at formatting. */
+    const myId = (currentTechRecord && currentTechRecord.id) || MY_TECH_ID_UNPROVEN || "";
+    if(myId){
+      const byId=forTicket.filter(function(inv){ return String(lookupId(inv.Technician))===String(myId); });
+      if(byId.length===1){
+        console.warn("[Get-Rescue] findMyInviteByTicket: matched invite row "+byId[0].ID+" on this login's own record id ("+myId+") among "+forTicket.length+" invites for ticket "+ticketId+".");
+        return byId[0];
+      }
+    }
     const myName=String(MY_TECH_NAME||"").trim().toLowerCase();
     if(!myName){ console.warn("[Get-Rescue] findMyInviteByTicket: ticket "+ticketId+" has "+forTicket.length+" invites and this login has no resolved name to tell them apart, so the response is NOT being recorded. Giving up rather than guessing a row."); return null; }
+    /* NAMES RESOLVED THROUGH A REPORT - 2026-10-09. This used to read
+       inv.Technician.display_value, but Zoho returns that lookup as a BARE id,
+       so the comparison was against "" on every row and never matched. */
+    const nameById=await inviteeNameById();
     const byName=forTicket.filter(function(inv){
-      const v=inv.Technician;
-      const shown=(v && typeof v==="object") ? String(v.display_value||v.zc_display_value||v.Name||"") : "";
+      const shown=String(nameById[String(lookupId(inv.Technician))]||"");
       return shown.trim().toLowerCase()===myName;
     });
     if(byName.length===1){
@@ -451,7 +489,7 @@ async function updateMyInvite(ticketId, data){
     if(currentTechRecord){
       try{
         const all=await apiGetReport(CONFIG.invitesReport, null, 1000);
-        const fresh=all.find(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Technician))===String(currentTechRecord.id); });
+        const fresh=all.find(function(inv){ return String(lookupId(inv.RSID)||"")===String(ticketId) && String(lookupId(inv.Technician))===String(currentTechRecord.id); });
         if(fresh){
           invite=fresh;
           state.inviteByTicketId=state.inviteByTicketId||{};
@@ -465,7 +503,14 @@ async function updateMyInvite(ticketId, data){
   // findMyInviteByTicket() above. Reached only when both paths above came
   // back empty, which is precisely when nothing used to be written at all.
   if(!invite || invite.ID==null) invite = await findMyInviteByTicket(ticketId);
-  if(!invite || invite.ID==null){ console.warn("[Get-Rescue] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentTechRecord resolved:", !!currentTechRecord); return; }
+  if(!invite || invite.ID==null){ console.warn("[Get-Rescue] updateMyInvite: no Invites record found for ticket", ticketId, "even after retry — Status/Service_Acceptance_Next will NOT be written this time. currentTechRecord resolved:", !!currentTechRecord); 
+    /* VISIBLE, not only logged - 2026-10-09. There is no console inside the
+       Creator mobile app, so this failure has twice reached a client test
+       unseen. The action itself has already gone through; what did not happen
+       is the office being told, and that is worth a message. */
+    try{ toast("Your response was saved on the case, but the office's Accept/Reject list could not be updated - tell dispatch","err"); }catch(e){}
+    return;
+  }
   try{ await apiUpdateReport(CONFIG.invitesReport, invite.ID, data); }
   catch(e){ console.warn("[Get-Rescue] could not update Invites record", invite.ID, "for ticket", ticketId, e); }
   await stampInviteResponse(invite.ID, data);

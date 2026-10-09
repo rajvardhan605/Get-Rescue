@@ -4171,7 +4171,14 @@ const CLOSURE_FIELDS=[
   { n:"__CallHistoryDisplay", l:"Call History", t:"htmlblock", full:true,
     html:(r)=>{
       const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
-      if(!logs.length) return "";
+      /* An empty table now says why — 2026-10-09. With the display narrowed to
+         linked calls only, showing nothing where unlinked calls from this number
+         plainly exist is how an agent concludes the feature is broken. */
+      const nearMisses = CALL_LOG_NEAR_MISSES[String(r.ID)]||0;
+      if(!logs.length){
+        if(!nearMisses) return "";
+        return `<div class="fld full"><label>Call History</label><div class="hint" style="display:block">No call is linked to this ticket. ${nearMisses} unlinked call(s) share this ticket\u2019s number or call id \u2014 open the ticket in the wizard and use <b>Link Call</b> in the header to attach the right one.</div></div>`;
+      }
       const TH='style="text-align:left;padding:7px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--worktop);border-bottom:1px solid var(--line)"';
       const TD='style="padding:7px 10px;white-space:nowrap;border-bottom:1px solid var(--line);vertical-align:middle"';
       const cell=(v)=>{
@@ -4995,7 +5002,9 @@ async function syncInvites(recordId, vendorNames){
   // in vendorTicket already uses successfully for this identical field.
   try{
     const all = await apiGetReport(CONFIG.invitesReport, null, 1000);
-    const existing = all.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
+    // Same tolerant match as the panel - 2026-10-09. If this check has been
+    // failing, every re-save of this step has created duplicate invite rows.
+    const existing = all.filter(function(inv){ return inviteBelongsToTicket(inv, recordId); });
     existingVendorIds = existing.map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); }).filter(Boolean);
   }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
   const fn=resolve("addRecords"); if(!fn) return;
@@ -5351,7 +5360,14 @@ async function runClosureDistanceCalculations(record){
               console.log("[Get-Rescue] TOW round-trip pickup point:", pickup.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
               legs=[base,{lat:pickup.lat,lon:pickup.lon},{lat:dLat,lon:dLon},base];
             }
-            else if(record.Closure_Status==="Cancelled - Billable"){
+            /* SPEC BRANCH 4 - 2026-10-09. "cancelled billable or cancelled
+               not-billable". This workspace has no "Cancelled - Not Billable"
+               value: Closure_Status offers Not Converted / Cancelled /
+               Cancelled - Billable / Completed, so the plain "Cancelled" IS
+               the not-billable case. The body below already falls back from
+               the vendor cancel GPS to the agent-entered breakdown, which is
+               branch 4's own route, so one condition serves both branches. */
+            else if(record.Closure_Status==="Cancelled - Billable" || record.Closure_Status==="Cancelled"){
               /* PDF "Vendor Roundtrip KM", the CANCEL cases. The two differ only
                  in the middle point:
                    vendor cancelled in the app -> the vendor's CANCEL location
@@ -5427,6 +5443,22 @@ async function runClosureDistanceCalculations(record){
                   }
                 }
               }
+            }
+          }
+          /* SPEC BRANCH 3 - 2026-10-09. "Else: vendor base location ->
+             breakdown location [agent entry]." The Completed path above
+             already produces this exact route for an agent-run case, so the
+             only cases reached here are CANCELLED repairs with no vendor
+             cancel GPS, which until now left this empty and the KM fee
+             reading nothing.
+             Not Converted is deliberately excluded - see this change's own
+             note. That status means the job never happened, and a kilometre
+             fee against it would be wrong however the spec is worded. */
+          if((record.Vendor_Distance==null || record.Vendor_Distance==="") && record.Closure_Status!=="Not Converted"){
+            const km=await legDistanceKm([base,{lat:bLat,lon:bLon}]);
+            if(km!=null){
+              console.log("[Get-Rescue] Vendor_Distance: spec branch 3 - no vendor reach or cancel position on file, so vendor base -> breakdown (agent entry) was measured:", km, "km. Closure_Status:", record.Closure_Status||"(blank)");
+              record.Vendor_Distance=km;
             }
           }
         }
@@ -8454,7 +8486,28 @@ async function loadRejectionHistory(recordId){
 // though invitesReport is already used (and presumably working) for
 // syncInvites()'s own duplicate-check read, so this is lower-risk than
 // taskRejectionsReport was.
+/* What the last invite read saw, for the panel to report when it finds
+   nothing - see this change's own 2026-10-09 note. Display only. */
+let INVITE_PANEL_DIAG = null;
+/* Does this invite belong to this ticket? Accepts the record id OR the Case ID
+   text - see this change's own 2026-10-09 note for why both are safe. */
+function inviteBelongsToTicket(inv, recordId){
+  const raw = inv ? inv.RSID : null;
+  if(raw==null || raw==="") return false;
+  const id = lookupId(raw);
+  if(id!=null && String(id).trim()===String(recordId).trim()) return true;
+  /* The Case ID route. state.record is only consulted when it is genuinely
+     THIS ticket - reading another ticket's label here would attach the wrong
+     invites, which is worse than showing none. */
+  const rec = (typeof state!=="undefined" && state.record && String(state.record.ID||"")===String(recordId)) ? state.record : null;
+  if(!rec) return false;
+  const label = String(caseLabel(rec)||"").trim();
+  if(!label) return false;
+  const shown = String(unwrapLookupDisplay(raw)||"").trim() || String(unwrapLookup(raw)||"").trim();
+  return !!shown && shown===label;
+}
 async function loadInviteStatuses(recordId){
+  INVITE_PANEL_DIAG = null;
   if(!recordId){ state.inviteStatuses=[]; return; }
   try{
     const fn = resolve("getRecords");
@@ -8471,7 +8524,14 @@ async function loadInviteStatuses(recordId){
     // same fix applied to syncInvites()'s own matching read.
     const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.invitesReport, field_config:"all", max_records:1000 });
     if(r && r.code===3000 && Array.isArray(r.data)){
-      state.inviteStatuses = r.data.filter(function(inv){ return String(unwrapLookup(inv.RSID)||"")===String(recordId); });
+      state.inviteStatuses = r.data.filter(function(inv){ return inviteBelongsToTicket(inv, recordId); });
+      INVITE_PANEL_DIAG = {
+        read: r.data.length,
+        matched: state.inviteStatuses.length,
+        recordId: String(recordId),
+        sampleRsid: r.data.length ? JSON.stringify(r.data[0].RSID) : "(no rows at all)",
+        hasRsidField: r.data.length ? (Object.keys(r.data[0]).indexOf("RSID")>=0) : false
+      };
       // Diagnostic (2026-08-07, user-reported live: a vendor's rejection
       // wasn't removing them from Vendors1 — this line settles WHY: if the
       // vendor's own Invites row here still shows an empty Status/
@@ -8481,9 +8541,14 @@ async function loadInviteStatuses(recordId){
       console.log("[Get-Rescue] loadInviteStatuses: fetched", state.inviteStatuses.length, "Invites row(s) for RSID", recordId, "(out of", r.data.length, "total) —", state.inviteStatuses.map(function(inv){ return { Vendor:unwrapLookup(inv.Vendor), Status:inv.Status, Service_Acceptance_Next:inv.Service_Acceptance_Next, Reject_Reason:inv.Reject_Reason }; }));
     } else {
       state.inviteStatuses=[];
+      INVITE_PANEL_DIAG = { read:-1, matched:0, recordId:String(recordId), sampleRsid:"(the read itself failed - code "+(r&&r.code)+")", hasRsidField:false };
       console.warn("[Get-Rescue] loadInviteStatuses: unexpected response for report", CONFIG.invitesReport, "— code:", r&&r.code, "| full response:", r);
     }
-  }catch(e){ console.warn("[Get-Rescue] loadInviteStatuses threw for report", CONFIG.invitesReport, e); state.inviteStatuses=[]; }
+  }catch(e){
+    console.warn("[Get-Rescue] loadInviteStatuses threw for report", CONFIG.invitesReport, e);
+    state.inviteStatuses=[];
+    INVITE_PANEL_DIAG = { read:-1, matched:0, recordId:String(recordId), sampleRsid:"(the read threw: "+((e&&e.message)||e)+")", hasRsidField:false };
+  }
 }
 // One row per invited VENDOR (Technician-only Invites rows, from the
 // vendor's own fleet hand-off, are a different concept and left out here —
@@ -8602,13 +8667,24 @@ function assignInviteStatusHtml(){
      "no vendors invited" and the same as a read that came back empty - and was
      reported as the status simply not showing. It now names which it is. */
   if(!invites.length){
-    const picked=(Array.isArray(state.record.Vendors1)?state.record.Vendors1:[]).filter(Boolean);
-    if(!picked.length) return "";
+    /* Vendors1 counted even when it is not an array - 2026-10-09. A single
+       selection, or a value Creator returns in another shape, used to count as
+       zero and send this straight back to returning "". */
+    const rawPick = state.record ? state.record.Vendors1 : null;
+    const picked = Array.isArray(rawPick) ? rawPick.filter(Boolean)
+                 : ((rawPick==null || rawPick==="") ? [] : [rawPick]);
+    const d = INVITE_PANEL_DIAG;
+    /* Nothing picked AND nothing read: a genuinely un-assigned ticket, which
+       is the one case that should still show nothing at all. */
+    if(!picked.length && !(d && d.read>0)) return "";
     return `<div class="form-card" style="margin-top:14px">
       <h3 style="margin:0 0 8px">Vendor Invite Status</h3>
       <div class="va-hint" style="display:block;margin:0;color:var(--muted)">
         ${picked.length} vendor(s) are selected above, but no invite record could be read back for this ticket, so there is no accept or reject status to show yet.
         An invite record is created when this Assignment step is <b>saved</b> — if it has been saved already, open <b>Accept / Reject</b> from the dashboard: the banner there says whether the invites exist and whether they can name their ticket.
+        <div style="margin-top:10px;font-family:var(--f-mono);font-size:11px;line-height:1.6;opacity:.85">
+          ${d ? ("Invite rows read: <b>"+(d.read<0?"the read failed":d.read)+"</b> \u00b7 matching this ticket: <b>"+d.matched+"</b><br>"+"This ticket's record id: <b>"+esc(d.recordId)+"</b><br>"+"RSID on the first row read: <b>"+esc(d.sampleRsid)+"</b>"+(d.hasRsidField?"":" \u2014 <b>RSID is not among the fields this report returned</b>")) : "The invite list has not been read for this ticket yet."}
+        </div>
       </div>
     </div>`;
   }
@@ -9553,6 +9629,10 @@ async function sendWhatsAppTemplate(phone, templateName, params, invoiceUrl, but
    record write when any one field name is unknown. The console warning below
    dumps the exact payload so a mismatch is obvious rather than silent. */
 let CALL_LOGS_BY_TICKET = {};
+/* Unlinked calls that share a ticket's number or UCID — counted, never shown.
+   The closure page reports the count so an empty table is never mistaken for a
+   broken one. See loadCallLogsForTicket()'s own 2026-10-09 note. */
+let CALL_LOG_NEAR_MISSES = {};
 async function logCallAttempt(recordId, data){
   const fn=resolve("addRecords");
   if(!fn) return "";
@@ -9633,11 +9713,60 @@ async function writeCallLink(callRowId, recordId){
     return true;
   }
 }
-async function linkCallByUcid(ucid, recordId){
+/* How recent an unlinked call has to be before it can be attached to a ticket
+   by phone number alone. Four hours: a ticket is created during or just after
+   the call, and a window wide enough to catch yesterday's call is wide enough
+   to catch the wrong one. */
+const CALL_AUTOLINK_WINDOW_MS = 4*60*60*1000;
+/* Attaches the call this ticket came from — Ozonetel spec step 2. Tries three
+   signals in descending order of certainty and stops at the first that works.
+   See this change's own 2026-10-09 note for why rule 3 is safe here when the
+   same phone match was removed from the server-side APIs today. */
+async function ensureCallLinkedToTicket(recordId, record){
+  if(!recordId) return false;
+  try{
+    // 1. the call this page was opened with.
+    if(POP_CALL_UCID && await linkCallByUcid(POP_CALL_UCID, recordId, true)) return true;
+    // 2. the same call arriving as a field on the ticket.
+    const ticketUcid = String((record && record.UCID)||"").trim();
+    if(ticketUcid && ticketUcid!==POP_CALL_UCID && await linkCallByUcid(ticketUcid, recordId, false)) return true;
+    // 3. an unlinked, recent call from this ticket's own number.
+    const keys = ticketPhoneKeys(record);
+    if(!keys.length) return false;
+    const all = await apiGetReport(CONFIG.callLogReport, null, 500);
+    const now = Date.now();
+    const candidates = all.filter(function(c){
+      if(String(unwrapLookup(c.Create_Case)||"").trim()) return false;   // never overwrite
+      const k = callLogPhoneKey(c.Phone_Number);
+      if(!k || keys.indexOf(k)===-1) return false;
+      const t = parseAnyDateTime(c.Added_Time) || parseAnyDateTime(c.Call_Start_Time);
+      if(!t) return false;
+      const age = now - t.getTime();
+      return age >= 0 && age <= CALL_AUTOLINK_WINDOW_MS;
+    });
+    if(!candidates.length){ console.log("[Get-Rescue] ensureCallLinkedToTicket: no unlinked call from this ticket's number in the last 4 hours — nothing attached. The header Link Call button remains."); return false; }
+    candidates.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+    const pick = candidates[0];
+    const ok = await writeCallLink(pick.ID, recordId);
+    if(ok) console.log("[Get-Rescue] ensureCallLinkedToTicket: attached call row "+pick.ID+" (from "+pick.Phone_Number+", "+pick.Added_Time+") to ticket "+recordId+" — matched on this ticket's own number, within the 4-hour window, and that row carried no link.");
+    return ok;
+  }catch(e){
+    console.warn("[Get-Rescue] ensureCallLinkedToTicket failed (non-blocking — the header Link Call button still works)", e);
+    return false;
+  }
+}
+async function linkCallByUcid(ucid, recordId, allowRelink){
   try{
     const row = await findCallByUcid(ucid);
     if(!row){ console.warn("[Get-Rescue] linkCallByUcid: no "+CONFIG.callLogReport+" row carries UCID "+ucid+" yet. Use the Link Call button in the ticket header once it appears."); return false; }
-    if(String(unwrapLookup(row.Create_Case)||"").trim()){ console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" is already linked to a ticket - left alone."); return false; }
+    /* An existing link is respected unless THIS call produced THIS ticket -
+       see this change's own 2026-10-09 note. */
+    const existingLink = String(unwrapLookup(row.Create_Case)||"").trim();
+    if(existingLink){
+      if(existingLink===String(recordId)){ console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" already points at ticket "+recordId+" - nothing to do."); return false; }
+      if(!allowRelink){ console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" is already linked to ticket "+existingLink+" - left alone."); return false; }
+      console.warn("[Get-Rescue] linkCallByUcid: UCID "+ucid+" was linked to ticket "+existingLink+" by the ringing-time phone match, but the agent opened this call on ticket "+recordId+". The screen-pop is the better authority, so the link is being corrected.");
+    }
     const okLink = await writeCallLink(row.ID, recordId);
     if(!okLink) return false;
     console.log("[Get-Rescue] linkCallByUcid: UCID "+ucid+" linked to ticket "+recordId+".");
@@ -9799,34 +9928,30 @@ async function loadCallLogsForTicket(recordId, record){
       const k=callLogPhoneKey(v);
       if(k && phoneKeys.indexOf(k)===-1) phoneKeys.push(k);
     });
-    const linked=[], byUcid=[], byPhone=[];
-    const seen={};
+    /* LINKED ONLY — 2026-10-09, client decision. The UCID and phone rules added
+       2026-09-29 no longer put rows in this table; they are counted instead, so
+       the page can say how many related calls exist without claiming they belong
+       to this ticket. ensureCallLinkedToTicket() now turns those same signals
+       into real links when the ticket is created or assigned, which is what makes
+       narrowing the display safe. */
+    const linked=[];
+    let nearMisses=0;
     all.forEach(function(c){
-      const id=String(c.ID||"");
-      if(!id || seen[id]) return; // one row can satisfy several rules — count it once
       if(String(unwrapLookup(c.Create_Case)||"")===String(recordId)){
-        seen[id]=1; c._matchedBy="linked"; linked.push(c); return;
+        c._matchedBy="linked"; linked.push(c); return;
       }
+      if(String(unwrapLookup(c.Create_Case)||"").trim()) return;  // belongs to another ticket
       const rowUcid=String(c.UCID==null?"":c.UCID).trim();
-      if(wantUcid && rowUcid && rowUcid===wantUcid){
-        seen[id]=1; c._matchedBy="UCID"; byUcid.push(c); return;
-      }
+      if(wantUcid && rowUcid && rowUcid===wantUcid){ nearMisses++; return; }
       const rowPhone=callLogPhoneKey(c.Phone_Number);
-      if(rowPhone && phoneKeys.indexOf(rowPhone)!==-1){
-        seen[id]=1; c._matchedBy="phone"; byPhone.push(c); return;
-      }
+      if(rowPhone && phoneKeys.indexOf(rowPhone)!==-1) nearMisses++;
     });
-    // Newest-first before the cap, so a capped list keeps the RECENT calls.
-    byPhone.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
-    const phoneTotal=byPhone.length;
-    const phoneKept=byPhone.slice(0, CALL_LOG_PHONE_MATCH_MAX);
-    const mine=linked.concat(byUcid, phoneKept);
-    // Chronological overall — the report's own order stops meaning anything
-    // once rows from three different rules are merged. Record IDs increase
-    // monotonically, the same recency proxy loadDashboard() already relies on.
+    const mine=linked.slice();
+    // Chronological - record ids increase monotonically, the same recency proxy
+    // the dashboard already relies on.
     mine.sort(function(a,b){ return String(a.ID).localeCompare(String(b.ID), undefined, {numeric:true}); });
-    if(phoneTotal>phoneKept.length) mine.__phoneTruncated = phoneTotal-phoneKept.length;
-    console.log("[Get-Rescue] call history for ticket "+recordId+": "+linked.length+" linked, "+byUcid.length+" by UCID, "+phoneKept.length+" by phone"+(phoneTotal>phoneKept.length?(" (+"+(phoneTotal-phoneKept.length)+" older phone matches hidden)"):"")+".");
+    CALL_LOG_NEAR_MISSES[String(recordId)] = nearMisses;
+    console.log("[Get-Rescue] call history for ticket "+recordId+": "+linked.length+" linked call(s) shown; "+nearMisses+" unlinked call(s) share this ticket's number or UCID and are deliberately NOT shown.");
     CALL_LOGS_BY_TICKET[String(recordId)]=mine;
     return mine;
   }catch(e){
@@ -11252,6 +11377,12 @@ function newTicket(){
 // Suggested Rate went blank too, not a separate bug. Prefers the object's own
 // .ID/.id now (what every useId matcher actually needs), falling back to a
 // display value only if no id-like property exists at all.
+/* The record id behind a Lookup value, or the value itself when it is already
+   a bare id. Added 2026-10-09: this was being CALLED in two places in this
+   file and defined in none of them, so every render of the Vendor Invite
+   Status panel for a ticket that actually had invites threw a ReferenceError
+   and left the panel blank. The three field apps have always had their own. */
+function lookupId(v){ return (v && typeof v==="object") ? (v.ID!=null ? v.ID : v.id) : v; }
 function unwrapLookup(v){
   if(v==null) return v;
   if(Array.isArray(v)) return v.map(unwrapLookup);
@@ -13959,7 +14090,18 @@ async function saveStep(advance){
         PENDING_CALL_UCID = "";
         // Fire-and-forget: a failed link must never disturb a create that just
         // succeeded, and the header Link Call button remains the manual route.
-        linkCallByUcid(ucidToLink, id);
+        // The pop's own UCID first, then the wider fallbacks — Ozonetel spec
+        // step 2, "after create case button". Fire-and-forget: a failed link
+        // must never disturb a create that just succeeded.
+        linkCallByUcid(ucidToLink, id, true).then(function(done){
+          if(!done) return ensureCallLinkedToTicket(id, state.record);
+        }).catch(function(e){ console.warn("[Get-Rescue] create-step call link failed (non-blocking)", e); });
+      }
+      /* A ticket created without a screen-pop still gets its call attached, by
+         the phone-and-recency rule — the agent may have been on the dashboard
+         when the phone rang. Guarded so it never runs twice for one create. */
+      if(!PENDING_CALL_UCID && !POP_CALL_UCID){
+        ensureCallLinkedToTicket(id, state.record).catch(function(e){ console.warn("[Get-Rescue] create-step call link failed (non-blocking)", e); });
       }
       acquireLock(id);
       startLockHeartbeat(id);
@@ -14014,6 +14156,11 @@ async function saveStep(advance){
     try{ await writeRoundtripAtConfirmation(); }
     catch(e){ console.warn("[Get-Rescue] writeRoundtripAtConfirmation failed (non-blocking - Agent Closure will still fill it)", e); }
     if(step.key==="assignment"){
+      /* The RSID onto the call log - Ozonetel spec step 2, "after create case
+         button or assign button". See this change's own note for why
+         POP_CALL_UCID is the right signal here. */
+      try{ await ensureCallLinkedToTicket(state.recordId, state.record); }
+      catch(e){ console.warn("[Get-Rescue] assignment-step call link failed (non-blocking - the header Link Call button still works)", e); }
       try{ await syncInvites(state.recordId, state.record.Vendors1); }
       catch(e){ console.warn("[Get-Rescue] syncInvites failed (non-blocking)", e); }
       // Refresh the invite-status panel right after (re)syncing — covers the
@@ -15131,7 +15278,7 @@ async function handleCallCenterHandoff(){
      its call history already correct. */
   if(openId){
     console.log("[Get-Rescue] call pop: opening ticket", openId, popUcid?("and linking call "+popUcid):"(no call id sent)");
-    if(popUcid){ await linkCallByUcid(popUcid, openId); }
+    if(popUcid){ await linkCallByUcid(popUcid, openId, true); }
     const rec = await apiGetById(openId);
     if(rec){ openTicketOrClosure(rec); }
     else { toast("Couldn't open that ticket from the call pop - it may have been deleted","err"); }
