@@ -5608,7 +5608,8 @@ function sendRescuerEtaMessage(r){
      SEND 8's own result so every existing caller behaves exactly as before. */
   return sendWhatsAppTemplate(r.Phone_Number1, "share_rescue_service_details_and_eta", [rescuerName, rescuerPhone, etaText])
     .then(function(ok8){
-      return sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", [])
+      /* SEND 9 is SCHEDULED here too - 2026-10-10, see scheduleSend9(). */
+      return scheduleSend9(r)
         .then(function(ok9){ if(!ok9) console.warn("[Get-Rescue] SEND 9 extra-charges advisory failed (non-blocking)"); return ok8; },
               function(e){ console.warn("[Get-Rescue] SEND 9 threw (non-blocking)", e); return ok8; });
     });
@@ -9717,6 +9718,40 @@ async function writeCallLink(callRowId, recordId){
    by phone number alone. Four hours: a ticket is created during or just after
    the call, and a window wide enough to catch yesterday's call is wide enough
    to catch the wrong one. */
+/* OPTION 2 FROM THE CLIENT'S 2026-10-10 MAIL - "restrict linking to only the
+   last received call by that agent (if not already linked)".
+
+   What it replaces: a search for any unlinked call from this ticket's number
+   in the last four hours, newest first. A repeat caller always has older rows
+   in that window, so whichever happened to be newest got attached - the
+   "random pre-existing call record" they reported.
+
+   TWO PROPERTIES, BOTH DELIBERATE:
+     - ONLY THIS AGENT'S OWN CALLS COUNT. A row is attributable when Placed_By
+       carries the logged-in email, which the screen-pop and every app-placed
+       call already write. A row nobody can attribute is left alone rather than
+       guessed at, so this links LESS than before. That is the point.
+     - ONLY THE LAST ONE. If the agent's most recent call is already linked,
+       nothing is linked at all - the search never walks further back. One
+       candidate, ever, is what removes the randomness.
+
+   CALL_LINK_REQUIRE_OWN_CALL = false restores the pre-2026-10-10 phone-and-
+   recency behaviour exactly, in one character, should the narrower rule turn
+   out to attach too little once it is in real use. */
+const CALL_LINK_REQUIRE_OWN_CALL = true;
+function callRowIsMine(c){
+  if(!LOGIN_EMAIL) return false;
+  return String((c && c.Placed_By)||"").trim().toLowerCase() === String(LOGIN_EMAIL).trim().toLowerCase();
+}
+/* This agent's most recent call row, linked or not, or null when none is
+   attributable to them. Whether an already-linked row should stop the search is
+   the CALLER's decision; this only answers "which row was their last call". */
+function myLastCallRow(all){
+  const mine = (all||[]).filter(callRowIsMine);
+  if(!mine.length) return null;
+  mine.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+  return mine[0];
+}
 const CALL_AUTOLINK_WINDOW_MS = 4*60*60*1000;
 /* Attaches the call this ticket came from — Ozonetel spec step 2. Tries three
    signals in descending order of certainty and stops at the first that works.
@@ -9730,10 +9765,31 @@ async function ensureCallLinkedToTicket(recordId, record){
     // 2. the same call arriving as a field on the ticket.
     const ticketUcid = String((record && record.UCID)||"").trim();
     if(ticketUcid && ticketUcid!==POP_CALL_UCID && await linkCallByUcid(ticketUcid, recordId, false)) return true;
-    // 3. an unlinked, recent call from this ticket's own number.
+    /* 3. THIS AGENT'S OWN LAST CALL - 2026-10-10, the client's Option 2.
+       See myLastCallRow()'s note above for what this replaced and why. */
+    const all = await apiGetReport(CONFIG.callLogReport, null, 500);
+    if(CALL_LINK_REQUIRE_OWN_CALL){
+      const mine = myLastCallRow(all);
+      if(!mine){
+        console.log("[Get-Rescue] ensureCallLinkedToTicket: no call row is attributable to "+(LOGIN_EMAIL||"this agent")+" - Placed_By is written by the screen-pop and by app-placed calls, so a call the agent never popped cannot be claimed. Nothing attached; the header Link Call button remains.");
+        return false;
+      }
+      const alreadyOn = String(unwrapLookup(mine.Create_Case)||"").trim();
+      if(alreadyOn){
+        console.log("[Get-Rescue] ensureCallLinkedToTicket: this agent's last call (row "+mine.ID+") already belongs to ticket "+alreadyOn+", so nothing was attached. The search deliberately does NOT walk further back - doing so is what used to attach a random older call.");
+        return false;
+      }
+      const okMine = await writeCallLink(mine.ID, recordId);
+      if(okMine){
+        console.log("[Get-Rescue] ensureCallLinkedToTicket: attached this agent's last call (row "+mine.ID+", from "+mine.Phone_Number+") to ticket "+recordId+".");
+        if(!callLogPhoneMatchesTicket(mine, record)) console.warn("[Get-Rescue] ensureCallLinkedToTicket: note that call row "+mine.ID+" is from "+mine.Phone_Number+", which is NOT this ticket's number. It was attached because it is this agent's last unlinked call.");
+      }
+      return okMine;
+    }
+    /* PRE-2026-10-10 PATH, kept whole behind the flag so one character brings
+       it back unchanged. */
     const keys = ticketPhoneKeys(record);
     if(!keys.length) return false;
-    const all = await apiGetReport(CONFIG.callLogReport, null, 500);
     const now = Date.now();
     const candidates = all.filter(function(c){
       if(String(unwrapLookup(c.Create_Case)||"").trim()) return false;   // never overwrite
@@ -9744,11 +9800,11 @@ async function ensureCallLinkedToTicket(recordId, record){
       const age = now - t.getTime();
       return age >= 0 && age <= CALL_AUTOLINK_WINDOW_MS;
     });
-    if(!candidates.length){ console.log("[Get-Rescue] ensureCallLinkedToTicket: no unlinked call from this ticket's number in the last 4 hours — nothing attached. The header Link Call button remains."); return false; }
+    if(!candidates.length){ console.log("[Get-Rescue] ensureCallLinkedToTicket: no unlinked call from this ticket's number in the last 4 hours - nothing attached. The header Link Call button remains."); return false; }
     candidates.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
     const pick = candidates[0];
     const ok = await writeCallLink(pick.ID, recordId);
-    if(ok) console.log("[Get-Rescue] ensureCallLinkedToTicket: attached call row "+pick.ID+" (from "+pick.Phone_Number+", "+pick.Added_Time+") to ticket "+recordId+" — matched on this ticket's own number, within the 4-hour window, and that row carried no link.");
+    if(ok) console.log("[Get-Rescue] ensureCallLinkedToTicket: attached call row "+pick.ID+" (from "+pick.Phone_Number+", "+pick.Added_Time+") to ticket "+recordId+" - matched on this ticket's own number, within the 4-hour window, and that row carried no link.");
     return ok;
   }catch(e){
     console.warn("[Get-Rescue] ensureCallLinkedToTicket failed (non-blocking — the header Link Call button still works)", e);
@@ -9794,14 +9850,25 @@ async function findLinkableCall(recordId, record){
     /* THE CALL THIS PAGE WAS OPENED WITH WINS - 2026-10-07. When the agent
        arrived from an Ozonetel pop we know the exact UCID, so there is nothing
        to infer: linking the right call beats linking the most recent one. The
-       phone-and-recency rules below stay for the ALL TICKETS route, where no
-       call id was ever passed. */
+       rules below cover the ALL TICKETS route, where no call id was ever
+       passed - this agent's own last call, or, with CALL_LINK_REQUIRE_OWN_CALL
+       off, the pre-2026-10-10 phone-and-recency search. */
     if(POP_CALL_UCID){
       const exact = unlinked.find(function(c){ return String(c.UCID==null?"":c.UCID).trim()===POP_CALL_UCID; });
       if(exact){ exact._matchedBy="ucid"; return exact; }
-      console.log("[Get-Rescue] findLinkableCall: this page carried UCID", POP_CALL_UCID, "but no UNLINKED call log row matches it (already linked, or not written yet) - falling back to phone and recency.");
+      console.log("[Get-Rescue] findLinkableCall: this page carried UCID", POP_CALL_UCID, "but no UNLINKED call log row matches it (already linked, or not written yet) - falling back to the rule below.");
     }
     if(!unlinked.length) return null;
+    /* The header button offers the SAME candidate the automatic link would
+       take - 2026-10-10. Two surfaces proposing different calls for one ticket
+       is how an agent ends up linking the wrong one by hand. */
+    if(CALL_LINK_REQUIRE_OWN_CALL){
+      const mineLast = myLastCallRow(all);
+      if(!mineLast){ console.log("[Get-Rescue] findLinkableCall: no call row is attributable to "+(LOGIN_EMAIL||"this agent")+", so the Link Call button stays hidden."); return null; }
+      if(String(unwrapLookup(mineLast.Create_Case)||"").trim()){ console.log("[Get-Rescue] findLinkableCall: this agent's last call (row "+mineLast.ID+") is already linked, so nothing is offered. The search does not walk further back."); return null; }
+      mineLast._matchedBy = "your last call";
+      return mineLast;
+    }
     const keys = [];
     [record && record.Phone_Number1, record && record[CONFIG.phoneField]].forEach(function(v){
       const k = callLogPhoneKey(v);
@@ -9853,7 +9920,10 @@ async function refreshLinkCallButton(){
   /* The label itself carries the warning - 2026-10-08. A title attribute is
      invisible on a touch screen, and this is the moment the wrong call gets
      attached. */
-  const phoneOk = call._matchedBy!=="recency" || callLogPhoneMatchesTicket(call, state.record);
+  /* Widened 2026-10-10: anything that is not a UCID or a phone match gets the
+     number checked, which now covers the "your last call" candidate too.
+     Unchanged for every value that existed before. */
+  const phoneOk = (call._matchedBy==="ucid" || call._matchedBy==="phone") || callLogPhoneMatchesTicket(call, state.record);
   btn.textContent = phoneOk ? "Link Call" : "Link Call ⚠";
   btn.title = phoneOk
     ? ("Link the call from "+who+" to this ticket. It will then appear in this ticket's own call history.")
@@ -10834,6 +10904,58 @@ window.addEventListener("pagehide", function(){
 // to guarantee the flip without depending on a human happening to have this
 // page open at the right moment; see FIELDS.md's own note on the
 // companion Zoho Deluge Schedule for that case.
+/* SEND 9, five minutes after SEND 8 - 2026-10-10. See this change's own note
+   for the reliability trade-off. 0 restores immediate sending. */
+const SEND9_DELAY_MINUTES = 5;
+async function scheduleSend9(r){
+  if(SEND9_DELAY_MINUTES <= 0){
+    return sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+  }
+  try{
+    const due = new Date(Date.now() + SEND9_DELAY_MINUTES*60000);
+    await updateTicket(r.ID, { Send_9_Due_At: fmtDateTime(due) });
+    console.log("[Get-Rescue] scheduleSend9: ticket "+r.ID+" marked due at "+fmtDateTime(due)+".");
+    return true;
+  }catch(e){
+    console.warn("[Get-Rescue] scheduleSend9: could not mark ticket "+(r&&r.ID)+" due (is Send_9_Due_At on Create_Case?) - sending immediately instead, which is the pre-2026-10-10 behaviour.", e);
+    return sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+  }
+}
+/* Sweeps tickets whose SEND 9 has come due. Shaped exactly like
+   autoPromoteScheduledTickets() below, and called from the same poll, because
+   that pattern is already proven here.
+
+   THE FIELD IS CLEARED BEFORE THE MESSAGE IS SENT. Two dashboards can be open
+   on the same ticket; clearing first means the second reads a blank field and
+   skips it. A send that then fails loses the message rather than repeating it,
+   which for an advisory about extra charges is the right way round. */
+async function sendDueSend9Messages(recs){
+  if(SEND9_DELAY_MINUTES <= 0) return;
+  const now = Date.now();
+  const due = recs.filter(function(r){
+    const raw = String(readVal(r,"Send_9_Due_At")||"").trim();
+    if(!raw) return false;
+    const t = parseAnyDateTime(raw);
+    return !!t && t.getTime() <= now;
+  });
+  if(!due.length) return;
+  console.log("[Get-Rescue] sendDueSend9Messages:", due.length, "ticket(s) due:", due.map(function(r){ return r.ID; }));
+  for(const r of due){
+    try{
+      await updateTicket(r.ID, { Send_9_Due_At: "" });   // claim it first
+      r.Send_9_Due_At = "";
+    }catch(e){
+      console.warn("[Get-Rescue] sendDueSend9Messages: could not clear the due flag on", r.ID, "- skipping rather than risking a duplicate send", e);
+      continue;
+    }
+    try{
+      await sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+      console.log("[Get-Rescue] sendDueSend9Messages: SEND 9 delivered for ticket", r.ID);
+    }catch(e){
+      console.warn("[Get-Rescue] sendDueSend9Messages: SEND 9 failed for ticket", r.ID, "- the due flag is already cleared, so it will NOT be retried", e);
+    }
+  }
+}
 async function autoPromoteScheduledTickets(recs){
   const due = recs.filter(function(r){
     const st = String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase();
@@ -12681,6 +12803,11 @@ async function pollDashboardForMechanicUpdates(){
     // notification (SCHEDULED -> READY FOR ASSIGNMENT is exactly the kind of
     // change that notification is for) — no separate handling needed.
     await autoPromoteScheduledTickets(recs);
+    // SEND 9, five minutes after SEND 8 - 2026-10-10. Same poll, same shape as
+    // the promotion above. Non-blocking: a messaging failure must never stop
+    // the dashboard refreshing.
+    try{ await sendDueSend9Messages(recs); }
+    catch(e){ console.warn("[Get-Rescue] sendDueSend9Messages failed (non-blocking)", e); }
     const changed=[];
     // Real bug fixed 2026-09-01 (user-reported live, two tabs open on the
     // same dashboard: a brand-new ticket created in one tab never appeared

@@ -670,6 +670,29 @@ async function stampInviteResponse(inviteId, data){
   try{ await apiUpdateReport(CONFIG.invitesReport, inviteId, { Responded_At: fmtDateTime(new Date()) }); }
   catch(e){ console.warn("[GR-Vendor] stampInviteResponse: Responded_At was not written on invite "+inviteId+" - the response itself IS saved. If the agent's RESPONDED column stays blank, add Responded_At (Single Line) to the Invites FORM and to the Invites report layout.", e); }
 }
+/* Marks SEND 9 due five minutes from now, for the agent dashboard to sweep.
+   See the 2026-10-10 note on this change for the reliability trade-off and for
+   why it is a field plus a sweep rather than a timer.
+   SEND9_DELAY_MINUTES = 0 sends immediately instead, which is what this app did
+   before today. */
+const SEND9_DELAY_MINUTES = 5;
+async function scheduleSend9(r){
+  const phone = r ? r[CONFIG.phoneField] : "";
+  if(SEND9_DELAY_MINUTES <= 0){
+    return sendWhatsAppTemplate(phone, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+  }
+  try{
+    const due = new Date(Date.now() + SEND9_DELAY_MINUTES*60000);
+    await apiUpdate(r.ID, { Send_9_Due_At: fmtDateTime(due) });
+    console.log("[GR] scheduleSend9: ticket "+r.ID+" marked due at "+fmtDateTime(due)+". The agent dashboard sweeps it.");
+    return true;
+  }catch(e){
+    /* The field almost certainly does not exist yet. Sending now is strictly
+       better than not sending at all, and it is what this app did before. */
+    console.warn("[GR] scheduleSend9: could not mark ticket "+(r&&r.ID)+" due (is Send_9_Due_At on Create_Case?) - sending SEND 9 immediately instead, which is the pre-2026-10-10 behaviour.", e);
+    return sendWhatsAppTemplate(phone, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+  }
+}
 async function updateMyInvite(ticketId, data){
   let invite=state.inviteByTicketId && state.inviteByTicketId[String(ticketId)];
   if(!invite || invite.ID==null){
@@ -2524,7 +2547,11 @@ async function acceptService(){
        already reports its own outcome and this must not turn one failure into two
        error messages on the vendor's screen. */
     sendWhatsAppTemplate(r[CONFIG.phoneField], "share_rescue_service_details_and_eta", [MY_VENDOR_NAME||"-", MY_VENDOR_PHONE||"-", customerEtaText(dist&&dist.etaMins)||"-"])
-      .then(function(){ return sendWhatsAppTemplate(r[CONFIG.phoneField], "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []); })
+      /* SEND 9 is SCHEDULED, not sent here - 2026-10-10. See scheduleSend9()
+         for the five-minute rule and for what happens when the field does not
+         exist yet. The chain is kept so a scheduling failure still cannot
+         disturb SEND 8, which has already gone. */
+      .then(function(){ return scheduleSend9(r); })
       .then(function(ok9){ if(!ok9) console.warn("[GR] SEND 9 extra-charges advisory failed (non-blocking) for ticket", r.ID); })
       .catch(function(e){ console.warn("[GR] SEND 8/9 chain threw (non-blocking)", e); });
     // Navigates straight to "Reach Breakdown Location" per the flow spec —

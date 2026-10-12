@@ -488,6 +488,73 @@ function popIsActive(t){
   const s = String(t.Status||"").trim().toUpperCase();
   return s!=="CLOSED" && s!=="RSP CLOSED";
 }
+/* Every ticket, read once and kept for the life of this pop so typing in the
+   search box does not re-read the report on each keystroke. Cleared whenever a
+   new pop opens. */
+let POP_ALL_TICKETS = null;
+async function popAllTickets(){
+  if(POP_ALL_TICKETS) return POP_ALL_TICKETS;
+  const fn = resolve("getRecords");
+  if(!fn) return [];
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:CONFIG.ticketReportName, field_config:"all", max_records:1000 });
+    POP_ALL_TICKETS = (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  }catch(e){
+    console.warn("[GR-CallCenter] popAllTickets failed - the Old Case search will find nothing", e);
+    POP_ALL_TICKETS = [];
+  }
+  return POP_ALL_TICKETS;
+}
+/* The three fields the wireframe names. A digits-only query of 6+ characters is
+   also tried as a phone number, normalised to the last ten digits the way every
+   other phone comparison in this widget is. */
+function popTicketMatchesQuery(t, q){
+  const needle = String(q||"").trim().toLowerCase();
+  if(!needle) return false;
+  const tracking = String(t.Client_Tracking_Id||"").trim().toLowerCase();
+  if(tracking && tracking.indexOf(needle)!==-1) return true;
+  const reg = String(t.Vehicle_Registration_Number||"").trim().toLowerCase();
+  if(reg && reg.indexOf(needle)!==-1) return true;
+  const caseId = String(t.Case_ID||"").trim().toLowerCase();
+  if(caseId && caseId.indexOf(needle)!==-1) return true;
+  const digits = needle.replace(/\D/g,"");
+  if(digits.length>=6){
+    const key = popLast10(digits);
+    if(key && (popLast10(t.Phone_Number1)===key || popLast10(t.Phone_Number)===key || popLast10(t.Alternate_Phone_Number)===key)) return true;
+  }
+  return false;
+}
+/* Renders into the pop's own results area. Active tickets first, then newest,
+   the same order popFindTickets() uses so the two lists read alike. */
+async function popRunSearch(){
+  const box = $("popSearchInput"), out = $("popSearchResults");
+  if(!box || !out) return;
+  const q = String(box.value||"").trim();
+  if(q.length < 2){ out.innerHTML = `<div class="hint">Type at least 2 characters \u2014 mobile number, client tracking ID, vehicle registration or Case ID.</div>`; return; }
+  out.innerHTML = `<div class="hint">Searching\u2026</div>`;
+  const all = await popAllTickets();
+  const hits = all.filter(function(t){ return popTicketMatchesQuery(t, q); });
+  hits.sort(function(a,b){
+    const aa=popIsActive(a), ab=popIsActive(b);
+    if(aa!==ab) return aa ? -1 : 1;
+    return String(b.ID||"").localeCompare(String(a.ID||""));
+  });
+  if(!hits.length){ out.innerHTML = `<div class="hint">No ticket matches \u201c${esc(q)}\u201d by phone, tracking ID, registration number or Case ID.</div>`; return; }
+  const shown = hits.slice(0,8);
+  out.innerHTML = `<div class="cc-detail-grid">${shown.map(popTicketHtml).join("")}</div>`
+    + (hits.length>shown.length ? `<div class="hint" style="margin-top:8px">${hits.length-shown.length} further match(es) not shown \u2014 narrow the search.</div>` : "");
+}
+/* The Old Case half of the wireframe's New Case / Old Case choice. */
+function popSearchHtml(){
+  return `<div style="margin-top:12px">
+    <div class="hint" style="margin-bottom:6px"><b>Old Case</b> \u2014 search by mobile number, client tracking ID, vehicle registration number or Case ID.</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="popSearchInput" placeholder="e.g. 9606000714, RZ-4821, KA01AB1234" style="flex:1;min-width:220px">
+      <button type="button" id="popSearchBtn" class="btn ghost sm">Search</button>
+    </div>
+    <div id="popSearchResults" style="margin-top:8px"></div>
+  </div>`;
+}
 async function popFindTickets(phone10){
   const fn = resolve("getRecords");
   if(!fn || !phone10) return [];
@@ -704,6 +771,9 @@ async function renderIncomingCallPop(override){
   }
   const popUcid = popPick(params, POP_UCID_KEYS);
   const popType = popPick(params, POP_TYPE_KEYS) || "Inbound";
+  // A new call means a fresh read - the cache exists only to stop the search
+  // box re-reading the report on every keystroke within one pop.
+  POP_ALL_TICKETS = null;
   const card = $("popCard");
   card.hidden = false;
   card.innerHTML = `<div class="sec-head" style="margin-top:0"><h2>📞 Incoming call — ${esc(rawPhone)}</h2></div><div class="hint">Looking up this number…</div>`;
@@ -725,19 +795,37 @@ async function renderIncomingCallPop(override){
     </div>
     <div class="hint" style="margin-bottom:10px">${esc(popType)}${popUcid?(" · UCID "+esc(popUcid)):""} · matched on the last 10 digits (${esc(phone10)})</div>
     ${body}
+    ${popSearchHtml()}
     ${popActionsHtml(phone10, popUcid)}
     <div class="hint" style="margin-top:10px" id="popLogNote">Logging this call…</div>`;
   $("popDismissBtn").onclick = function(){ card.hidden = true; };
+  /* Old Case search - 2026-10-10. Debounced so typing does not re-filter a
+     1000-row list on every keystroke; the button and Enter both run it now. */
+  const popSearchBox = $("popSearchInput");
+  if(popSearchBox){
+    let popSearchT = null;
+    popSearchBox.oninput = function(){ clearTimeout(popSearchT); popSearchT = setTimeout(popRunSearch, 250); };
+    popSearchBox.onkeydown = function(e){ if(e.key==="Enter"){ e.preventDefault(); clearTimeout(popSearchT); popRunSearch(); } };
+  }
+  if($("popSearchBtn")) $("popSearchBtn").onclick = popRunSearch;
   /* Log the inbound call straight away, through this widget's OWN existing
      apiAddCallLog() — the agent should see it in the history below without
      waiting for the end of the call.
 
-     No duplicate is created. The row is written with NO UCID, and
-     getCallbackStatus.deluge's end-of-call handler matches "the newest row for
-     this number that has no UCID yet" before it considers creating one — the
-     exact path an app-placed outbound call already follows. If this write
-     fails, or the agent never had this page open, that same handler creates the
-     row itself, so the call is captured either way. */
+     THIS ROW CARRIES THE POP’S UCID, AND THAT USED TO DUPLICATE IT.
+     The comment that stood here until 2026-10-10 claimed the row was written
+     with no UCID, and that getCallbackStatus.deluge would therefore claim it as
+     "the newest row for this number with no UCID yet". The line below writes a
+     UCID whenever the ScreenPop URL carried one, so that fallback never applied
+     and the end-of-call handler created a second row - the client reported the
+     pair on 2026-10-10: this row linked but empty, theirs complete but loose.
+
+     getCallbackStatus now matches on UCID OR monitorUCID, so it finds this row
+     and completes it in place. If the pop’s id turns out to be neither of
+     those, the duplicate returns and the fix is to stop writing a UCID here -
+     see that function’s own 2026-10-10 note. If this write fails, or the agent
+     never had this page open, the end-of-call handler creates the row itself,
+     so the call is captured either way. */
   if(CALL_LOG_AVAILABLE===false){
     $("popLogNote").textContent = "Not logged — the Call_Log form isn't available (see the banner above).";
     return;
@@ -747,20 +835,22 @@ async function renderIncomingCallPop(override){
      writing another one here would duplicate it. Every other route into this
      function leaves logRowId undefined and logs exactly as before. */
   if(override && override.logRowId){
-    $("popLogNote").textContent = tickets.length
-      ? ("Logged against ticket "+(tickets[0].Case_ID||tickets[0].ID)+". Full call details arrive when the call ends.")
-      : "Logged (not linked to a ticket — no ticket carries this number). Full call details arrive when the call ends.";
+    $("popLogNote").textContent = "Logged. The ticket is attached when you create a case or save an assignment from this call. Full call details arrive when the call ends.";
     return;
   }
   try{
     const data = { Phone_Number: phone10, Call_Direction: popType, Call_Status: "Incoming" };
     if(popUcid) data.UCID = popUcid;
-    if(tickets.length) data.Create_Case = String(tickets[0].ID);
+    /* NOT LINKED HERE - 2026-10-10. This wrote the newest phone match onto the
+       call log, which is the fourth place that guessed a ticket from a phone
+       number. Per the client's three-step Ozonetel spec the RSID goes on at
+       step 2, when an agent creates the case or saves the assignment. The row
+       is still logged; it just no longer carries a guess. */
     if(LOGIN_EMAIL) data.Placed_By = LOGIN_EMAIL;
     await apiAddCallLog(data);
-    $("popLogNote").textContent = tickets.length
-      ? ("Logged against ticket "+(tickets[0].Case_ID||tickets[0].ID)+". Full call details arrive when the call ends.")
-      : "Logged (not linked to a ticket — no ticket carries this number). Full call details arrive when the call ends.";
+    // Same wording as the ring-time branch above - the row is logged, the
+    // ticket is attached at step 2, so claiming a link here would be wrong.
+    $("popLogNote").textContent = "Logged. The ticket is attached when you create a case or save an assignment from this call. Full call details arrive when the call ends.";
     await loadHistory();
   }catch(e){
     console.warn("[GR-CallCenter] screen-pop: could not log the inbound call (non-blocking — the end-of-call callback will create the row instead)", e);

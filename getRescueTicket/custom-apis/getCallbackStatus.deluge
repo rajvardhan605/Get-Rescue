@@ -316,6 +316,14 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 			info "  TOKEN FAILED - no access_token returned. Raw response: " + tokenResp.toString();
 			return "{\"code\": \"SUCCESS\", \"result\": \"TOKEN_FAILED\", \"updated\": false, \"message\": \"Could not get an access token from the refresh token, so nothing was written. See this Custom API execution log for the raw response.\"}";
 		}
+		// Set when the row was found under an id OTHER than the one this callback
+		// calls the UCID - 2026-10-10. Recorded in the history line below so the
+		// screen-pop's original id is not simply overwritten and lost.
+		matchedByAlt = "";
+		// The id a still-pending row was carrying when this callback claimed it -
+		// 2026-10-12. Recorded in the history line below, because the row's UCID
+		// is about to be replaced with Ozonetel's own.
+		claimedPendingUcid = "";
 		logRecId = "";
 		if(resolvedUcid != "")
 		{
@@ -331,6 +339,111 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 		if(logRecId == "null")
 		{
 			logRecId = "";
+		}
+		/* ALTERNATE CALL IDS - 2026-10-10, the client's duplicate-record report.
+		   Ozonetel hands the screen-pop one id and this callback another for the
+		   same call. Before this, the mismatch produced a SECOND Call_Log row: the
+		   exact match missed, and the phone fallback below only claims rows whose
+		   UCID is blank - the pop's row has one, just not this one.
+
+		   Tries every id that actually arrived, skipping the one already tried.
+		   When none of them matches anything the behaviour is exactly as before. */
+		if(logRecId == "")
+		{
+			altUcids = List();
+			if(vUcid != "")
+			{
+				altUcids.add(vUcid);
+			}
+			if(vMonitorUcid != "")
+			{
+				altUcids.add(vMonitorUcid);
+			}
+			paramUcid = ifnull(ucid,"").trim();
+			if(paramUcid != "")
+			{
+				altUcids.add(paramUcid);
+			}
+			paramCallbackId = ifnull(callbackId,"").trim();
+			if(paramCallbackId != "")
+			{
+				altUcids.add(paramCallbackId);
+			}
+			for each altUcid in altUcids
+			{
+				if(logRecId == "")
+				{
+					if(altUcid != resolvedUcid)
+					{
+						for each altRow in Call_Log[UCID == altUcid]
+						{
+							if(logRecId == "")
+							{
+								logRecId = altRow.ID.toString();
+								matchedByAlt = altUcid;
+								info "  Matched Call_Log " + logRecId + " by the ALTERNATE id [" + altUcid + "] rather than [" + resolvedUcid + "]. This is the screen-pop's own row - the pop stored whichever id Ozonetel put in the ScreenPop URL, and this callback calls the same call something else. The row is completed in place, which is what stops a second one being created.";
+							}
+						}
+					}
+				}
+			}
+			if(logRecId == "null")
+			{
+				logRecId = "";
+			}
+		}
+		/* STILL-PENDING ROW FOR THIS NUMBER - 2026-10-12, the client's own
+		   "UCID and Call_status" suggestion. See this change's note for the full
+		   reasoning; in short, RINGING / Incoming / Placed are words only a
+		   row-creator writes and no callback ever writes, so a row still carrying
+		   one is waiting for exactly this callback - whatever id it holds.
+
+		   This is what resolves the duplicate WITHOUT knowing which id the
+		   screen-pop stored. The alternate-id pass above stays because it is the
+		   more precise of the two and runs first.
+
+		   Only the NEWEST row for the number is eligible, so a RINGING row left
+		   over from an earlier call whose callback never arrived is passed over
+		   instead of being overwritten by an unrelated call. */
+		if(logRecId == "")
+		{
+			if(resolvedPhone != "")
+			{
+				pendingStatuses = "|RINGING|INCOMING|PLACED|";
+				newestId = 0;
+				newestIdText = "";
+				newestStatus = "";
+				newestUcid = "";
+				for each phoneRow in Call_Log[Phone_Number == resolvedPhone]
+				{
+					rowId = phoneRow.ID;
+					if(rowId > newestId)
+					{
+						newestId = rowId;
+						newestIdText = phoneRow.ID.toString();
+						// Two methods off ifnull, then two off a plain variable - the
+						// shapes this codebase has proven Deluge accepts.
+						rowStatusText = ifnull(phoneRow.Call_Status,"").toString();
+						newestStatus = rowStatusText.trim().toUpperCase();
+						newestUcid = ifnull(phoneRow.UCID,"").toString().trim();
+					}
+				}
+				if(newestId > 0)
+				{
+					// Wrapped in pipes so a status cannot match inside a longer one.
+					pendingKey = "|" + newestStatus + "|";
+					if(pendingStatuses.contains(pendingKey))
+					{
+						logRecId = newestIdText;
+						claimedPendingUcid = newestUcid;
+						info "  Matched Call_Log " + logRecId + " as the newest STILL-PENDING row for " + resolvedPhone + " (Call_Status was [" + newestStatus + "], id on it was [" + newestUcid + "]). No callback had completed it, so this is the row this call belongs to and it is completed in place rather than a second one being created.";
+					}
+					else
+					{
+						info "  Newest row for " + resolvedPhone + " is Call_Log " + newestIdText + " with Call_Status [" + newestStatus + "], which is not a pending status - leaving it alone and trying the remaining rules.";
+					}
+				}
+			}
 		}
 		if(logRecId == "")
 		{
@@ -649,6 +762,14 @@ string getCallbackStatus(string data, string ucid, string callbackId)
 		if(vCallFlow != "")
 		{
 			historyLine = historyLine + "\nCall Flow: " + vCallFlow;
+		}
+		if(matchedByAlt != "")
+		{
+			historyLine = historyLine + "\nMatched this row by its screen-pop id: " + matchedByAlt;
+		}
+		if(claimedPendingUcid != "")
+		{
+			historyLine = historyLine + "\nClaimed a still-pending row whose id was: " + claimedPendingUcid;
 		}
 		if(existingHistory.trim() == "")
 		{

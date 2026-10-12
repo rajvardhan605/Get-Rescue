@@ -478,7 +478,52 @@ string whatsappWebhook(string token, string event, string from, map data, map me
 			}
 		}
 
-		info "whatsappWebhook - sender=[" + senderPhone + "] button=[" + buttonText + "] text=[" + bodyText + "] wamid=[" + wamid + "] replyTo=[" + contextWamid + "]";
+		// A shared location pin - 2026-10-10, see this change's own note. Read the
+		// same guarded way the text body above is read: own try, own catch, no
+		// nesting, so a payload shape this does not recognise logs and moves on.
+		locLat = "";
+		locLon = "";
+		locObj = null;
+		try
+		{
+			locObj = msgMap.get("location");
+		}
+		catch (locGetEx)
+		{
+			locObj = null;
+		}
+		if(locObj != null)
+		{
+			try
+			{
+				latRaw = locObj.get("latitude");
+				lonRaw = locObj.get("longitude");
+				if(latRaw != null)
+				{
+					locLat = latRaw.toString().trim();
+				}
+				if(lonRaw != null)
+				{
+					locLon = lonRaw.toString().trim();
+				}
+			}
+			catch (locMapEx)
+			{
+				info "whatsappWebhook - a location message arrived but its latitude/longitude could not be read: " + locMapEx.toString();
+				locLat = "";
+				locLon = "";
+			}
+		}
+		// Both halves or neither - a lone latitude is not a position.
+		if(locLon == "")
+		{
+			locLat = "";
+		}
+		if(locLat == "")
+		{
+			locLon = "";
+		}
+		info "whatsappWebhook - sender=[" + senderPhone + "] button=[" + buttonText + "] text=[" + bodyText + "] location=[" + locLat + "," + locLon + "] wamid=[" + wamid + "] replyTo=[" + contextWamid + "]";
 
 		if(senderPhone == "")
 		{
@@ -556,6 +601,12 @@ string whatsappWebhook(string token, string event, string from, map data, map me
 		{
 			lineText = "Tapped button: " + buttonText;
 		}
+		// Most specific wins: a location message carries no body and no button, so
+		// this only ever replaces the "cannot display" fallback.
+		if(locLat != "")
+		{
+			lineText = "Shared a location pin: " + locLat + ", " + locLon;
+		}
 		stampText = zoho.currenttime.toString("dd-MMM-yyyy hh:mm a");
 		newLine = stampText + " - " + lineText;
 
@@ -584,6 +635,28 @@ string whatsappWebhook(string token, string event, string from, map data, map me
 					combined = combined.subString(0,6000);
 				}
 				tktRec.WhatsApp_Inbound_Log = combined;
+				// The pin itself - 2026-10-10. Only into an EMPTY breakdown location:
+				// an agent may have corrected a pin the customer sent to the wrong
+				// place, and a TOW drop pin cannot be told apart from a breakdown one.
+				if(locLat != "")
+				{
+					existingLat = ifnull(tktRec.Latitude,"").toString().trim();
+					if(existingLat == "")
+					{
+						tktRec.Latitude = locLat;
+						tktRec.Longitude = locLon;
+						info "whatsappWebhook - breakdown location set on ticket " + matchedId + " from the customer's shared pin: " + locLat + ", " + locLon;
+						existingLocTime = ifnull(tktRec.Location_Received_Time,"").toString().trim();
+						if(existingLocTime == "")
+						{
+							tktRec.Location_Received_Time = zoho.currenttime.toString("dd-MMM-yyyy HH:mm:ss");
+						}
+					}
+					else
+					{
+						info "whatsappWebhook - ticket " + matchedId + " already has a breakdown location, so the pin was logged but NOT written. If this is the DROP pin for a tow, an agent needs to place it.";
+					}
+				}
 				wroteOk = "yes";
 			}
 		}

@@ -332,6 +332,9 @@ img,svg{max-width:100%}
     <div class="form-card">
       <h3 id="stepTitle"></h3>
       <div class="fdesc" id="stepDesc"></div>
+      <!-- Shown only for a CLOSED ticket - see openTicket()'s own 2026-10-10
+           note. Same wording as getRescueTicket's own banner. -->
+      <div class="hint" id="kbClosedBanner" style="display:none;margin:0 0 14px">🔒 This ticket is already closed — view only.</div>
       <div class="grid" id="fields"></div>
     </div>
   </div>
@@ -1338,7 +1341,19 @@ function unwrapLookup(v){
   if(typeof v==="object") return v.display_value||v.zc_display_value||v.value||"";
   return v;
 }
+/* Defence in depth - 2026-10-10. The Save and Close buttons are hidden for a
+   closed ticket, so neither of these should be reachable; guarded anyway,
+   because a stale handler or a keyboard shortcut writing a fresh Status onto
+   an already-closed case is the exact outcome this change exists to prevent. */
+function kbBlockedByClosure(){
+  if(!state.closedReadOnly) return false;
+  toast("This ticket is already closed — it can only be viewed.","err");
+  return true;
+}
 function openTicket(rec){
+  /* Same test as getRescueTicket's openTicketOrClosure(), character for
+     character, so the two screens cannot disagree about what "closed" means. */
+  state.closedReadOnly = String(rec.Status||"").trim().toUpperCase()==="CLOSED";
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID;
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
   setPath();
@@ -1377,6 +1392,21 @@ function renderWizard(){
   // buttons
   $("prevBtn").disabled = state.stepIndex===0;
   $("saveBtn").textContent = step.save;
+  /* VIEW-ONLY FOR A CLOSED TICKET - 2026-10-10. pointer-events plus a reduced
+     opacity makes the whole form inert without touching a single field
+     definition, and removing Save and Close Ticket means there is no way to
+     write at all. The stepper and Previous stay live so the case can still be
+     read end to end. */
+  const kbLocked = !!state.closedReadOnly;
+  const kbBanner = $("kbClosedBanner");
+  if(kbBanner) kbBanner.style.display = kbLocked ? "" : "none";
+  const kbFields = $("fields");
+  if(kbFields){
+    kbFields.style.pointerEvents = kbLocked ? "none" : "";
+    kbFields.style.opacity = kbLocked ? "0.72" : "";
+  }
+  $("saveBtn").style.display = kbLocked ? "none" : "";
+  if($("closeBtn") && kbLocked) $("closeBtn").style.display = "none";
   $("closeBtn").style.display = step.key==="create" ? "none" : ""; // no ticket to close yet on the first step
   if(step.key==="quote"){
     const q=calcQuote();
@@ -1692,6 +1722,7 @@ function buildPayload(step){
 
 /* ---- actions ---- */
 async function saveStep(advance){
+  if(kbBlockedByClosure()) return;
   const step=state.path[state.stepIndex];
   const chk=collectStep(true);
   if(!chk.ok){ toast("Please fill: "+chk.missing,"err"); return; }
@@ -1762,6 +1793,7 @@ async function cancelWizard(){
   backToDash();
 }
 async function closeTicketAction(){
+  if(kbBlockedByClosure()) return;
   const yes=await confirmBox("Close this ticket?","It will be marked CLOSED and removed from the active stages.","Close ticket");
   if(!yes) return;
   try{
