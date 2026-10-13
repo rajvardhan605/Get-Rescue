@@ -316,7 +316,14 @@ const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With A
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates.
-const OFFICE_LAT=12.967945122837245, OFFICE_LON=77.6110507612277; // same static office coords as getRescueTicket — see its own README caveat
+// Office coordinates taken from the Google Maps pin for "RESCUE Roadside
+// Assistance" (2026-10-14, user-provided link): !3d12.9676733 !4d77.6112868 -
+// the PLACE pair, not the @ viewport pair a few hundred metres away. About 40 m
+// from the previous value, so no distance on any screen changes (everything
+// here rounds to 0.1 km). Duplicated in five widgets and changed in all of them
+// together - see the matching comment in each. Note this partly reverses the
+// 2026-09-07 "spec confirmed" correction; the pin and that spec disagree.
+const OFFICE_LAT=12.9676733, OFFICE_LON=77.6112868; // same static office coords as getRescueTicket — see its own README caveat
 
 /* ---------- SDK boot (no ZOHO.CREATOR.init in this SDK build) ---------- */
 // Direct download-URL construction (2026-08-21, ported from getRescueTicket's

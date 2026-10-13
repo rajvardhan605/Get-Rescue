@@ -282,7 +282,14 @@ const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With A
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates.
-const OFFICE_LAT=12.967945122837245, OFFICE_LON=77.6110507612277;
+// Office coordinates taken from the Google Maps pin for "RESCUE Roadside
+// Assistance" (2026-10-14, user-provided link): !3d12.9676733 !4d77.6112868 -
+// the PLACE pair, not the @ viewport pair a few hundred metres away. About 40 m
+// from the previous value, so no distance on any screen changes (everything
+// here rounds to 0.1 km). Duplicated in five widgets and changed in all of them
+// together - see the matching comment in each. Note this partly reverses the
+// 2026-09-07 "spec confirmed" correction; the pin and that spec disagree.
+const OFFICE_LAT=12.9676733, OFFICE_LON=77.6112868;
 
 // Direct download-URL construction (2026-08-21, ported from getRescueTicket's
 // own already-working zohoFileDownloadUrl()) — see fileCountFor()/
@@ -2644,7 +2651,10 @@ async function confirmPaymentReceived(){
        field is written exactly as before, so a normal cash/UPI/card close is
        unchanged. */
     const gatewaySettled=String(r.Payment_Method_Final||"").trim()==="Payment Gateway" && String(r.Payment_received||"").trim()==="Yes";
-    const payload={ Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
+    /* TOW_Closure_Time - 2026-10-13. Straight swap, no branch needed: this app
+       fetches with the server-side criteria Service_Type == "TOW", so every
+       ticket it can reach is a towing job. */
+    const payload={ Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), TOW_Closure_Time: fmtDateTime(new Date()) };
     const chosenMethod=($("Payment_Method_Final") && $("Payment_Method_Final").value)||"";
     if(!gatewaySettled && chosenMethod) payload.Payment_Method_Final = chosenMethod;
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.

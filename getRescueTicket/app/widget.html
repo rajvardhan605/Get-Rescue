@@ -1639,7 +1639,11 @@ const STAGES = [
     /* Task Tracker item 4, "AGENT NAME (OWNER)" - 2026-10-13. Written on every
        create since August and never shown anywhere. The EMAIL is what is stored;
        see this change's own note for why a resolved name cannot be shown here. */
-    { n:"Created_By_Agent_Email", l:"Agent (Owner)", t:"text", readonly:true, row:"meta" },
+    /* wizardHide - 2026-10-14, user request. It belongs to the `create` stage
+       because that is what builds the closure page's "Customer & Vehicle - Agent"
+       section (closure-page PDF item 4), but on the create STEP it is an empty
+       read-only box: extra() only writes it when the ticket is first saved. */
+    { n:"Created_By_Agent_Email", l:"Agent (Owner)", t:"text", readonly:true, row:"meta", wizardHide:true },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -2649,7 +2653,12 @@ const STAGES = [
     // fields below stay genuinely blank until the vendor's own accept action
     // (or a deliberate manual entry) actually writes something — no more
     // false "looks accepted" the instant a vendor is merely invited.
-    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true,
+    /* agentEditable - 2026-10-14. This radio is ON the step that the items
+       47/48 viewOnly lock covers, so without the exemption it locked itself: a
+       ticket in "Vendor Accepting via App" could never be switched to agent-manual,
+       and that switch is the only way out of the read-only mode. Every other field
+       on the step stays locked while the vendor is driving. */
+    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true, agentEditable:true,
       o:["Vendor Accepting via App","Agent Entering on Behalf of Vendor"], default:"Vendor Accepting via App",
       hint:"Choose 'Agent Entering on Behalf of Vendor' only if the vendor/mechanic isn't using their own app for this job — the fields below will fill in for you to complete manually. Otherwise this stays blank until the vendor's own app actually reports back." },
     // "Assign_Technican" dropped from the schema 2026-08-03 (forms rebuilt
@@ -3121,7 +3130,12 @@ const STAGES = [
     // See `acceptance`'s own matching comment above — same field, same fix,
     // Tow's own copy (shared field name; only one branch's Accept step is
     // ever active per ticket, so no collision).
-    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true,
+    /* agentEditable - 2026-10-14. This radio is ON the step that the items
+       47/48 viewOnly lock covers, so without the exemption it locked itself: a
+       ticket in "Vendor Accepting via App" could never be switched to agent-manual,
+       and that switch is the only way out of the read-only mode. Every other field
+       on the step stays locked while the vendor is driving. */
+    { n:"Acceptance_Mode", l:"How will this be accepted?", t:"radio", full:true, agentEditable:true,
       o:["Vendor Accepting via App","Agent Entering on Behalf of Vendor"], default:"Vendor Accepting via App",
       hint:"Choose 'Agent Entering on Behalf of Vendor' only if the driver/vendor isn't using their own app for this job — the fields below will fill in for you to complete manually. Otherwise this stays blank until the driver's own app actually reports back." },
     // "Assign_Technican1" dropped from the schema 2026-08-03 — see
@@ -3502,7 +3516,11 @@ const STAGES = [
     // once the ticket is already RSP CLOSED/CLOSED from reasserting/
     // clobbering anything further along.
     statuses:["REMAINING FEE DUE"],
-    status:(r)=> statusStillEarly(r, ["REMAINING FEE DUE"]) ? "RSP CLOSED" : r.Status,
+    /* acceptanceIsAgentManual added 2026-10-14, items 47/48. Every sibling
+       vendor-side stage already carries this half of the guard; payment did not,
+       so Save here closed a vendor-run job out from under the vendor. When the
+       vendor runs it, their own app writes RSP CLOSED - this never needed to. */
+    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["REMAINING FEE DUE"])) ? "RSP CLOSED" : r.Status,
     // Remaining_Fee_Receipt_Time / RSP_Closure_Time (2026-09-07, user-
     // provided LOCATIONS-DISTANCES-DATETIME spec, "#14"/"#15") — both share
     // the exact same trigger per spec (VENDOR/AGENT clicking "PAYMENT
@@ -3511,9 +3529,24 @@ const STAGES = [
     // statusStillEarly() condition this stage's own status() write uses
     // just above, so this only ever fires on the genuine forward transition
     // to RSP CLOSED — never re-stamped on a later resave.
-    extra:(r)=> (statusStillEarly(r, ["REMAINING FEE DUE"]) && !r.RSP_Closure_Time)
-      ? { Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) }
-      : {},
+    /* TOW_Closure_Time - 2026-10-13. A towing job stamps its own field. The
+       "already stamped?" guard has to follow the same branch: testing
+       RSP_Closure_Time on a TOW ticket would find it permanently empty and
+       re-stamp on every resave. */
+    extra:(r)=>{
+      const closureField = String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" ? "TOW_Closure_Time" : "RSP_Closure_Time";
+      /* 2026-10-14. These two timestamps mean "the payment was received". When the
+         vendor is running the job their own app stamps them; an agent pressing Save
+         here would otherwise stamp them before any payment existed. Same gate the
+         stage status now carries. */
+      if(!acceptanceIsAgentManual(r)) return {};
+      if(!statusStillEarly(r, ["REMAINING FEE DUE"])) return {};
+      if(r[closureField]) return {};
+      const stampedAt = fmtDateTime(new Date());
+      const out = { Remaining_Fee_Receipt_Time: stampedAt };
+      out[closureField] = stampedAt;
+      return out;
+    },
     fields:[
     // readonly:(s)=>!acceptanceIsAgentManual(s) added 2026-08-18 to every
     // agent-facing field below except Total_Service_Fee/Payment_Status
@@ -3916,20 +3949,34 @@ const CLOSURE_FIELDS=[
   { n:"__VendorMobileClosure", l:"Vendor Mobile Number", t:"computed", full:true,
     compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
     emptyHint:"No accepted vendor yet." },
-  /* Task Tracker item 28, "CUSTOMER PAGE LINK" - 2026-10-13. The link is built
-     at render time from the ticket id, so it cannot be a stored field, and a
-     navlink is dropped from the stage sections for the same reason as above.
-     Opens the page the customer sees - useful when an agent needs to check what
-     was sent, or to resend it by hand. */
-  { n:"__CustomerPageLinkDisplay", l:"Customer Page Link", t:"navlink", full:true,
-    hrefCompute:(r)=>buildCustomerPageUrl(r, "booking_payment", { bookingamount: String(r.Booking_Fee||0) }),
-    linkLabel:"\u2197 Open the customer page",
-    emptyMsg:"The Customer Page link could not be built - CUSTOMER_PAGE_BASE_URL is not set in this deployed widget." },
+  /* Closure-page PDF item 28, "CUSTOMER PAGE LINK" - built 2026-10-13,
+     REMOVED the same day at the user's request ("hide the open customer page
+     button in close case page").
+
+     Kept as a note rather than deleted silently: item 28 is on the client's own
+     list as "Missing in Closure page", so this reverses something they asked
+     for and somebody will ask where it went.
+
+     To put it back, restore a navlink entry here with
+     hrefCompute:(r)=>buildCustomerPageUrl(r, "booking_payment", { bookingamount:
+     String(r.Booking_Fee||0) }). buildCustomerPageUrl() is untouched - the
+     WhatsApp sends still use it. Note that closureHide does NOT work on this
+     array: it is read only by grp() for the STAGES-derived sections, while
+     CLOSURE_FIELDS renders as the closure form through renderFields(). */
   // RSP_Closure_Time — field already exists (2026-09-07, stamped in all 3
   // vendor-facing apps' own confirmPaymentReceived(), same trigger as
   // Remaining_Fee_Receipt_Time — see FIELDS.md) — just never shown anywhere
   // in this widget before. Plain read-only mirror, nothing new stored.
-  { n:"RSP_Closure_Time", l:"RSP Closure Time", t:"text", readonly:true },
+  /* Split by Service_Type - 2026-10-13. Repair keeps the field and the label it
+     has always had; towing gets its own. */
+  { n:"RSP_Closure_Time", l:"RSP Closure Time (RSR)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  /* Computed, not the plain field, ONLY so towing tickets closed before
+     TOW_Closure_Time existed still show their time instead of a blank that reads
+     as a bug. New closures fill the real field and it is preferred. Nothing is
+     lost by not binding to the field directly - this row was always readonly. */
+  { n:"__TowClosureTimeDisplay", l:"TOW Closure Time", t:"computed", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW",
+    compute:(r)=> r.TOW_Closure_Time || r.RSP_Closure_Time || "",
+    emptyHint:"Not closed yet \u2014 stamped when the final payment is recorded." },
   // "Cancelled - Billable" added 2026-08-17 (user-provided spec) — see this
   // field's own header comment further up for the full history/rationale.
   { n:"Closure_Status", l:"Closure Status", t:"select", o:["Not Converted","Cancelled","Cancelled - Billable","Completed"], req:true, full:true },
@@ -4460,6 +4507,20 @@ const SERVICE_TYPE_BRANCH_ROW={ n:"_Service_Type_Branch", l:"Service Type (decid
     return raw+" — read as \""+norm+"\", which is not \"TOW\", so the RSR rows are shown instead";
   },
   emptyHint:"—" };
+/* The fleet location as the closure maths would resolve it - 2026-10-14. Stored
+   value first (that is the saved truth once a case is closed), then the same
+   nearest-base-then-registered-address rule runClosureDistanceCalculations()
+   applies. Read-only and side-effect free: no write, no Google call. */
+function fleetLocationForDisplay(r, which){
+  const storedRaw = which==="lat" ? r.Vendor_Fleet_Location_Lat : r.Vendor_Fleet_Location_Lon;
+  const stored = storedRaw==null ? "" : String(storedRaw).trim();
+  if(stored!=="") return stored;
+  const raw = vendorRawForTicket(r);
+  if(!raw) return "";
+  const base = nearestVendorBaseLocation(raw, parseCoord(r.Latitude), parseCoord(r.Longitude)) || vendorStaticLatLon(raw);
+  if(!base || base.lat==null || base.lon==null) return "";
+  return String(which==="lat" ? base.lat : base.lon);
+}
 const DISTANCE_METRICS_FIELDS=[
   SERVICE_TYPE_BRANCH_ROW,   // 2026-10-13 - the one value both of this section's RSR/TOW splits hang on
   /* Closure-page PDF item 21 - 2026-10-13. "Not needed in closure page, need
@@ -4525,10 +4586,26 @@ const DISTANCE_METRICS_FIELDS=[
      are. The labels carried a "- set on Close Case" suffix saying so for part of
      2026-10-13; it came back out the same day, once the values were showing and
      it had stopped explaining anything. */
-  { n:"Vendor_Fleet_Location_Lat", l:"Vendor Fleet Location (Lat)", t:"text", readonly:true },
-  { n:"Vendor_Fleet_Location_Lon", l:"Vendor Fleet Location (Lon)", t:"text", readonly:true },
-  { n:"Vendor_Round_Trip_Distance", l:"Vendor Round Trip Distance (km, TOW)", t:"decimal", readonly:true }, // TOW only — always null for Repair, see runClosureDistanceCalculations()
-  { n:"Vendor_Distance", l:"Vendor Distance (km, Repair)", t:"decimal", readonly:true } // Repair-completed's one-way equivalent of the round trip above
+  /* COMPUTED, NOT THE STORED FIELD - 2026-10-14. The stored value is only
+     written when Close Case runs runClosureDistanceCalculations(), so on an open
+     ticket these rows were always blank and read as broken. Fleet location is the
+     one figure in this group that costs nothing to resolve - Haversine over the
+     vendor record, no Google call - so it is worked out for display here and the
+     stored value takes over the moment it exists. The two distance rows beside it
+     stay closure-only on purpose: they DO call Distance Matrix, and the client
+     scoped that API to four named calculations.
+
+     Same rule as the closure maths - nearest Base_Location_1..5 pair, falling back
+     to the vendor's registered Latitude/Longitude - so this is a preview of the
+     value that will be saved, never a second opinion. Nothing is written on open. */
+  { n:"__VendorFleetLat", l:"Vendor Fleet Location (Lat)", t:"computed",
+    compute:(r)=>fleetLocationForDisplay(r, "lat"),
+    emptyHint:"No accepted vendor yet, or that vendor has no location on their record." },
+  { n:"__VendorFleetLon", l:"Vendor Fleet Location (Lon)", t:"computed",
+    compute:(r)=>fleetLocationForDisplay(r, "lon"),
+    emptyHint:"No accepted vendor yet, or that vendor has no location on their record." },
+  { n:"Vendor_Round_Trip_Distance", l:"Vendor Round Trip Distance (km, TOW)", t:"decimal", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }, // TOW only — always null for Repair, see runClosureDistanceCalculations()
+  { n:"Vendor_Distance", l:"Vendor Distance (km, Repair)", t:"decimal", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" } // Repair-completed's one-way equivalent of the round trip above
 ];
 /* Field-activity timestamps/GPS (2026-08-04, per user audit request — "all
    data we are saving through process should be visible in Final Closure").
@@ -4590,15 +4667,17 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
      RSP Location - Accept/Drop pair below, which is RSP_Start_* - the ACCEPT
      position, relabelled back when no dedicated drop pair existed. This is the
      real one. Deliberately not gated on TOW - see this change's own note. */
-  { n:"RSP_Drop_Latitude", l:"Drop Location (Lat, TOW)", t:"number" },
-  { n:"RSP_Drop_Longitude", l:"Drop Location (Lon, TOW)", t:"number" },
-  // Relabeled 2026-08-04 (user request) — this field is now reused for a
-  // second GPS fix: TOW's own "Reached Drop Location" action overwrites it
-  // with the driver/vendor's live position at drop, same field, not a
-  // separate RSP_Drop_Location_Lat/Lon pair (see wipReachedTow's own removal
-  // comment above). So this row shows whichever fix was written most
-  // recently — Accept-time for RSR and for TOW tickets that haven't reached
-  // their drop location yet, Drop-time after they have.
+  { n:"RSP_Drop_Latitude", l:"Drop Location (Lat, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"RSP_Drop_Longitude", l:"Drop Location (Lon, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  // WAS "RSP Location — Accept/Drop" until 2026-10-14. That slash label dates
+  // from 2026-08-04, when TOW's "Reached Drop Location" action deliberately
+  // overwrote this pair with the position at drop, so one field held whichever
+  // fix was written last. Both field apps stopped doing that on 2026-09-11 —
+  // they write their own RSP_Drop_Latitude/Longitude pair now and leave these
+  // alone (their own comment: "a real bug fix: this used to overwrite Accept's
+  // own RSP_Start_Latitude/Longitude fix, permanently losing it"). acceptService()
+  // has been the only writer since, so this is the ACCEPT position and nothing
+  // else. The drop position has its own two rows a few lines up.
   // Excluded 2026-08-11 — `acceptance`/`acceptanceTow` now have their own
   // "Accept Location" copy AND `wipReachedTow` now has its own "Drop
   // Location" copy (both agent-manual mode only, see those stages' own
@@ -4610,8 +4689,8 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // closureSummaryHtml()'s comment) means clicking whichever row rendered
   // FIRST can pop up a modal titled with the OTHER copy's label — cosmetic
   // only, still edits the correct underlying field either way.
-  { n:"RSP_Start_Latitude", l:"RSP Location — Accept/Drop (Lat)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
-  { n:"RSP_Start_Longitude", l:"RSP Location — Accept/Drop (Lon)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
+  { n:"RSP_Start_Latitude", l:"RSP Accept Location (Lat)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
+  { n:"RSP_Start_Longitude", l:"RSP Accept Location (Lon)", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
   // Assignment_Time (2026-09-11, Task Tracker PDF item 10 — "RSP INVITE TIME
   // [is] Missing in Closure page... CAN DISPLAY in the 'FIELD ACTIVITY LOG'
   // section"). Field already exists (added 2026-09-03 for agentPerformance's
@@ -4928,7 +5007,14 @@ function roundCoord(n, decimals){
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates. See README.md's own matching caveat.
-const OFFICE_LAT=12.967945122837245, OFFICE_LON=77.6110507612277;
+// Office coordinates taken from the Google Maps pin for "RESCUE Roadside
+// Assistance" (2026-10-14, user-provided link): !3d12.9676733 !4d77.6112868 -
+// the PLACE pair, not the @ viewport pair a few hundred metres away. About 40 m
+// from the previous value, so no distance on any screen changes (everything
+// here rounds to 0.1 km). Duplicated in five widgets and changed in all of them
+// together - see the matching comment in each. Note this partly reverses the
+// 2026-09-07 "spec confirmed" correction; the pin and that spec disagree.
+const OFFICE_LAT=12.9676733, OFFICE_LON=77.6112868;
 function haversineKm(lat1,lon1,lat2,lon2){
   const toRad=function(d){ return d*Math.PI/180; };
   const R=6371;
@@ -5302,6 +5388,9 @@ function nearestVendorBaseLocation(vendorRaw, breakdownLat, breakdownLon){
     const km=haversineKm(breakdownLat,breakdownLon,lat,lon); // crow-flight, per spec ("(Crow distance)") — not Google API
     if(km<bestKm){ bestKm=km; best={lat:lat,lon:lon}; }
   }
+  /* Deliberately returns null when no pair parsed - vendorInfo() relies on that
+     to fall through to the vendor's registered address, and
+     runClosureDistanceCalculations() does its own fallback. See both. */
   return best;
 }
 /* Sums Google API driving distance leg-by-leg across a chain of points
@@ -5460,6 +5549,43 @@ function distanceNotComputedYet(v){
   const n=Number(v);
   return !isNaN(n) && n===0;
 }
+/* Closure-page PDF item 15 - 2026-10-14. Fills the closure distance figures on
+   the Close Case page once the agent has chosen a Closure Status, instead of
+   only when Close Case is pressed. See this change's own note for why the status
+   is the trigger rather than the page opening. */
+const CLOSURE_DIST_FIELDS = ["Vendor_Fleet_Location_Lat","Vendor_Fleet_Location_Lon","Vendor_Round_Trip_Distance","Vendor_Distance","Roundtrip_Distance"];
+let CLOSURE_DIST_KEY = null;        // recordId|status already previewed
+let CLOSURE_DIST_BASELINE = null;   // the five fields as Zoho sent them
+async function previewClosureDistances(){
+  if(!state.recordId) return;
+  /* An already-closed ticket is a finished record - its figures are whatever was
+     saved, and recomputing them on a read-only view would be a side effect on
+     something nobody is editing. */
+  if(state.closureReadOnly) return;
+  const step = state.path[state.stepIndex];
+  if(!step || step.key!=="agentClosure") return;
+  const status = String(state.record.Closure_Status==null?"":state.record.Closure_Status).trim();
+  if(!status) return;   // the branch logic needs it - see this change's own note
+  /* Baseline per ticket, captured the first time this ticket reaches the step, so
+     a later status change recomputes from Zoho's values rather than the previous
+     preview's. */
+  if(!CLOSURE_DIST_BASELINE || CLOSURE_DIST_BASELINE.id!==String(state.recordId)){
+    CLOSURE_DIST_BASELINE = { id:String(state.recordId) };
+    CLOSURE_DIST_FIELDS.forEach(function(n){ CLOSURE_DIST_BASELINE[n] = state.record[n]; });
+  }
+  const key = String(state.recordId)+"|"+status;
+  if(CLOSURE_DIST_KEY===key) return;
+  CLOSURE_DIST_KEY = key;   // set BEFORE awaiting, so the re-render below cannot re-enter
+  CLOSURE_DIST_FIELDS.forEach(function(n){ state.record[n] = CLOSURE_DIST_BASELINE[n]; });
+  const before = CLOSURE_DIST_FIELDS.map(function(n){ return String(state.record[n]==null?"":state.record[n]); }).join("|");
+  try{ await runClosureDistanceCalculations(state.record); }
+  catch(e){ console.warn("[Get-Rescue] previewClosureDistances failed (non-fatal, Close Case still computes these):", e); return; }
+  const after = CLOSURE_DIST_FIELDS.map(function(n){ return String(state.record[n]==null?"":state.record[n]); }).join("|");
+  if(after!==before){
+    console.log("[Get-Rescue] previewClosureDistances: closure distances worked out for Closure_Status =", status, "- shown now, saved when Close Case is pressed.");
+    rerenderCurrentView();
+  }
+}
 async function runClosureDistanceCalculations(record){
   try{
     const bLat=parseCoord(record.Latitude), bLon=parseCoord(record.Longitude);
@@ -5495,8 +5621,27 @@ async function runClosureDistanceCalculations(record){
       let base=null;
       if(record.Vendor_Fleet_Location_Lat==null || record.Vendor_Fleet_Location_Lat===""){
         base=nearestVendorBaseLocation(vendorOpt.raw, bLat, bLon);
+        /* FALLBACK - 2026-10-14. The five Base_Location pairs are a 2026-08-17
+           addition and are empty for every vendor set up before it, so this came
+           back null and the whole block below was skipped - leaving Vendor Fleet
+           Location blank AND Vendor Round Trip Distance / Vendor Distance
+           uncomputed, which is the reported symptom, both halves from one read.
+           vendorStaticLatLon() is the position the Assignment picker and the
+           start-to-breakdown calculation already measure from, so it is reused
+           rather than introducing a second rule. Base pairs still win. */
+        if(!base){
+          const staticBase = vendorStaticLatLon(vendorOpt.raw);
+          if(staticBase && staticBase.lat!=null && staticBase.lon!=null){
+            base = { lat:staticBase.lat, lon:staticBase.lon };
+            console.log("[Get-Rescue] runClosureDistanceCalculations: vendor", vendorOpt.label||assignedVendorId, "has no Base_Location_1..5 pair, so their registered Latitude/Longitude is used as the fleet location.");
+          }
+        }
         if(base){ record.Vendor_Fleet_Location_Lat=String(base.lat); record.Vendor_Fleet_Location_Lon=String(base.lon); }
-        else console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location will NOT populate: vendor", vendorOpt.label||assignedVendorId, "has no Base_Location_1..5_Lat/Lon pair on file in Vendors_Report (or none parsed as valid coordinates) — check that vendor's own record in Zoho Studio.");
+        /* 2026-10-14 - one line saying where the position came from, because a
+           fleet base and the vendor's registered address are both plausible and
+           produce different distances. */
+        if(base) console.log("[Get-Rescue] runClosureDistanceCalculations: Vendor Fleet Location set to", base.lat, base.lon, "for vendor", vendorOpt.label||assignedVendorId);
+        else console.warn("[Get-Rescue] runClosureDistanceCalculations — Vendor Fleet Location will NOT populate: vendor", vendorOpt.label||assignedVendorId, "has NEITHER a Base_Location_1..5_Lat/Lon pair NOR a usable Latitude/Longitude on their Vendors_Report record — that vendor has no coordinates at all, fix it in Zoho.");
       } else {
         base={ lat:parseCoord(record.Vendor_Fleet_Location_Lat), lon:parseCoord(record.Vendor_Fleet_Location_Lon) };
       }
@@ -10443,7 +10588,8 @@ function taxInvoiceServiceType(record){
    today only if even that is missing. */
 function taxInvoiceServiceDate(record){
   const candidates=[ record && record.RSP_Completion_Time, record && record.Agent_Closure_Time,
-                     record && record.RSP_Closure_Time,    record && record.Drop_Location_Arrival_Time,
+                     record && record.RSP_Closure_Time,    record && record.TOW_Closure_Time,
+                     record && record.Drop_Location_Arrival_Time,
                      record && record.Reach_Time,          record && record.Added_Time ];
   for(let i=0;i<candidates.length;i++){
     if(!candidates[i]) continue;
@@ -11986,6 +12132,8 @@ function renderWizard(){
   $("pbarFill").style.width = pct+"%";
   // buttons
   $("prevBtn").disabled = state.stepIndex===0;
+  /* Items 47/48 - 2026-10-14. See stepIsVendorDriven() for which steps and why. */
+  const vendorDrivenStep = stepIsVendorDriven(step, state.record);
   // step.save can now be a function of state.record (2026-08-19, user
   // request — see `acceptance`/`acceptanceTow`'s own matching comment), same
   // "string OR function" support blockedMessage already has — every
@@ -12004,6 +12152,10 @@ function renderWizard(){
   // fresh (non-"CLOSED") Status via that step's own computeStatus(), silently
   // reopening an already-closed ticket (see saveStep()'s own guard, which
   // backs this up defensively even if this button were somehow still shown).
+  /* Shown on vendor-driven steps again - 2026-10-14. Hiding it also removed the
+     agent's way off the page; it is safe now because buildPayload() drops the
+     vendor's fields and saveStep() treats the step as blocked, so Save means
+     "save what is mine and close". */
   $("saveBtn").style.display = state.closureReadOnly ? "none" : "";
   $("wizClosureReadOnlyBanner").style.display = state.closureReadOnly ? "" : "none";
   // Real bug fixed (2026-08-07) — seedAcceptanceVendorFields() now runs from
@@ -12114,14 +12266,16 @@ function renderWizard(){
   // Create step's own subtitle hidden too (2026-08-06, user request) — same
   // reasoning as the heading above, just the description line underneath it.
   $("stepDesc").style.display = step.key==="create" ? "none" : "";
-  $("stepDesc").textContent = step.desc||"";
+  /* Items 47/48 - 2026-10-14. Without this the agent just finds the Save button
+     gone and no explanation, which reads as a broken page. */
+  $("stepDesc").textContent = (step.desc||"") + (vendorDrivenStep ? "  \u2014 The vendor is handling this case in their own app, so this step is read-only." : "");
   // state.closureReadOnly (2026-08-07) forces EVERY step read-only, not just
   // Agent Closure's own — see this flag's own comment on STAGES' "agentClosure"
   // entry. Clones rather than mutating `step` itself, same reasoning as
   // renderFields()'s own per-field cloning for step.viewOnly: STAGES objects
   // are shared/reused across renders and must not carry a one-time lock
   // forward into a later, editable open of the same ticket.
-  renderFields(state.closureReadOnly ? Object.assign({}, step, {viewOnly:true}) : step);
+  renderFields((state.closureReadOnly || vendorDrivenStep) ? Object.assign({}, step, {viewOnly:true}) : step);   // items 47/48 - same clone, same reasoning
   // Vendor Invite Status panel — real bug fixed 2026-09-11 (user-reported
   // live: "Vendor information (rejections/timeouts) fails to display on the
   // Assignment page after a case is accepted by another vendor") — this used
@@ -12150,6 +12304,10 @@ function renderWizard(){
   // Not awaited: the header button appearing a moment late is invisible, while
   // a report read blocking every step render would not be.
   refreshLinkCallButton();
+  /* Item 15 - 2026-10-14. Not awaited, same contract as the line above: the
+     figures appearing a moment late is invisible, a Google round trip blocking
+     every step render would not be. Self-guards on step, status and recordId. */
+  previewClosureDistances();
   // Real bug fixed (2026-08-07, user-reported live: Receipt Photo on the
   // Payment step showed "Already uploaded" text but the thumbnail above it
   // stayed a placeholder icon forever) — this was WRONGLY believed to only
@@ -12208,7 +12366,10 @@ function renderWizard(){
    locked screen. */
 function renderFields(step, targetId){
   const box=$(targetId||"fields"); box.innerHTML="";
-  const visible = step.fields.filter(f=> !(f.when && !f.when(state.record)) && f.t!=="badge")
+  /* f.wizardHide (2026-10-14) - the exact mirror of closureHide: off the wizard
+     step, still on the Final Closure summary. closureFieldGroups() has its own
+     filter and never reads this one, which is what keeps the two independent. */
+  const visible = step.fields.filter(f=> !(f.when && !f.when(state.record)) && f.t!=="badge" && !f.wizardHide)
     .map(f=> (step.viewOnly && !f.agentEditable) ? Object.assign({},f,{readonly:true}) : f);
   let i=0;
   while(i<visible.length){
@@ -13097,8 +13258,16 @@ function wireField(f,id){
   } else if(f.t==="button"){
     el.onclick=()=>{
       state.record[f.n]=true;
+      /* collectStep BEFORE the action - 2026-10-14. It used to run after, so an
+         action read state.record as it was at render time, not what the agent had
+         just typed. With Save gone from vendor-driven steps, "Send ETA to
+         Customer" would have sent without the Agent ETA Override entered beside
+         it. Still snapshots the step before rerenderCurrentView() rebuilds the
+         DOM, which is what it was there for, and no longer reads the DOM back
+         over values the action itself just set. */
+      collectStep(false);
       if(typeof f.action==="function") f.action(state.record); // e.g. Calculate_Distance sets RT_KM
-      collectStep(false); rerenderCurrentView();
+      rerenderCurrentView();
     };
   } else if(f.t==="file"){
     // Auto-upload the moment a photo is picked (2026-08-07, user request:
@@ -13432,6 +13601,15 @@ function afterMultiselectChange(f){
 // closureFieldGroups() runs (every closure/summary render), same lifecycle
 // as CLOSURE_FIELD_INDEX just below.
 let FIELD_ORIGIN_STAGE={};
+/* Items 47/48 - 2026-10-14. The stages the vendor/driver runs in their own app.
+   create/quote/locations/assignment are the agent's own work and are absent on
+   purpose - an agent must still be able to fix a location or re-invite a vendor
+   while a job is live. agentClosure is absent too: Close Case must keep working. */
+const VENDOR_DRIVEN_STAGES = ["acceptance","reach","wip","acceptanceTow","reachTow","wipLoadingTow","wipReachedTow","wipUnloadingTow","payment"];
+function stepIsVendorDriven(step, record){
+  if(!step || VENDOR_DRIVEN_STAGES.indexOf(step.key)===-1) return false;
+  return !acceptanceIsAgentManual(record||{});
+}
 function closureFieldGroups(){
   const tow = (state.record[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const byKey={}; STAGES.forEach(function(s){ byKey[s.key]=s; });
@@ -13530,6 +13708,22 @@ function closureLabelFor(f, v){
    reported as present but never populated. See this change's own note for the
    two causes and why the page has to be the one to tell them apart. */
 const CLOSURE_LOCATION_FIELDS = ["Latitude","Longitude","DropLocationLat","DropLocationLong"];
+/* Distances that cannot be real - 2026-10-14. Every field here is kilometres
+   between two points on one roadside job, and two of them feed vendor payout.
+   A coordinate that never resolved, or a vendor record still carrying a
+   placeholder base, produces arithmetic that is correct and an answer that is
+   nonsense - 14871.6 km to a breakdown, a 33113.1 km round trip. Logged, never
+   hidden and never altered: the stored figure is what the page shows.
+
+   500 km is far outside anything this operation does - the vendor geofence is
+   8 km for repair and 20 km for towing - while still clearing a genuinely long
+   tow or a preferred-vendor override. Change this one number if that is wrong. */
+const IMPLAUSIBLE_KM = 500;
+const KM_DISTANCE_FIELDS = ["Distance_To_Breakdown","Distance_To_Breakdown_TOW",
+  "Distance_Reach_To_Breakdown","Distance_Reach_To_Breakdown_TOW",
+  "Distance_Cancel_To_Breakdown","Mechanic_To_Breakdown","Roundtrip_Distance",
+  "Breakdown_To_Drop_Distance","Drop_To_Office_Distance",
+  "Vendor_Round_Trip_Distance","Vendor_Distance"];
 function closureFieldValueDisplay(f){
   const v=state.record[f.n];
   // Added 2026-09-02 (build-plan item #7) — first t:"computed" field ever
@@ -13587,6 +13781,16 @@ function closureFieldValueDisplay(f){
   const label=closureLabelFor(f,v);
   if(label) return {text:label, empty:false};
   if(typeof v==="object"){ const s=unwrapLookupDisplay(v); return s ? {text:String(s), empty:false} : {text:"—", empty:true}; }
+  /* 2026-10-14 - see IMPLAUSIBLE_KM. LOG ONLY: the figure itself is rendered
+     exactly as stored. An on-screen marker was tried the same day and taken back
+     out - the arithmetic is correct and the coordinate behind it is not, so the
+     page reports the distance and leaves the judgement to whoever reads it. */
+  if(KM_DISTANCE_FIELDS.indexOf(f.n)!==-1){
+    const km = Number(v);
+    if(!isNaN(km) && km > IMPLAUSIBLE_KM){
+      console.warn("[Get-Rescue] closure: "+f.n+" is "+km+" km, which is not a real roadside distance. Most likely the assigned vendor still has a placeholder base location, or a GPS fix never resolved on the device. The stored value is unchanged.");
+    }
+  }
   return {text:String(v), empty:false};
 }
 const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -14183,6 +14387,12 @@ async function saveWithCoordFallback(payload, saveFn){
 }
 function buildPayload(step){
   const p={}; const r=state.record;
+  /* Items 47/48 - 2026-10-14. On a step the vendor is running, only the fields
+     marked agentEditable are the agent's to send. Everything else on that step is
+     the vendor's own outcome data, and buildPayload has never skipped readonly
+     fields - so Save posted the agent's stale copy over whatever the vendor had
+     changed in their app since this page was opened. */
+  const vendorDrivenPayload = stepIsVendorDriven(step, r);
   step.fields.forEach(f=>{
     // f.ephemeral (2026-09-11, added for Generate_OnDemand_Invoice) — every
     // OTHER field type already has a natural way to stay out of the save
@@ -14199,6 +14409,7 @@ function buildPayload(step){
     // changes; only a field that explicitly sets ephemeral:true is affected.
     if(f.t==="summary"||f.t==="file"||f.ephemeral) return;
     if(f.when && !f.when(r)) return;
+    if(vendorDrivenPayload && !f.agentEditable) return;   // items 47/48 - never rewrite the vendor's own data
     let v=r[f.n];
     if(f.t==="check"||f.t==="button"){ p[f.n]= (v===true||v==="Yes")?["Yes"]:[]; return; }
     if(f.t==="multiselect"){
@@ -14532,7 +14743,11 @@ async function saveStep(advance){
     // close the wizard back to the dashboard, same as Cancel, rather than
     // blocking the agent on this page. Reopening the ticket from the dashboard
     // resumes on this same step (stageIndexForStatus).
-    const blocked = typeof step.canAdvance==="function" && !step.canAdvance(state.record);
+    /* Items 47/48 - 2026-10-14. A vendor-driven step always behaves the way the
+       Accept step already did in this mode: save, say why, return to the dashboard.
+       Steps that declare their own blockedMessage keep their own wording. */
+    const vendorDrivenSave = stepIsVendorDriven(step, state.record);
+    const blocked = vendorDrivenSave || (typeof step.canAdvance==="function" && !step.canAdvance(state.record));
     // Diagnostic (2026-08-07, user-reported live: saving Accept with
     // Acceptance_Mode="Vendor Accepting via App" exits to the dashboard
     // instead of advancing to Reach, but "Agent Entering on Behalf of Vendor"
@@ -14552,7 +14767,7 @@ async function saveStep(advance){
       // `locations`'s own TOW-vs-RSR wording), a function of state.record —
       // supports both so existing plain-string steps didn't need touching.
       const msg = typeof step.blockedMessage==="function" ? step.blockedMessage(state.record) : step.blockedMessage;
-      toast(msg||"Saved — required action still pending","ok");
+      toast(msg || (vendorDrivenSave ? "Saved. The vendor is handling this case in their own app \u2014 reopen it from the dashboard to follow their progress." : "Saved — required action still pending"),"ok");
       return backToDash();
     } else if(advance && state.stepIndex<state.path.length-1){
       state.stepIndex++;
@@ -14761,25 +14976,35 @@ async function saveClosure(){
     maybeGenerateBooksInvoiceOnClosure(r, finalTSF).catch(function(e){ console.warn("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure threw:",e); });
     sendToZohoBooks(r).catch(function(e){ console.warn("[Get-Rescue] sendToZohoBooks threw:",e); });
     sendToAirtable(r).catch(function(e){ console.warn("[Get-Rescue] sendToAirtable threw:",e); });
-    /* THE SHARED DUPLICATE GUARD - 2026-10-13. The vendor apps now send this
-       same request when they record the payment, which happens BEFORE an agent
-       reaches this page. Without the marker every customer would get two.
+    /* THE AGENT'S TICK WINS - 2026-10-13, corrected the same day.
 
-       Deliberately the only change here: the checkbox gate, the function it
-       calls and the non-blocking contract are all exactly as they were. */
-    const feedbackAlreadySent = String((r.Feedback_Sent_At == null ? "" : r.Feedback_Sent_At)).trim();
-    if(feedbackAlreadySent){
-      console.log("[Get-Rescue] closure: feedback request not sent - one already went at "+feedbackAlreadySent+" (most likely from the vendor app when the payment was recorded).");
-    }
-    else if(r.Google_Feedback_Requested===true||r.Google_Feedback_Requested==="Yes"){
+       This branch used to be skipped whenever Feedback_Sent_At was set, on the
+       basis that the vendor apps send "this same request" when they record a
+       cash payment. They do not. They send the CUSTOMER PAGE form
+       (confirm_booking_fee_and_total_fee with mode=feedback) - an internal 1-10
+       score. This sends google_feedback, a public Google review. Two different
+       asks, and sharing one marker meant a vendor taking cash silently cancelled
+       the agent's Google request.
+
+       Feedback_Sent_At still does its real job - stopping two Customer Page
+       links - and the vendor-side guard is untouched. The stamp is still written
+       below so a send is still visible on the record. */
+    if(r.Google_Feedback_Requested===true||r.Google_Feedback_Requested==="Yes"){
       sendGoogleFeedbackRequest(r).then(function(ok){
-        if(!ok){ console.warn("[Get-Rescue] Google feedback request message failed to send — check console above"); return; }
-        /* Marked so the vendor app does not send a second one. Best-effort,
-           exactly like every other call in this group. */
+        if(!ok){
+          /* On screen, not only in the console: Close Case returns the agent to
+             the dashboard immediately, so a failed send used to look exactly like
+             a successful one. */
+          console.warn("[Get-Rescue] Google feedback request message failed to send - check console above");
+          toast("Case closed, but the Google feedback message could not be sent.","err");
+          return;
+        }
+        toast("Google feedback link sent to the customer.","ok");
+        /* Marked best-effort, exactly like every other call in this group. */
         const stamp = fmtDateTime(new Date());
         r.Feedback_Sent_At = stamp;
         updateTicket(r.ID, { Feedback_Sent_At: stamp })
-          .catch(function(e){ console.warn("[Get-Rescue] feedback request was sent but could not be marked - add Feedback_Sent_At (Single Line Text) to Create_Case, or a vendor may send a second one", e); });
+          .catch(function(e){ console.warn("[Get-Rescue] the Google feedback request was sent but could not be marked on the ticket", e); });
       });
     }
     if(r.Customer_Feedback_Requested===true||r.Customer_Feedback_Requested==="Yes"){
@@ -15507,7 +15732,7 @@ function gstCsvCell(v){
   return /[",\r\n]/.test(t) ? (q + t.split(q).join(q+q) + q) : t;
 }
 function gstClosureDateText(r){
-  const raw = r.Agent_Closure_Time || r.RSP_Closure_Time || r.RSP_Completion_Time || r.Added_Time || "";
+  const raw = r.Agent_Closure_Time || r.RSP_Closure_Time || r.TOW_Closure_Time || r.RSP_Completion_Time || r.Added_Time || "";
   const d = parseAnyDateTime(raw);
   if(!d) return String(raw||"");
   const p = function(n){ return (n<10?"0":"")+n; };
