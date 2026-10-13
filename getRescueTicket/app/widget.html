@@ -1636,11 +1636,15 @@ const STAGES = [
     // actually chosen NOW or LATER, so a brand-new form opens with no
     // timestamps on it at all. Picking either option reveals them together.
     { n:"Added_Time", l:"Task Creation Time", t:"text", readonly:true, ephemeral:true, row:"meta", when:(s)=>!!s.Time_of_service },
+    /* Task Tracker item 4, "AGENT NAME (OWNER)" - 2026-10-13. Written on every
+       create since August and never shown anywhere. The EMAIL is what is stored;
+       see this change's own note for why a resolved name cannot be shown here. */
+    { n:"Created_By_Agent_Email", l:"Agent (Owner)", t:"text", readonly:true, row:"meta" },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
     // other place in the app ever setting it) — now editable on both steps.
-    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true, closureHide:true }   // Task Tracker item 43 - hidden from CLOSURE only; this step keeps its own box
   ]},
   /* Quote + Booking Fee merged into one step (was two) — matches the native
      form, which shows them as a single section ("Service_Fee_Quote_Booking_fee_Collection"
@@ -2188,6 +2192,10 @@ const STAGES = [
     // payment regardless of what is on screen here.
     { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5",
       when:(s)=>!!s.Payment_Method && s.Payment_Method!=="Cash" },
+    /* Task Tracker item 8, "time of receiving booking fee" - 2026-10-13. Stamped
+       by this step's own extra() hook the moment the fee goes PAID, and never
+       displayed until now. Read-only: it records when something happened. */
+    { n:"Booking_Fee_Receipt_Time", l:"BF Receipt Time", t:"text", readonly:true, row:"rate5" },
     // Added 2026-09-02 (build-plan item #2, wireframe: "Upload Photo of
     // receipt [Attachment Field] *Mandatory if Payment Method is not
     // 'Payment gateway'") — this field genuinely never existed on this step
@@ -2235,7 +2243,7 @@ const STAGES = [
     // no longer readonly (2026-07-31) — the flow spec shows this as a plain
     // optional textarea on this step too, not display-only; it's now
     // editable both here and on `create` (see that stage's own Remarks).
-    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true, closureHide:true }   // Task Tracker item 43 - hidden from CLOSURE only; this step keeps its own box
   ]},
   { key:"locations", branch:"all", bucket:0, short:"Location", title:"Capture Locations",
     desc:"Breakdown location (and drop location for tows).", save:"Save Locations",
@@ -2425,10 +2433,16 @@ const STAGES = [
         r.RT_KM=calcRoundTripKm(r);
         console.log("[Get-Rescue] Calculate_Distance clicked — Latitude:", JSON.stringify(r.Latitude), "| Longitude:", JSON.stringify(r.Longitude), "| DropLocationLat:", JSON.stringify(r.DropLocationLat), "| DropLocationLong:", JSON.stringify(r.DropLocationLong), "| RT_KM before:", before, "-> after:", r.RT_KM);
       } },
-    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW" },
+    /* Task Tracker item 46 - 2026-10-13. RT_KM is the quote-time ESTIMATE the
+       agent calculates here; Roundtrip_Distance is the MEASURED figure written at
+       Task Confirmation. Both carried near-identical labels on the closure page,
+       which read as one field shown twice. The measured one is the one that
+       belongs there, so this copy is hidden from CLOSURE only - it still works
+       on this step, where the agent actually uses it. */
+    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW", closureHide:true },
     // "Remarks [Text Area – optional]" — same shared field as create/quote's
     // own copies (2026-07-31 flow spec shows it here too), editable on all three.
-    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true, closureHide:true }   // Task Tracker item 43 - hidden from CLOSURE only; this step keeps its own box
   ]},
   { key:"assignment", branch:"all", bucket:1, short:"Assign", title:"Vendor Assignment",
     desc:"Assign to vendor(s) and (optionally) a technician.", save:"Assign & Continue",
@@ -2518,7 +2532,7 @@ const STAGES = [
     { n:"Confirmation_Time", l:"Task Confirmation Time", t:"text", readonly:true },
     // "Remarks [Text Area – optional]" — same shared field as the earlier
     // steps (2026-07-31 flow spec shows it here too).
-    { n:"Remarks", l:"Remarks", t:"remarks", full:true }
+    { n:"Remarks", l:"Remarks", t:"remarks", full:true, closureHide:true }   // Task Tracker item 43 - hidden from CLOSURE only; this step keeps its own box
     // Simplified 2026-07-31 (user-requested — matches the Action 4 mock,
     // which only shows the Assign-To picker + Remarks on this screen):
     // Vendor_Email, Assigned_Technician, Assigned_Technician_Email moved to
@@ -2939,6 +2953,11 @@ const STAGES = [
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (RSR) - 2026-10-13.
+       Written by the field apps at Reach since September; the closure page had
+       the cancel position and the accept position but never this one. */
+    { n:"Reach_Location_Lat", l:"Reach Location (Lat)", t:"number", readonly:true, closureHide:true },   // item 28 - shown in Field Activity Log instead; this step keeps its own row
+    { n:"Reach_Location_Lon", l:"Reach Location (Lon)", t:"number", readonly:true, closureHide:true },   // item 28 - shown in Field Activity Log instead; this step keeps its own row
     // Soft-test item #19 (2026-09-10): "REACH page (Repair cases) needs to
     // display ... Round Trip Distance" — currently only exists at WIP/Final
     // Closure (Roundtrip_Distance), two steps later. Deliberately a t:"computed"
@@ -3143,6 +3162,11 @@ const STAGES = [
     // see that stage's own comment for the full reasoning.
     { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number" },
     { n:"Service_Acceptance_For_Tow", l:"Accept Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
+    /* Task Tracker item 34, "TRUCK START READING" - 2026-10-13. The driver and
+       vendor apps have written this at Accept since August; nothing displayed it.
+       Read-only: it is the odometer as the driver recorded it, not an agent entry.
+       Distinct from Odometer_reading_at_Reached_Location on the Reach step. */
+    { n:"Odometer_Reading", l:"Truck Start Reading", t:"number", readonly:true },
     // closureHide:true — see `acceptance`'s own matching comment on its ETA field.
     { n:"ETA_TOW", l:"ETA to Breakdown (mins)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) || hasRealEta(s.ETA_TOW), closureHide:true },
     { n:"_ExpectedArrival", l:"Expected Arrival Time", t:"computed", compute:expectedArrivalTime, emptyHint:"Not available yet — needs an Accept time and ETA.", full:true }
@@ -3251,6 +3275,11 @@ const STAGES = [
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (TOW) - 2026-10-13.
+       Written by the field apps at Reach since September; the closure page had
+       the cancel position and the accept position but never this one. */
+    { n:"Reach_Location_Lat", l:"Reach Location (Lat)", t:"number", readonly:true, closureHide:true },   // item 28 - shown in Field Activity Log instead; this step keeps its own row
+    { n:"Reach_Location_Lon", l:"Reach Location (Lon)", t:"number", readonly:true, closureHide:true },   // item 28 - shown in Field Activity Log instead; this step keeps its own row
     // Soft-test item #19 — see `reach`'s own matching comment (same
     // display-only estimate, TOW's own copy of the stage). calcRoundTripKm()
     // automatically includes the drop leg here once DropLocationLat/Long are
@@ -3399,6 +3428,18 @@ const STAGES = [
     // FIELDS' own always-visible row for this field gets excluded in agent-
     // manual mode too (see that array's own updated comment). Labeled for
     // THIS step's own meaning of the field (drop location), not Accept's.
+    /* Task Tracker item 47, "VENDOR REACH DROP LOCATION" - 2026-10-13.
+
+       The two rows BELOW this are RSP_Start_Latitude/Longitude - the ACCEPT
+       position, relabelled back when no dedicated drop pair existed. The field
+       apps now write RSP_Drop_Latitude/Longitude when the driver reaches the
+       drop, and nothing has ever displayed them.
+
+       Gated as the mirror of those rows, so exactly one pair ever shows: this
+       one for a job the vendor ran in their own app, theirs for agent-manual
+       entry. Read-only - it is a recorded position, not something to type. */
+    { n:"RSP_Drop_Latitude", l:"Drop Location (Lat)", t:"number", readonly:true, when:(s)=>!acceptanceIsAgentManual(s), row:"dropLocReal", closureHide:true },   // item 29 - shown in Field Activity Log instead
+    { n:"RSP_Drop_Longitude", l:"Drop Location (Lon)", t:"number", readonly:true, when:(s)=>!acceptanceIsAgentManual(s), row:"dropLocReal", closureHide:true },   // item 29 - shown in Field Activity Log instead
     { n:"RSP_Start_Latitude", l:"Drop Location (Lat)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc" },
     { n:"RSP_Start_Longitude", l:"Drop Location (Lon)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc" }
   ]},
@@ -3789,7 +3830,14 @@ const STAGES = [
   { key:"agentClosure", branch:"pay", bucket:3, short:"Closure", title:"Agent Closure",
     desc:"Review the ticket and record the final outcome. This can be done at any point during the task's timeline.",
     save:"Close Case",
-    statuses:["RSP CLOSED","CLOSED"], status:"CLOSED",
+    /* Items 46/47/48 - 2026-10-13. This was status:"CLOSED", a plain static
+       string, and buildPayload() writes whatever computeStatus() returns. That
+       runs on Save and on BACKING OUT of this step - so merely visiting the
+       closure page and leaving marked the ticket CLOSED. Now returns the
+       ticket's own status unchanged, the same shape every other guarded stage
+       uses. Close Case is completely unaffected: saveClosure() never goes
+       through buildPayload, it writes [CONFIG.stageField]:"CLOSED" itself. */
+    statuses:["RSP CLOSED","CLOSED"], status:(r)=>r.Status,
     fields:[] // patched to CLOSURE_FIELDS right after that const is declared below
   }
 ];
@@ -3859,6 +3907,24 @@ const CLOSURE_FIELDS=[
   // construction, not just by convention.
   { n:"__RSPClosureStatusDisplay", l:"RSP Closure Status (Vendor)", t:"computed", full:true,
     compute:(r)=>r.Status||"", emptyHint:"No status yet." },
+  /* Task Tracker item 3, "VENDOR MOBILE NUMBER" - 2026-10-13. The wizard has
+     shown this since August as __VendorMobileDisplay, but that is t:"computed"
+     and closureFieldGroups() drops computed fields from every stage-derived
+     section. CLOSURE_FIELDS is not one of those sections, so the same value
+     renders here. Reuses vendorRawForTicket() - no second way to resolve a
+     vendor, which is exactly how the two could drift apart. */
+  { n:"__VendorMobileClosure", l:"Vendor Mobile Number", t:"computed", full:true,
+    compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
+    emptyHint:"No accepted vendor yet." },
+  /* Task Tracker item 28, "CUSTOMER PAGE LINK" - 2026-10-13. The link is built
+     at render time from the ticket id, so it cannot be a stored field, and a
+     navlink is dropped from the stage sections for the same reason as above.
+     Opens the page the customer sees - useful when an agent needs to check what
+     was sent, or to resend it by hand. */
+  { n:"__CustomerPageLinkDisplay", l:"Customer Page Link", t:"navlink", full:true,
+    hrefCompute:(r)=>buildCustomerPageUrl(r, "booking_payment", { bookingamount: String(r.Booking_Fee||0) }),
+    linkLabel:"\u2197 Open the customer page",
+    emptyMsg:"The Customer Page link could not be built - CUSTOMER_PAGE_BASE_URL is not set in this deployed widget." },
   // RSP_Closure_Time — field already exists (2026-09-07, stamped in all 3
   // vendor-facing apps' own confirmPaymentReceived(), same trigger as
   // Remaining_Fee_Receipt_Time — see FIELDS.md) — just never shown anywhere
@@ -4369,10 +4435,44 @@ const hasRealEta=(v)=> v!=null && String(v).trim()!=="";
 // the per-stage row is the "hidden" one in Vendor-app mode (via its own
 // when:acceptanceIsAgentManual), so this synthetic row is the ONLY one that
 // shows there — matches how it already worked before this change.
+/* The value every RSR/TOW row on this page is gated on - 2026-10-13. Reported
+   as "TOW fields not showing": on a TOW ticket the RSR twins rendered and all
+   six TOW rows were hidden, which can only happen when Service_Type does not
+   read as "TOW". See this change's own note for the three causes and why the
+   page has to be the one to say which it is. Service_Type is t:"badge" and
+   grp() drops badges, so the closure page has never shown it.
+
+   readVal() rather than a raw read, for DISPLAY only: it unwraps a Lookup the
+   way the dashboard row already does, so if the value is arriving as an object
+   this row prints what is inside it instead of "[object Object]" - which is
+   itself the answer. The gates below are deliberately left exactly as they are. */
+const SERVICE_TYPE_BRANCH_ROW={ n:"_Service_Type_Branch", l:"Service Type (decides the RSR / TOW rows)", t:"computed",
+  compute:function(r){
+    const rec = r || {};
+    if(!Object.prototype.hasOwnProperty.call(rec, CONFIG.serviceTypeField)){
+      console.warn("[Get-Rescue] closure: "+CONFIG.serviceTypeField+" was not returned by "+CONFIG.reportName+" for ticket "+(rec.ID||"?")+". Every TOW-only row is hidden as a result, and the vendor/driver apps read the same report. Add it to that report's layout.");
+      return "— not returned by "+CONFIG.reportName+" — add "+CONFIG.serviceTypeField+" to that report's layout. Every TOW row stays hidden until then.";
+    }
+    const raw = readVal(rec, CONFIG.serviceTypeField);
+    const norm = String(raw||"").trim().toUpperCase();
+    if(!norm) return "— came back blank on this ticket, so the TOW rows are hidden";
+    if(norm==="TOW") return raw+" — TOW rows shown";
+    return raw+" — read as \""+norm+"\", which is not \"TOW\", so the RSR rows are shown instead";
+  },
+  emptyHint:"—" };
 const DISTANCE_METRICS_FIELDS=[
-  { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA) }, // when: extended 2026-08-11 — see `acceptance`'s own new ETA field, needs the same exclusion every other duplicated field here already has
+  SERVICE_TYPE_BRANCH_ROW,   // 2026-10-13 - the one value both of this section's RSR/TOW splits hang on
+  /* Closure-page PDF item 21 - 2026-10-13. "Not needed in closure page, need
+     only actual time in date-time format." The date-time form is already on the
+     page: the computed "BDL ETA" row in FIELD_ACTIVITY_LOG_FIELDS (item 12)
+     renders Accept time + these minutes as a clock time. So both rows below are
+     hidden from the CLOSURE summary only - closureHide never touches a wizard
+     step, and the acceptance steps carry their own ETA fields for agent-manual
+     entry regardless. "ETA Met / Missed" and "BDL ETA" read ETA/ETA_TOW off the
+     record, not off these rows, so both keep working. */
+  { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA), closureHide:true }, // when: extended 2026-08-11 — see `acceptance`'s own new ETA field, needs the same exclusion every other duplicated field here already has
   { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
-  { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA_TOW) }, // when: extended 2026-08-11, see ETA's own note just above
+  { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA_TOW), closureHide:true }, // when: extended 2026-08-11, see ETA's own note just above
   { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
   // Added 2026-09-02 (build-plan item #7) — unconditional (no RSR/TOW split,
   // no acceptanceIsAgentManual gate) since etaMetStatusText()/
@@ -4397,7 +4497,12 @@ const DISTANCE_METRICS_FIELDS=[
   { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
-  { n:"Return_Journey_ETA", l:"Return ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  /* Task Tracker item 37, "DROP ETA" - 2026-10-13. Relabelled, not moved: both
+     field apps fill this from the breakdown-to-drop calcDistanceETA at Picked
+     Up, the same call that fills Breakdown_To_Drop_Distance. The old name read
+     as a return leg and the client reported the drop ETA missing. Field name
+     unchanged, so every reader and writer is unaffected. */
+  { n:"Return_Journey_ETA", l:"Drop ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   /* Vendor Fleet Location / Vendor Round Trip Distance / Vendor Distance
      (2026-08-17, user-provided spec — "2 new fields to be added in Distance
      and ETA Metrics group"). Unlike every other field in this group, these
@@ -4411,6 +4516,15 @@ const DISTANCE_METRICS_FIELDS=[
      missing manual entry. Shown unconditionally (both branches) like
      Roundtrip_Distance/Cancel_Distance above — closureFieldValueDisplay()
      already renders "—" for whichever this ticket's own branch left null. */
+  /* Task Tracker items 26 and 33 - 2026-10-13. These three are computed by
+     runClosureDistanceCalculations() inside saveClosure, so they fill when Close
+     Case is pressed and are legitimately blank before that. Reported as "data
+     not populating" because nothing said so. Computing them on open would fire
+     the Google Distance Matrix calls on every open of every unclosed ticket,
+     against the client's own October scoping of that API - so they stay as they
+     are. The labels carried a "- set on Close Case" suffix saying so for part of
+     2026-10-13; it came back out the same day, once the values were showing and
+     it had stopped explaining anything. */
   { n:"Vendor_Fleet_Location_Lat", l:"Vendor Fleet Location (Lat)", t:"text", readonly:true },
   { n:"Vendor_Fleet_Location_Lon", l:"Vendor Fleet Location (Lon)", t:"text", readonly:true },
   { n:"Vendor_Round_Trip_Distance", l:"Vendor Round Trip Distance (km, TOW)", t:"decimal", readonly:true }, // TOW only — always null for Repair, see runClosureDistanceCalculations()
@@ -4440,6 +4554,7 @@ const DISTANCE_METRICS_FIELDS=[
 // copy is hidden in that mode to avoid showing the same field twice in Final
 // Closure.
 const FIELD_ACTIVITY_LOG_FIELDS=[
+  SERVICE_TYPE_BRANCH_ROW,   // 2026-10-13 - the one value both of this section's RSR/TOW splits hang on
   { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
   // closureHide:true (2026-09-11, Task Tracker PDF item 16 — "REMOVE FROM
@@ -4463,6 +4578,20 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // Lon fields (same reasoning as Reach_Time just above).
   { n:"Cancel_Location_Lat", l:"Cancel Location (Lat)", t:"decimal", when:(s)=>!acceptanceIsAgentManual(s) },
   { n:"Cancel_Location_Lon", l:"Cancel Location (Lon)", t:"decimal", when:(s)=>!acceptanceIsAgentManual(s) },
+  /* Item 28, "FIELD ACTIVITY LOG - BREAKDOWN/REACH LOCATION" - 2026-10-13.
+     Where the vendor actually was when they tapped Reach. Written by all three
+     field apps since September and already used by the distance calculations;
+     the client reported it was being calculated with but never shown here. The
+     stage copies carry closureHide so this is the only one on the page. */
+  { n:"Reach_Location_Lat", l:"Reach Location (Lat)", t:"number" },
+  { n:"Reach_Location_Lon", l:"Reach Location (Lon)", t:"number" },
+  /* Item 29, "FIELD ACTIVITY LOG - DROP LOCATION" - 2026-10-13. Where the
+     driver was when they tapped Reached Drop. Not to be confused with the
+     RSP Location - Accept/Drop pair below, which is RSP_Start_* - the ACCEPT
+     position, relabelled back when no dedicated drop pair existed. This is the
+     real one. Deliberately not gated on TOW - see this change's own note. */
+  { n:"RSP_Drop_Latitude", l:"Drop Location (Lat, TOW)", t:"number" },
+  { n:"RSP_Drop_Longitude", l:"Drop Location (Lon, TOW)", t:"number" },
   // Relabeled 2026-08-04 (user request) — this field is now reused for a
   // second GPS fix: TOW's own "Reached Drop Location" action overwrites it
   // with the driver/vendor's live position at drop, same field, not a
@@ -5027,7 +5156,11 @@ async function syncInvites(recordId, vendorNames){
       // numeric id would produce exactly what we see — a saved invite with an
       // empty RSID and no error anywhere. This may not be the cause, but it is
       // a free way to stop it being a candidate.
-      const invitePayload={ RSID: String(recordId), Vendor: vendorId, Invited_At: fmtDateTime(new Date()) };
+      /* Status IS SENT EXPLICITLY - 2026-10-13. The Invites form gives this field
+         an INITIAL VALUE of "RSP REJECT", so omitting it meant every invite was
+         created already marked rejected - see this change note for what that broke
+         on both sides. Sending a value is what stops the default applying. */
+      const invitePayload={ RSID: String(recordId), Vendor: vendorId, Invited_At: fmtDateTime(new Date()), Status: "RSP IRA (INVITE RESPONSE AWAITED)" };
       const inviteResp=await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:invitePayload } });
       // The exact request and the exact reply. If RSID is being dropped on the
       // WRITE, the reply says so here; if it is not, the problem is on the READ
@@ -5063,8 +5196,18 @@ function loadGoogleMaps(){
   });
   return mapsApiReady;
 }
+/* Item 21, "TRAVEL MODE" - 2026-10-13. TOW -> DRIVING (a tow truck is a
+   four-wheeler), REPAIR/RSR -> TWO_WHEELER (Google's own two-wheeler routing,
+   available in India, which takes narrower streets and one-ways a car route
+   will not). Identical in logic to vendorTicket/driverTicket/technicianTicket's
+   travelModeFor() - deliberately the same rule rather than a second one, so the
+   agent app can never disagree with the field apps about a ticket's mode. */
+function travelModeFor(record){
+  const isTow=String((record && record[CONFIG.serviceTypeField])||"").toUpperCase()==="TOW";
+  return isTow ? "DRIVING" : "TWO_WHEELER";
+}
 let dmService=null;
-function googleDistanceMatrix(origins,destinations){
+function googleDistanceMatrix(origins,destinations,travelMode){
   return loadGoogleMaps().then(function(ok){
     if(!ok || !window.google || !window.google.maps) return null;
     if(!dmService) dmService=new google.maps.DistanceMatrixService();
@@ -5073,7 +5216,7 @@ function googleDistanceMatrix(origins,destinations){
         dmService.getDistanceMatrix({
           origins: origins.map(function(o){ return new google.maps.LatLng(o.lat,o.lon); }),
           destinations: destinations.map(function(d){ return new google.maps.LatLng(d.lat,d.lon); }),
-          travelMode: "DRIVING"
+          travelMode: travelMode||"DRIVING"   // item 21 - optional, so every untouched caller keeps today's behaviour exactly
         }, function(resp,status){
           if(status!=="OK" || !resp){ console.warn("[Get-Rescue] DistanceMatrix request failed:",status); res(null); return; }
           res(resp.rows);
@@ -5170,11 +5313,11 @@ function nearestVendorBaseLocation(vendorRaw, breakdownLat, breakdownLon){
    diagonal — origin i to destination i — not the full cross-product
    matrix), same "one call, not one per leg" discipline as
    refreshVendorDistances() above. */
-async function legDistanceKm(points){
+async function legDistanceKm(points, travelMode){
   if(!points || points.length<2) return null;
   const origins=points.slice(0,-1), destinations=points.slice(1);
   let rows=null;
-  try{ rows=await googleDistanceMatrix(origins,destinations); }catch(e){ rows=null; }
+  try{ rows=await googleDistanceMatrix(origins,destinations,travelMode); }catch(e){ rows=null; }
   let total=0;
   for(let i=0;i<origins.length;i++){
     const el = rows && rows[i] && rows[i].elements && rows[i].elements[i];
@@ -5299,11 +5442,23 @@ async function writeRoundtripAtConfirmation(){
     }
     legs=[office,{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},office];
   }
-  const km=await legDistanceKm(legs);
+  const km=await legDistanceKm(legs, travelModeFor(r));
   if(km==null) return;
   r.Roundtrip_Distance=km;
   await updateTicket(state.recordId, { Roundtrip_Distance: km });
   console.log("[Get-Rescue] writeRoundtripAtConfirmation: Roundtrip_Distance set to "+km+" km at Task Confirmation Time "+r.Confirmation_Time+".");
+}
+/* Item 32 - 2026-10-13. "Has this distance been computed yet?" for the five
+   backfill guards below. A Zoho Decimal field that defaults to 0 is NOT a
+   computed distance, but ==null/==="" reads it as one and the backfill then
+   skips that field for the life of the ticket - which is how a towing ticket
+   ended up showing a permanent 0.00 beside a blank fleet location. None of
+   these routes can legitimately measure 0 km, and recomputing one that somehow
+   did simply stores 0 again, so this can only ever fill a gap. */
+function distanceNotComputedYet(v){
+  if(v==null || v==="") return true;
+  const n=Number(v);
+  return !isNaN(n) && n===0;
 }
 async function runClosureDistanceCalculations(record){
   try{
@@ -5349,7 +5504,7 @@ async function runClosureDistanceCalculations(record){
         if(isTow){
           // Vendor_Distance is Repair's own field, not applicable to TOW — forced null, mirrors Repair's own symmetric forcing of Vendor_Round_Trip_Distance in the else branch below.
           record.Vendor_Distance=null;
-          if(record.Vendor_Round_Trip_Distance==null || record.Vendor_Round_Trip_Distance===""){
+          if(distanceNotComputedYet(record.Vendor_Round_Trip_Distance)){   // item 32 - a defaulted 0 used to block this permanently
             const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
             let legs=null;
             if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null){
@@ -5399,12 +5554,12 @@ async function runClosureDistanceCalculations(record){
                 legs=[base,reachGps,base];
               }
             }
-            if(legs){ const km=await legDistanceKm(legs); if(km!=null) record.Vendor_Round_Trip_Distance=km; }
+if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null) record.Vendor_Round_Trip_Distance=km; }
           }
         } else {
           // Vendor_Round_Trip_Distance is TOW's own field — forced null for Repair, per spec ("make VENDOR ROUND TRIP DISTANCE NULL, ONLY UPDATE THE VENDOR FLEET LOCATION").
           record.Vendor_Round_Trip_Distance=null;
-          if((record.Vendor_Distance==null || record.Vendor_Distance==="") && record.Closure_Status==="Completed"){
+          if(distanceNotComputedYet(record.Vendor_Distance) && record.Closure_Status==="Completed"){   // item 32
             /* PDF "Actual KM (for REPAIR tickets only)": the origin is the
                VENDOR START LOCATION when the vendor ran the task in the app, and
                the nearest vendor location only when an agent ran it on their
@@ -5414,7 +5569,7 @@ async function runClosureDistanceCalculations(record){
             const dest=vendorReachPointFor(record, bLat, bLon);
             if(origin){
               console.log("[Get-Rescue] Vendor_Distance origin:", origin.source, "-> destination:", dest.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
-              const km=await legDistanceKm([origin,{lat:dest.lat,lon:dest.lon}]);
+              const km=await legDistanceKm([origin,{lat:dest.lat,lon:dest.lon}], travelModeFor(record));
               if(km!=null) record.Vendor_Distance=km;
             }
           }
@@ -5426,7 +5581,7 @@ async function runClosureDistanceCalculations(record){
              (vendor start -> where they cancelled); it is reused rather than
              recomputed, which is what the spec says and costs no Google call.
              Recomputed only if that field is missing. */
-          if(record.Vendor_Distance==null || record.Vendor_Distance===""){
+          if(distanceNotComputedYet(record.Vendor_Distance)){   // item 32
             const cancelGps=vendorCancelGps(record);
             if(cancelGps){
               const already=Number(record.Cancel_Distance);
@@ -5436,7 +5591,7 @@ async function runClosureDistanceCalculations(record){
               } else {
                 const origin=vendorOriginFor(record, base);
                 if(origin){
-                  const km=await legDistanceKm([origin,cancelGps]);
+                  const km=await legDistanceKm([origin,cancelGps], travelModeFor(record));
                   if(km!=null){
                     console.log("[Get-Rescue] Vendor_Distance: spec branch 2 - Cancel_Distance was empty, so vendor start -> cancel point was measured instead:", km, "km.");
                     record.Vendor_Distance=km;
@@ -5454,8 +5609,8 @@ async function runClosureDistanceCalculations(record){
              Not Converted is deliberately excluded - see this change's own
              note. That status means the job never happened, and a kilometre
              fee against it would be wrong however the spec is worded. */
-          if((record.Vendor_Distance==null || record.Vendor_Distance==="") && record.Closure_Status!=="Not Converted"){
-            const km=await legDistanceKm([base,{lat:bLat,lon:bLon}]);
+          if(distanceNotComputedYet(record.Vendor_Distance) && record.Closure_Status!=="Not Converted"){   // item 32
+            const km=await legDistanceKm([base,{lat:bLat,lon:bLon}], travelModeFor(record));
             if(km!=null){
               console.log("[Get-Rescue] Vendor_Distance: spec branch 3 - no vendor reach or cancel position on file, so vendor base -> breakdown (agent entry) was measured:", km, "km. Closure_Status:", record.Closure_Status||"(blank)");
               record.Vendor_Distance=km;
@@ -5468,7 +5623,7 @@ async function runClosureDistanceCalculations(record){
     // "IF ROUND TRIP DISTANCE IS EMPTY, UPDATE" — "Rescue" = this app's own
     // already-hardcoded OFFICE_LAT/OFFICE_LON, same base point
     // Office_To_Mechanic/Breakdown_To_Office already use elsewhere) ---
-    if(record.Roundtrip_Distance==null || record.Roundtrip_Distance===""){
+    if(distanceNotComputedYet(record.Roundtrip_Distance)){   // item 32
       let legs=null;
       if(isTow){
         const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
@@ -5477,7 +5632,7 @@ async function runClosureDistanceCalculations(record){
       } else if(record.Closure_Status==="Completed"){
         legs=[{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
       }
-      if(legs){ const km=await legDistanceKm(legs); if(km!=null) record.Roundtrip_Distance=km; }
+      if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null) record.Roundtrip_Distance=km; }
     }
   }catch(e){ console.warn("[Get-Rescue] runClosureDistanceCalculations failed (non-fatal — Closure fields left as-is):", e); }
 }
@@ -8575,9 +8730,29 @@ function inviteStartedAtDate(inv){
      that parsed before stops parsing. */
   return parseAnyDateTime(inv.Invited_At) || parseAnyDateTime(inv.Added_Time) || null;
 }
+/* A GENUINE reject, not the Invites form's own default - 2026-10-13.
+   Invites.Status has an INITIAL VALUE of "RSP REJECT" in Zoho, and invite
+   creation never sent a Status, so every row is born carrying it. Testing
+   Status alone therefore reads every pending AND every accepted invite as
+   rejected. Three conditions instead: not accepted, Status says REJECT, and
+   something corroborates a real response. Every reject path in every app
+   writes Reject_Reason with the status, so a real reject always has one and a
+   defaulted row never does. */
+function inviteWasRejected(inv){
+  if(!inv) return false;
+  if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return false;
+  if(String(inv.Status||"").toUpperCase().indexOf("REJECT")===-1) return false;
+  const reason=String(inv.Reject_Reason||"").trim();
+  const responded=String(inv.Responded_At||"").trim();
+  return reason!=="" || responded!=="";
+}
 function inviteStatusFor(inv){
-  if(String(inv.Status||"").trim().toUpperCase()==="RSP REJECT") return {label:"Rejected", color:"var(--stop)"};
+  /* Accepted is tested FIRST - 2026-10-13. It used to come second, and with
+     Status defaulting to "RSP REJECT" that made every invite read as Rejected,
+     including accepted ones - which rejectedVendorIds() then fed into pruning
+     Vendors1, taking every invited vendor out of play. */
   if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return {label:"Accepted", color:"var(--ok)"};
+  if(inviteWasRejected(inv)) return {label:"Rejected", color:"var(--stop)"};
   // "Timed Out" (2026-09-10, soft-test item #17, second half — "Timeout
   // status still indistinguishable from awaiting, no real Timed Out status
   // exists") — still awaiting AND has been that way for more than
@@ -8887,7 +9062,7 @@ async function calcAcceptanceDistanceToBreakdown(r, distField, etaField, vendorI
        and the ETA permanently blank for the agent to type. The vendor picker a
        few hundred lines up keeps ITS null - browsing vendors is not on the list
        and is a many-times-per-session lookup. */
-    const rows = await googleDistanceMatrix([{lat:vLL.lat,lon:vLL.lon}],[{lat:bLat,lon:bLon}]);
+    const rows = await googleDistanceMatrix([{lat:vLL.lat,lon:vLL.lon}],[{lat:bLat,lon:bLon}],travelModeFor(r));   // item 21 - start-to-breakdown is agreed calc #1, and its mode follows the ticket
     const el = rows && rows[0] && rows[0].elements && rows[0].elements[0];
     if(el && el.status==="OK"){
       distanceKm = Math.round((el.distance.value/1000)*10)/10;
@@ -13351,6 +13526,10 @@ function closureLabelFor(f, v){
   }
   return find(v);
 }
+/* Task Tracker items 44 and 45 - 2026-10-13. The coordinate fields the client
+   reported as present but never populated. See this change's own note for the
+   two causes and why the page has to be the one to tell them apart. */
+const CLOSURE_LOCATION_FIELDS = ["Latitude","Longitude","DropLocationLat","DropLocationLong"];
 function closureFieldValueDisplay(f){
   const v=state.record[f.n];
   // Added 2026-09-02 (build-plan item #7) — first t:"computed" field ever
@@ -13386,6 +13565,18 @@ function closureFieldValueDisplay(f){
     return {text: label || v.map(unwrapLookupDisplay).join(", "), empty:false};
   }
   if(f.t==="check") return {text:(v===true||v==="Yes")?"Yes":"No", empty:false};
+  /* Items 44/45 - 2026-10-13. A blank coordinate says which kind of blank it is:
+     a field the report never returned (a LAYOUT problem, the write is fine) or a
+     field that came back empty (nothing was ever captured). Everything else on
+     the page is untouched. */
+  if((v==null||v==="") && CLOSURE_LOCATION_FIELDS.indexOf(f.n)!==-1){
+    const cameBack = Object.prototype.hasOwnProperty.call(state.record, f.n);
+    if(!cameBack){
+      console.warn("[Get-Rescue] closure: "+f.n+" was not returned by "+CONFIG.reportName+" for ticket "+(state.record&&state.record.ID)+". The field is missing from that report's LAYOUT - writes to it succeed and read back as undefined. Add it to the layout.");
+      return {text:"— not returned by the report (check the layout)", empty:true};
+    }
+    return {text:"— no location was captured on this ticket", empty:true};
+  }
   if(v==null||v==="") return {text:"—", empty:true};
   if(f.t==="remarks"){
     // Just a one-line preview (the last entry) in the summary row — the full
@@ -14416,6 +14607,15 @@ async function cancelWizard(){
   // call THIS step's own computeStatus() and could silently write a fresh,
   // non-"CLOSED" Status, reopening an already-closed ticket.
   if(state.closureReadOnly){ backToDash(); return; }
+  /* Items 46/47/48 - 2026-10-13. The closure step is a review screen: nothing
+     on it should reach the record until Close Case is pressed. Backing out used
+     to run the best-effort persist below, which wrote this step's computed
+     Status (see the stage's own note) AND a half-filled Closure_Status the agent
+     never submitted. Plain navigation now, matching cancelClosure()'s own
+     documented contract - "nothing here has touched the live record until Close
+     Case is actually clicked". Every other step is untouched. */
+  const stepNow=state.path[state.stepIndex];
+  if(stepNow && stepNow.key==="agentClosure"){ backToDash(); return; }
   const yes=await confirmBox("Stop filling?","Your current progress on this step will be saved as-is before you leave.","Yes, stop");
   if(!yes) return;
   // best-effort: persist whatever's on screen (incl. its computed Status, e.g.
@@ -14561,8 +14761,26 @@ async function saveClosure(){
     maybeGenerateBooksInvoiceOnClosure(r, finalTSF).catch(function(e){ console.warn("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure threw:",e); });
     sendToZohoBooks(r).catch(function(e){ console.warn("[Get-Rescue] sendToZohoBooks threw:",e); });
     sendToAirtable(r).catch(function(e){ console.warn("[Get-Rescue] sendToAirtable threw:",e); });
-    if(r.Google_Feedback_Requested===true||r.Google_Feedback_Requested==="Yes"){
-      sendGoogleFeedbackRequest(r).then(function(ok){ if(!ok) console.warn("[Get-Rescue] Google feedback request message failed to send — check console above"); });
+    /* THE SHARED DUPLICATE GUARD - 2026-10-13. The vendor apps now send this
+       same request when they record the payment, which happens BEFORE an agent
+       reaches this page. Without the marker every customer would get two.
+
+       Deliberately the only change here: the checkbox gate, the function it
+       calls and the non-blocking contract are all exactly as they were. */
+    const feedbackAlreadySent = String((r.Feedback_Sent_At == null ? "" : r.Feedback_Sent_At)).trim();
+    if(feedbackAlreadySent){
+      console.log("[Get-Rescue] closure: feedback request not sent - one already went at "+feedbackAlreadySent+" (most likely from the vendor app when the payment was recorded).");
+    }
+    else if(r.Google_Feedback_Requested===true||r.Google_Feedback_Requested==="Yes"){
+      sendGoogleFeedbackRequest(r).then(function(ok){
+        if(!ok){ console.warn("[Get-Rescue] Google feedback request message failed to send — check console above"); return; }
+        /* Marked so the vendor app does not send a second one. Best-effort,
+           exactly like every other call in this group. */
+        const stamp = fmtDateTime(new Date());
+        r.Feedback_Sent_At = stamp;
+        updateTicket(r.ID, { Feedback_Sent_At: stamp })
+          .catch(function(e){ console.warn("[Get-Rescue] feedback request was sent but could not be marked - add Feedback_Sent_At (Single Line Text) to Create_Case, or a vendor may send a second one", e); });
+      });
     }
     if(r.Customer_Feedback_Requested===true||r.Customer_Feedback_Requested==="Yes"){
       sendCustomerFeedbackRequest(r).then(function(ok){ if(!ok) console.warn("[Get-Rescue] Customer feedback request message failed to send — check console above"); });
@@ -14957,7 +15175,7 @@ function iaTimeOf(v){
    hour ago has responded, and must never be relabelled as having timed out. */
 function iaStatusOf(inv){
   if(String(inv.Service_Acceptance_Next||"").trim().toLowerCase()==="yes") return "Accepted";
-  if(String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1) return "Rejected";
+  if(inviteWasRejected(inv)) return "Rejected";   // 2026-10-13 - not the form default, see inviteWasRejected()
   const sentAt = inviteStartedAtDate(inv);
   if(sentAt && (Date.now()-sentAt.getTime()) > INVITE_TIMEOUT_MS) return "Timed Out";
   return "Pending";

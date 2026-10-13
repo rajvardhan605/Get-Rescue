@@ -380,6 +380,36 @@ invoiceURL="";
 		}
 		invoiceMap.put("cf_gst_no",gstNoText);
 		customFieldCount = customFieldCount + 1;
+		/* THE FORM ZOHO BOOKS ACTUALLY READS - 2026-10-13. See this change's own
+		   note. The top-level cf_* keys above are silently ignored by Books v3, so
+		   every custom field on every invoice to date has been blank with no error
+		   raised anywhere. Books reads them from this array instead.
+
+		   Built by reading back the cf_ keys just put into invoiceMap rather than
+		   naming the seven fields a second time: one list to keep in step, so a
+		   field added above can never be forgotten here.
+
+		   subText rather than startsWith - the shape this file has proven. */
+		customFieldsList = List();
+		for each cfKey in invoiceMap.keys()
+		{
+			cfKeyText = cfKey.toString();
+			if(cfKeyText.length() > 3)
+			{
+				if(cfKeyText.subText(0,3) == "cf_")
+				{
+					cfEntry = Map();
+					cfEntry.put("api_name",cfKeyText);
+					cfEntry.put("value",invoiceMap.get(cfKeyText));
+					customFieldsList.add(cfEntry);
+				}
+			}
+		}
+		if(customFieldsList.size() > 0)
+		{
+			invoiceMap.put("custom_fields",customFieldsList);
+			info "onDemandInvoicing - sending " + customFieldsList.size() + " custom field(s) to Books as a custom_fields array: " + customFieldsList.toString();
+		}
 		jsonPayload = invoiceMap.toString();
 
 		createInvoiceResp = invokeurl
@@ -411,6 +441,9 @@ invoiceURL="";
 				invoiceMap.remove("cf_service_description");
 				invoiceMap.remove("cf_mode");
 				invoiceMap.remove("cf_gst_no");
+				// The array form too - 2026-10-13. Without this the retry would resend
+				// the very fields it is dropping, and a genuine rejection would repeat.
+				invoiceMap.remove("custom_fields");
 				jsonPayload = invoiceMap.toString();
 				createInvoiceResp = invokeurl
 				[
@@ -450,6 +483,38 @@ invoiceURL="";
 		if(invoice_number == "")
 		{
 			return "{\"code\": \"ERROR\", \"message\": \"Invoice Number is EMPTY\", \"url\": \"\"}";
+		}
+		/* WHAT BOOKS ACTUALLY STORED - 2026-10-13. The old failure mode was a
+		   clean log and seven empty fields, which told nobody anything. This prints
+		   what came back against each custom field, with its real customfield_id,
+		   so a field that did not take is one line in the log rather than a trip
+		   into Books. Wrapped in its own try: a diagnostic must never be able to
+		   fail an invoice that has already been created. */
+		try
+		{
+			storedFields = invoiceRec.get("custom_fields");
+			if(storedFields == null)
+			{
+				info "onDemandInvoicing - Books returned NO custom_fields on invoice " + invoice_id + ". The fields are not set up on the Invoice module in this org, or their API names differ from the cf_* names sent above. Settings -> Preferences -> Invoices -> Field Customization.";
+			}
+			else
+			{
+				info "onDemandInvoicing - custom fields as Books stored them on invoice " + invoice_id + ": " + storedFields.toString();
+				filledCount = 0;
+				for each storedField in storedFields
+				{
+					storedValue = ifnull(storedField.get("value"),"").toString().trim();
+					if(storedValue != "")
+					{
+						filledCount = filledCount + 1;
+					}
+				}
+				info "onDemandInvoicing - " + filledCount + " of " + storedFields.size() + " custom field(s) on the invoice carry a value. Sent: " + customFieldCount + ". A gap between these numbers means an api_name sent above does not match a field in this Books org.";
+			}
+		}
+		catch (cfDiagEx)
+		{
+			info "onDemandInvoicing - could not read back the custom fields (diagnostic only, the invoice itself is fine): " + cfDiagEx.toString();
 		}
 		invoice_pdf_url = "https://books.zoho.in/invoices/" + invoice_id + "?organization_id=" + organization_id;
 

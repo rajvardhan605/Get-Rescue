@@ -303,10 +303,15 @@ const CONFIG = {
    was the working guess, "RSP CLOSED" the flagged alternative) — this is
    new, better evidence and is used here as given; see QUESTIONS_TO_ASK.md
    for reconciling it back into getRescueTicket's own STAGES table. */
-// "RSP REJECT" added 2026-08-20 — see vendorTicket's own matching comment
-// (same fix, same day, same root cause: a rejected ticket used to vanish
-// from "My Tickets" with no lasting sign it was ever rejected).
-const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","WORK IN PROGRESS","REMAINING FEE DUE","RSP REJECT"];
+// "RSP REJECT" was added here 2026-08-20, then REMOVED 2026-10-13. Both were
+// deliberate and they contradict each other, so the history matters: August
+// asked that a rejected ticket stay visible with a "Rejected" pill, because it
+// vanished with no lasting sign it was ever rejected; the client's 2 October
+// email asks the opposite - "if a case is rejected, the ticket must disappear
+// from the vendor app" - and that is the one being honoured. Dropping the
+// status here is what makes a ticket nobody is live on disappear everywhere,
+// on every device. Do not re-add without checking which request is current.
+const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","WORK IN PROGRESS","REMAINING FEE DUE"];
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
@@ -367,6 +372,19 @@ function formatIndianPhone(v){
   if(digits.length===12 && digits.startsWith("91")) digits=digits.slice(2);
   return "+91"+digits;
 }
+/* What WhatsApp said about the last template send. See sendWhatsAppTemplate. */
+let LAST_WA_RESPONSE = "";
+/* ONLY the one failure worth acting on - 2026-10-13: the template does not
+   exist. Deliberately narrow. A broad "looks like an error" test would
+   eventually treat a delivered message as failed and send the customer the
+   same request twice, which is worse than the problem it would solve. */
+function waResponseSaysTemplateMissing(){
+  const s = String(LAST_WA_RESPONSE || "").toLowerCase();
+  if(!s) return false;
+  return s.indexOf("template_not_found") !== -1
+      || s.indexOf("template not found") !== -1
+      || s.indexOf("does not exist") !== -1;
+}
 async function sendWhatsAppTemplate(phone, templateName, params){
   const to=formatIndianPhone(phone);
   if(!to){ console.warn("[Get-Rescue Tech] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
@@ -386,7 +404,12 @@ async function sendWhatsAppTemplate(phone, templateName, params){
     payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"", param3: params[2]||"" }
   };
   try{
-    await fn(config);
+    /* The response is KEPT now - 2026-10-13. It was fetched and discarded, which
+       is how a 404 template_not_found went unnoticed for weeks. The return value
+       is unchanged, so every existing caller behaves exactly as before; this is
+       recorded alongside it for callers that want to know what WhatsApp said. */
+    const waResp = await fn(config);
+    try{ LAST_WA_RESPONSE = JSON.stringify(waResp); }catch(e){ LAST_WA_RESPONSE = String(waResp); }
     return true;
   }catch(e){
     console.warn("[Get-Rescue Tech] sendWhatsAppTemplate: invokeCustomApi failed for", templateName, e);
@@ -1404,7 +1427,32 @@ async function fetchMyTickets(){
   const criteria = '(Service_Type == "RSR")';
   const recs = await apiGetReport(CONFIG.reportName, criteria, 200);
   return recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return MY_STATUSES.indexOf(st)>=0; })
-    .filter(function(r){ return inviteMap[String(r.ID)]!=null || isMine(r); });
+    /* 2 Oct email point 4 - 2026-10-13. A ticket this technician/driver has
+       already rejected leaves their list. Only their OWN Invites row can say so:
+       while other invited vendors are still live the shared ticket deliberately
+       stays at RSP IRA (point 5), so its Status cannot be the signal. Reads the
+       inviteMap already in hand - no extra fetch. */
+    .filter(function(r){
+      const inv = inviteMap[String(r.ID)];
+      if(inviteIsRejected(inv)) return false;
+      return inv!=null || isMine(r);
+    });
+}
+/* A GENUINE reject, not the Invites form's own default - 2026-10-13.
+   Invites.Status has an INITIAL VALUE of "RSP REJECT" in Zoho, and invite
+   creation never sent a Status, so every row is born carrying it. Testing
+   Status alone therefore reads every pending AND every accepted invite as
+   rejected. Three conditions instead: not accepted, Status says REJECT, and
+   something corroborates a real response. Every reject path in every app
+   writes Reject_Reason with the status, so a real reject always has one and a
+   defaulted row never does. */
+function inviteIsRejected(inv){
+  if(!inv) return false;
+  if(String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return false;
+  if(String(inv.Status||"").toUpperCase().indexOf("REJECT")===-1) return false;
+  const reason=String(inv.Reject_Reason||"").trim();
+  const responded=String(inv.Responded_At||"").trim();
+  return reason!=="" || responded!=="";
 }
 async function loadDashboard(){
   $("ticketList").innerHTML='<div class="spin"></div>';
@@ -1744,6 +1792,55 @@ function renderAcceptScreen(){
   $("backFromRejectBtn").onclick=()=>{ $("rejectPanel").style.display="none"; };
   $("confirmRejectBtn").onclick=rejectService;
 }
+/* Who holds this case right now, read fresh - 2026-10-12. See this change's
+   own note for why a stale list made this necessary.
+
+   Returns one of:
+     { won:true }                 nobody holds it, or this technician does
+     { won:true, unchecked:true } the check could not run, so accept as before
+     { won:false, holder:"..." }  somebody else got there first */
+async function claimCheck(recordId){
+  let fresh = null;
+  try{
+    const rows = await apiGetReport(CONFIG.reportName, 'ID == ' + recordId, 200);
+    fresh = rows && rows.length ? rows[0] : null;
+    /* Criteria refused, or the row did not come back under it. Falling back to
+       a plain read and a client-side match keeps this working even where the
+       criteria form is rejected, which has happened on this platform before. */
+    if(!fresh){
+      const all = await apiGetReport(CONFIG.reportName, null, 1000);
+      fresh = (all || []).find(function(x){ return String(x.ID) === String(recordId); }) || null;
+    }
+  }catch(e){
+    console.warn("[Get-Rescue] claimCheck: could not re-read ticket " + recordId + " - accepting as before rather than blocking a technician who may be on their way.", e);
+    return { won:true, unchecked:true };
+  }
+  if(!fresh){
+    console.warn("[Get-Rescue] claimCheck: ticket " + recordId + " did not come back on a fresh read - accepting as before.");
+    return { won:true, unchecked:true };
+  }
+  const holderId = lookupId(fresh.Assigned_Technician);
+  const myId = currentTechRecord && currentTechRecord.id;
+  if(holderId != null && String(holderId).trim() !== "" && myId){
+    if(String(holderId) === String(myId)) return { won:true };
+    return { won:false, holder:lookupNameOf(fresh.Assigned_Technician) };
+  }
+  return { won:true, unchecked:!myId };
+}
+/* A display name for whoever holds it, for the message on screen. Falls back
+   to "another technician" rather than printing a raw record id at someone. */
+function lookupNameOf(v){
+  if(v && typeof v === "object"){
+    const n = v.display_value || v.zc_display_value || v.name;
+    if(n) return String(n);
+  }
+  return "another technician";
+}
+/* Said once, the same way, from both the before and after checks. */
+function reportMissedCase(holder){
+  toast((holder || "Another technician") + " accepted this case first - it is no longer yours.", "err");
+  try{ loadDashboard(); }catch(e){}
+}
 async function acceptService(){
   setDisabled("acceptBtn",true);
   try{
@@ -1783,11 +1880,31 @@ async function acceptService(){
     // visible (typeof/JSON.stringify can hide trailing zeros or reveal if a
     // value is a string vs. a number, either of which could matter here).
     console.log("[Get-Rescue] acceptService payload:", JSON.stringify(payload), "| pos:", pos, "| RSP_Start_Latitude raw:", payload.RSP_Start_Latitude, typeof payload.RSP_Start_Latitude, String(payload.RSP_Start_Latitude), "| RSP_Start_Longitude raw:", payload.RSP_Start_Longitude, typeof payload.RSP_Start_Longitude, String(payload.RSP_Start_Longitude));
+    /* FIRST ACCEPT WINS, check 1 of 2 - 2026-10-12. The list this was tapped
+       from may be minutes old; this is the only read that knows who holds the
+       case now. See claimCheck()'s own note. */
+    const claimBefore = await claimCheck(r.ID);
+    if(!claimBefore.won){
+      console.log("[Get-Rescue] acceptService: ticket " + r.ID + " is already held by " + claimBefore.holder + " - nothing was written.");
+      reportMissedCase(claimBefore.holder);
+      return;
+    }
     await apiUpdate(r.ID, payload);
+    /* FIRST ACCEPT WINS, check 2 of 2 - 2026-10-12. Somebody else's write can
+       still land between the check above and the write just made. Reading back
+       settles it, and everything below - the invite stamp, the customer
+       message, the screen change - happens ONLY on a confirmed win. That is
+       what stops two vendors both showing Accepted on the agent's panel. */
+    const claimAfter = await claimCheck(r.ID);
+    if(!claimAfter.won){
+      console.warn("[Get-Rescue] acceptService: ticket " + r.ID + " went to " + claimAfter.holder + " while this accept was in flight. Backing out - the invite is NOT stamped and no customer message is sent.");
+      reportMissedCase(claimAfter.holder);
+      return;
+    }
     // Invites (2026-08-03) — see vendorTicket's own acceptService() comment.
     // 2026-08-03: see vendorTicket's own comment on this same call — a
     // boolean `true` was confirmed rejected live, switched to "Yes".
-    updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes" });
+    updateMyInvite(r.ID, { Service_Acceptance_Next: "Yes", Status: "RSP ACCEPT" });   // Status too - 2026-10-13, it defaults to "RSP REJECT" on the form and accept never cleared it
     toast("Service accepted","ok");
     // WhatsApp dispatch message (2026-09-06, RESCUE Repair Service Logic
     // Flow spec: "Mechanic/Driver app - ACCEPT/REJECT page | on click
@@ -2281,6 +2398,149 @@ function renderPaymentScreen(){
   document.getElementById("ascreenBody").addEventListener("click", refreshPayButton);
   $("paymentReceivedBtn").onclick=confirmPaymentReceived;
 }
+/* The one marker both the vendor apps and the agent Closure page check before
+   sending a feedback request, and both set after. See this change's own note
+   for why a shared marker was the whole design problem. */
+/* The Customer Page, copied from vendorTicket 2026-10-13 so all three field
+   apps send the same feedback link rather than two of them quietly falling
+   back to Google.
+
+   ⚠ CUSTOMER_PAGE_BASE_URL must stay in step with getRescueTicket's copy -
+   it is a published Permalink and changes whenever the page is republished.
+
+   The approved templates' url button is https://creatorapp.zohopublic.in/{{1}},
+   so the button variable carries only the PATH after that prefix, never a
+   whole URL. */
+const CUSTOMER_PAGE_BASE_URL = "https://creatorapp.zohopublic.in/getrescued/get-rescue/page-perma/Customer_Page/0gVCSNX48ASbYtRFUJ563eAbKzNFNnaVwH8fPFZCqaROx4z5T6QRyEQVTshspvvXSgyt5vuyPJSQQC0dwZGyYQKdMeySnUS6mYJr";
+const WA_BUTTON_URL_PREFIX = "https://creatorapp.zohopublic.in/";
+function buildCustomerPageUrl(record, mode, extraParams){
+  if(!CUSTOMER_PAGE_BASE_URL || !record || !record.ID) return "";
+  let qs = "recordId=" + encodeURIComponent(record.ID) + "&mode=" + encodeURIComponent(mode);
+  if(extraParams){
+    Object.keys(extraParams).forEach(function(k){ qs += "&" + encodeURIComponent(k) + "=" + encodeURIComponent(extraParams[k]); });
+  }
+  return CUSTOMER_PAGE_BASE_URL + "?" + qs;
+}
+function customerPageButtonPath(record, mode, extraParams){
+  const full = buildCustomerPageUrl(record, mode, extraParams);
+  if(!full) return "";
+  if(full.indexOf(WA_BUTTON_URL_PREFIX) !== 0){
+    console.warn("[Get-Rescue] customerPageButtonPath: CUSTOMER_PAGE_BASE_URL does not start with the approved WhatsApp button prefix", WA_BUTTON_URL_PREFIX, "- the template's button cannot point at this URL. Full URL was:", full);
+    return "";
+  }
+  return full.slice(WA_BUTTON_URL_PREFIX.length);
+}
+const FEEDBACK_SENT_FIELD = "Feedback_Sent_At";
+/* THE TEMPLATE THAT CARRIES THIS APP'S OWN FEEDBACK PAGE - 2026-10-13.
+
+   A WhatsApp link rides a template's URL BUTTON, and only four templates in
+   this workspace have one. This is the client's own choice of which to reuse:
+   confirm_booking_fee_and_total_fee already points its button at the Customer
+   Page (the agent's Send Payment Link sends it with mode "booking_payment"),
+   so sending the same template with a "feedback" path opens the feedback form.
+
+   ⚠ The WORDING stays the booking-fee wording. Template text is fixed and
+   approved; only the button's destination changes here. The customer gets a
+   message that reads like a fee confirmation with a button onto the feedback
+   page. Chosen deliberately over waiting for a dedicated feedback template -
+   recorded so it is not later mistaken for a bug.
+
+   Blank this to fall back to google_feedback (Google Reviews) instead. */
+const FEEDBACK_CUSTOMER_PAGE_TEMPLATE = "confirm_booking_fee_and_total_fee";
+/* The two body variables the template expects, in its own order. Real figures
+   rather than blanks: WhatsPortal rejects an empty parameter with 422
+   message_rejected, so they must carry something. */
+function feedbackTemplateParams(r){
+  return [String((r && r.Total_Service_Fee) || 0), String((r && r.Booking_Fee) || 0)];
+}
+/* Did the agent turn the request OFF? Read tolerantly on purpose.
+
+   Google_Feedback_Requested is a DEFAULT-TRUE checkbox on the Closure page, and
+   it may not even be on the report layout these apps read - in which case it
+   comes back undefined. Absence therefore means ON, not off. Only an explicit
+   off suppresses the send: a field that is simply missing must never silently
+   disable a feature, which on this platform is exactly how things disappear. */
+function feedbackIsSuppressed(r){
+  const v = r ? r.Google_Feedback_Requested : null;
+  if(v === undefined || v === null || v === "") return false;
+  if(v === true || v === "Yes") return false;
+  if(Array.isArray(v)) return v.indexOf("Yes") === -1;
+  if(v === false || v === "No") return true;
+  return false;
+}
+/* Sends the feedback request, once. `force` is the manual button: it ignores
+   the already-sent marker so a vendor can re-send on request, but still
+   respects an agent who switched the request off.
+
+   Never throws. The payment it follows is already written and closed by the
+   time this runs, and nothing here may put that at risk. */
+async function maybeSendFeedbackRequest(r, force){
+  try{
+    if(!r || !r.ID) return { sent:false, why:"No ticket is open." };
+    /* The agent's checkbox governs the AUTOMATIC send only - 2026-10-13. A
+       vendor who just pressed the button has given an explicit instruction, and
+       obeying a default over it is what made the button appear broken. */
+    if(!force && feedbackIsSuppressed(r)){
+      console.log("[Get-Rescue] feedback request not sent for ticket "+r.ID+": Request Google Feedback is switched off on this ticket.");
+      return { sent:false, why:"Request Google Feedback is switched off on this ticket." };
+    }
+    const already = String((r[FEEDBACK_SENT_FIELD] == null ? "" : r[FEEDBACK_SENT_FIELD])).trim();
+    if(already && !force){
+      console.log("[Get-Rescue] feedback request not sent for ticket "+r.ID+": one already went at "+already+". This is the duplicate guard doing its job.");
+      return { sent:false, why:"A feedback request already went at "+already+"." };
+    }
+    const phone = r[CONFIG.phoneField];
+    if(!phone){
+      console.warn("[Get-Rescue] feedback request not sent for ticket "+r.ID+": the ticket carries no customer phone number.");
+      return { sent:false, why:"This ticket has no customer phone number." };
+    }
+    /* The Customer Page link when a template exists to carry it, otherwise the
+       Google one. See FEEDBACK_CUSTOMER_PAGE_TEMPLATE for why. */
+    let ok = false;
+    let sentWhat = "google_feedback (Google Reviews)";
+    let buttonPath = "";
+    if(FEEDBACK_CUSTOMER_PAGE_TEMPLATE && typeof customerPageButtonPath === "function"){
+      buttonPath = customerPageButtonPath(r, "feedback", {});
+      if(!buttonPath){
+        console.warn("[Get-Rescue] feedback request: the Customer Page link could not be built for ticket "+r.ID+", so google_feedback is being sent instead.");
+      }
+    }
+    if(buttonPath){
+      ok = await sendWhatsAppTemplate(phone, FEEDBACK_CUSTOMER_PAGE_TEMPLATE, feedbackTemplateParams(r), buttonPath);
+      sentWhat = FEEDBACK_CUSTOMER_PAGE_TEMPLATE + " with mode=feedback (button opens the Customer Page feedback form; the wording is the booking-fee one)";
+      /* Fall back ONLY when WhatsApp says the template does not exist. Create it
+         and this starts working on the next send with nothing redeployed. */
+      if(waResponseSaysTemplateMissing()){
+        console.warn("[Get-Rescue] feedback request: the template \"" + FEEDBACK_CUSTOMER_PAGE_TEMPLATE + "\" does not exist in the WhatsApp workspace, so google_feedback was sent instead. The customer got the Google Reviews link, NOT this app's own feedback page. Create that template with a dynamic url button and this will send the right one.");
+        ok = await sendWhatsAppTemplate(phone, "google_feedback", []);
+        sentWhat = "google_feedback (Google Reviews — fallback)";
+      }
+    }
+    else{
+      ok = await sendWhatsAppTemplate(phone, "google_feedback", []);
+    }
+    if(!ok){
+      console.warn("[Get-Rescue] feedback request to "+phone+" for ticket "+r.ID+" was not accepted by WhatsApp. Nothing is marked as sent, so it can be retried.");
+      return { sent:false, why:"WhatsApp would not accept the message. Try again shortly." };
+    }
+    console.log("[Get-Rescue] feedback request sent to "+phone+" for ticket "+r.ID+" using "+sentWhat+".");
+    /* Stamped only after a send that landed, so a failure never blocks a retry.
+       Best-effort: the message has gone, and losing the stamp costs a possible
+       duplicate, not the feature. */
+    const stamp = fmtDateTime(new Date());
+    try{
+      await apiUpdate(r.ID, { [FEEDBACK_SENT_FIELD]: stamp });
+      r[FEEDBACK_SENT_FIELD] = stamp;
+    }catch(e){
+      r[FEEDBACK_SENT_FIELD] = stamp;
+      console.warn("[Get-Rescue] feedback request WAS sent for ticket "+r.ID+", but it could not be marked as sent. Add Feedback_Sent_At (Single Line Text) to Create_Case AND to the Agent_Ticket_Report layout, or the agent Closure page may send a second one.", e);
+    }
+    return { sent:true };
+  }catch(e){
+    console.warn("[Get-Rescue] maybeSendFeedbackRequest threw (non-blocking - the payment is already recorded and is unaffected)", e);
+    return { sent:false, why:"Something went wrong sending it." };
+  }
+}
 async function confirmPaymentReceived(){
   setDisabled("paymentReceivedBtn",true);
   try{
@@ -2318,6 +2578,19 @@ async function confirmPaymentReceived(){
     await uploadPendingPhotos(r.ID);
     await apiUpdate(r.ID, payload);
     toast("Payment recorded — job closed","ok");
+    /* FEEDBACK REQUEST - 2026-10-13, client request. Deliberately placed AFTER
+       the awaited write above, so it can only ever run on a payment that is
+       genuinely recorded. Not awaited and separately caught: a WhatsApp failure
+       must not touch a payment that has already been taken. */
+    /* CASH ONLY - 2026-10-13, see this change's own note. Matches the Send
+       Feedback Link card, which the client scoped to cash the same day. */
+    if(chosenMethod === "Cash"){
+      maybeSendFeedbackRequest(r, false)
+        .catch(function(e){ console.warn("[Get-Rescue] feedback request after payment failed (non-blocking)", e); });
+    }
+    else{
+      console.log("[Get-Rescue] feedback request not sent for ticket "+r.ID+": payment method is "+(chosenMethod||"(none chosen)")+", and the request is cash-only.");
+    }
     backToDashboard();
   }catch(e){ console.error("[Get-Rescue] confirmPaymentReceived error:", e); toast((e&&e.message)||"Could not save","err"); setDisabled("paymentReceivedBtn",false); }
 }

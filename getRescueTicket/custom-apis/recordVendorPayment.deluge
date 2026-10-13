@@ -246,11 +246,14 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		// now be unreachable.
 		preflightTds = (billTotal * tdsPercentAmt / 100.0).round(2);
 		preflightPayable = (billTotal - preflightTds - cashCollectedAmt).round(2);
+		// NEGATIVE IS ALLOWED - 2026-10-13. This used to reject outright and write
+		// nothing. A vendor who collected more cash than their net fee owes US the
+		// difference, which is a real settlement that has to be recordable. See this
+		// change note for how it lands in Books. Left as a log line because the
+		// figures are still worth having when one of these is queried later.
 		if(preflightPayable < 0)
 		{
-			info "recordVendorPayment PRE-FLIGHT REJECT - billTotal=" + billTotal + " tds=" + preflightTds + " cashCollected=" + cashCollectedAmt + " -> payable=" + preflightPayable;
-			errMap.put("message","Final Payable would be negative (Net " + billTotal + " - TDS " + preflightTds + " - Cash Collected " + cashCollectedAmt + " = " + preflightPayable + "). NOTHING was written to Zoho Books - no Bill, no Vendor Credit, no Payment. Check the Cash Collected figures on these cases and retry.");
-			return errMap.toString();
+			info "recordVendorPayment - Final Payable is NEGATIVE: billTotal=" + billTotal + " tds=" + preflightTds + " cashCollected=" + cashCollectedAmt + " -> payable=" + preflightPayable + ". The vendor owes this back; it will be left as an unapplied Vendor Credit and no Vendor Payment will be created.";
 		}
 
 		// TDS TAX ID — resolved here, before any Books write (2026-10-05).
@@ -522,6 +525,19 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		// received directly from the customer, so the company owes them
 		// less - it is not a tax withholding, so it is handled as a
 		// Vendor Credit applied to this Bill instead.
+		// THE BILL CAN ONLY ABSORB WHAT IT STILL OWES - 2026-10-13. Books rejects a
+		// credit application larger than the bill balance, and with TDS already
+		// declared on the Bill that balance is billTotal - tdsAmount. Capping here is
+		// what lets the negative case through: the full Cash Collected is still
+		// recorded as a Vendor Credit, but only the part the bill can take is applied
+		// to it, and the remainder stays on the vendor account as what they owe us.
+		// No-op whenever Final Payable is positive, which is every case working today.
+		billBalanceForCredit = (billTotal - tdsAmount).round(2);
+		creditApplyAmt = cashCollectedAmt;
+		if(creditApplyAmt > billBalanceForCredit)
+		{
+			creditApplyAmt = billBalanceForCredit;
+		}
 		if(cashCollectedAmt > 0)
 		{
 			creditLineItem = Map();
@@ -535,6 +551,20 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			creditMap = Map();
 			creditMap.put("vendor_id",vendor_id);
 			creditMap.put("line_items",creditLineItems);
+			// REQUIRED IN THIS ORG - 2026-10-13, live error "Please enter the vendor
+			// credit number." Auto-numbering is off for vendor credits here, the same
+			// way it is for Bills (see billNumber above and its own note). Built from
+			// the same inputs as the bill number so a credit is traceable to the
+			// settlement that produced it and two settlements cannot collide.
+			creditNumber = "VC-" + caseLabelsList.get(0);
+			if(utrNo != null)
+			{
+				if(utrNo != "")
+				{
+					creditNumber = creditNumber + "-" + utrNo;
+				}
+			}
+			creditMap.put("vendor_credit_number",creditNumber);
 			if(billDate != "")
 			{
 				creditMap.put("date",billDate);
@@ -552,7 +582,36 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			{
 				bookErr = createCreditResp.get("message");
 				info "Vendor Credit creation FAILED: " + bookErr;
-				errMap.put("message","Bill " + bill_id + " was created, but the Cash Collected vendor credit failed: " + bookErr);
+				// ROLL THE BILL BACK - 2026-10-13. Without this a refused credit leaves a
+				// real unpaid Bill behind and every retry adds another. Same move, same
+				// reasoning, as the payment failure path further down.
+				billCleanedCr = "no";
+				try
+				{
+					deleteBillCrResp = invokeurl
+					[
+						url :books_base_url + "/bills/" + bill_id + "?organization_id=" + organization_id
+						type :DELETE
+						connection:"zoho_books_connection"
+					];
+					info "recordVendorPayment - rollback delete of bill " + bill_id + " after the vendor credit was refused, raw response: " + deleteBillCrResp.toString();
+					if(deleteBillCrResp.get("code") == 0)
+					{
+						billCleanedCr = "yes";
+					}
+				}
+				catch (delCrEx)
+				{
+					info "recordVendorPayment - could not roll back bill " + bill_id + " after the vendor credit was refused (it will need removing by hand in Zoho Books): " + delCrEx.toString();
+				}
+				if(billCleanedCr == "yes")
+				{
+					errMap.put("message","The Cash Collected vendor credit was refused by Zoho Books, so nothing was recorded: " + bookErr + " (the draft bill was removed again, so you can safely retry once this is resolved.)");
+				}
+				else
+				{
+					errMap.put("message","Bill " + bill_id + " was created, but the Cash Collected vendor credit failed: " + bookErr + " That bill could NOT be removed automatically - delete it in Zoho Books before retrying, or you will end up with duplicates.");
+				}
 				return errMap.toString();
 			}
 			creditRec = createCreditResp.get("vendorcredit");
@@ -561,13 +620,13 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			{
 				vendor_credit_id = creditRec.get("vendor_credit_id");
 			}
-			if(vendor_credit_id != "")
+			if(vendor_credit_id != "" && creditApplyAmt > 0)
 			{
 				applyMap = Map();
 				applyList = List();
 				applyEntry = Map();
 				applyEntry.put("bill_id",bill_id);
-				applyEntry.put("amount_applied",cashCollectedAmt.toString());
+				applyEntry.put("amount_applied",creditApplyAmt.toString());   // capped - see the note above this block
 				applyList.add(applyEntry);
 				applyMap.put("bills",applyList);
 				applyCreditResp = invokeurl
@@ -595,10 +654,43 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		// Bill closes to zero: amount_applied plus tax_amount_withheld
 		// plus the vendor credit applied above should sum to billTotal.
 		finalPayable = (billTotal - tdsAmount - cashCollectedAmt).round(2);
-		if(finalPayable < 0)
+		// NOTHING LEFT TO PAY - 2026-10-13. Negative means the vendor owes us, zero
+		// means TDS and the credit already closed the Bill. Either way there is no
+		// bank transfer to record, and Books refuses a 0.00 Vendor Payment - which,
+		// before this, took the whole settlement down and rolled the Bill back.
+		//
+		// Everything that matters has already been written at this point: the Bill
+		// carries the net fee and the TDS, and the Vendor Credit carries the full
+		// Cash Collected with only the bill-sized part applied to it. The unapplied
+		// remainder sits on the vendor account as the amount they owe back, and Books
+		// offsets it against their next bill on its own.
+		if(finalPayable <= 0)
 		{
-			errMap.put("message","Computed Final Payable is negative. Bill " + bill_id + " was created but not paid - check the numbers before retrying.");
-			return errMap.toString();
+			vendorOwesUs = 0.0;
+			if(finalPayable < 0)
+			{
+				vendorOwesUs = (0 - finalPayable).round(2);
+			}
+			info "recordVendorPayment - no Vendor Payment created: finalPayable=" + finalPayable + " vendorOwesUs=" + vendorOwesUs + " on bill " + bill_id + ".";
+			okMapNeg = Map();
+			okMapNeg.put("code","SUCCESS");
+			if(vendorOwesUs > 0)
+			{
+				okMapNeg.put("message","Recorded. This vendor collected more cash than their net fee, so there is nothing to pay out - the excess of " + vendorOwesUs + " is held as an unapplied Vendor Credit in Zoho Books and will be set against their next bill.");
+			}
+			else
+			{
+				okMapNeg.put("message","Recorded. TDS and the cash already collected cover this bill in full, so no bank transfer was needed and no Vendor Payment was created.");
+			}
+			okMapNeg.put("bill_id",bill_id);
+			okMapNeg.put("vendor_payment_id","");
+			okMapNeg.put("books_vendor_id",vendor_id);
+			okMapNeg.put("bill_total",billTotal);
+			okMapNeg.put("tds_amount",tdsAmount);
+			okMapNeg.put("cash_collected",cashCollectedAmt);
+			okMapNeg.put("final_payable",finalPayable);
+			okMapNeg.put("vendor_owes_us",vendorOwesUs);
+			return okMapNeg.toString();
 		}
 
 		paymentBillEntry = Map();
@@ -703,6 +795,9 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 		okMap.put("tds_amount",tdsAmount);
 		okMap.put("cash_collected",cashCollectedAmt);
 		okMap.put("final_payable",finalPayable);
+		// Always present so the caller never has to tell "no excess" apart from "this
+		// build does not report it" - 2026-10-13.
+		okMap.put("vendor_owes_us",0);
 		resultOut = okMap.toString();
 	}
 	catch (mainEx)
