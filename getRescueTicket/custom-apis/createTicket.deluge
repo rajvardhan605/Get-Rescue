@@ -295,6 +295,16 @@ string createTicket(string customerName, string mobile, string email, string veh
 		}
 		else
 		{
+			// Status "NEW" - 2026-10-14, client rule: a ticket that has arrived but that
+			// no agent has opened yet is NEW. It becomes SERVICE FEE QUOTE only when an
+			// agent submits the pre-filled Create page in getRescueTicket, which is also
+			// what stamps the Agent (Owner). Writing SERVICE FEE QUOTE here claimed work
+			// nobody had done, and made the agent app resume the ticket at the Quote step
+			// instead of at Create. All three inbound creators were changed together.
+			//
+			// This note sits OUTSIDE the insert block on purpose: Deluge parses everything
+			// between the square brackets as field assignments, so a // line in there is a
+			// syntax error - reported against the enclosing try, not against itself.
 			newId = insert into Create_Case
 			[
 				Customer_Name=customerName.trim()
@@ -308,10 +318,11 @@ string createTicket(string customerName, string mobile, string email, string veh
 				Time_of_service="NOW"
 				Remarks="Whatsapp."
 				Lead_Source="Whatsapp"
-				Status="SERVICE FEE QUOTE"
+				Status="NEW"
 				Added_User=zoho.loginuser
 				callerID=callerIdText
 				UCID=ucidText
+				Client="ON DEMAND"
 			];
 			caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
 			updateRec = Create_Case[ID == newId];

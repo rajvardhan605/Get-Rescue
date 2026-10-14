@@ -1358,6 +1358,15 @@ function quoteStatus(r){
    safety gate: a ticket already past this list (invited/accepted/in
    progress/closed) must never have that real pipeline progress clobbered
    just because the agent jumped back to Step 1 and resaved it. */
+/* Is this a TOW ticket? - 2026-10-14. ONE test, because there were two and they
+   disagreed: setPath() upper-cased the value before comparing, the drop-location
+   fields compared it raw, so a stored "Tow" produced the TOW steps and no drop
+   fields inside them. Everything that branches on service type goes through here
+   now. Trims as well as upper-cases, which neither of the originals did - a strict
+   superset of both, so nothing that matched before stops matching. */
+function isTowTicket(s){
+  return String((s && s[CONFIG.serviceTypeField]) || "").trim().toUpperCase()==="TOW";
+}
 const EARLY_STATUSES=["","SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQUEST","LOCATION PENDING","SCHEDULED","READY FOR ASSIGNMENT"];
 /* remainingFeePaidOnline(s) (2026-08-19, user request: "Final Payment page
    and Closure page -> after remaining fee payment is completed by online
@@ -1483,6 +1492,11 @@ const STAGES = [
     statuses:[], status:(r)=>{
       if(!r.ID) return "SERVICE FEE QUOTE";
       const cur=String(r.Status||"").trim().toUpperCase();
+      /* ARRIVED, NOT YET PICKED UP - 2026-10-14, client rule. WhatsApp and the
+         website now land a ticket as NEW; submitting this page is what turns it
+         into a live quote. Its own line rather than adding "NEW" to
+         EARLY_STATUSES, which the Confirmation_Time stamp below also reads. */
+      if(cur==="NEW") return "SERVICE FEE QUOTE";
       if(EARLY_STATUSES.indexOf(cur)<0) return r.Status;
       const feeSettled = !(Number(r.Booking_Fee)>0) || r.Payment_Status==="PAID";
       if(feeSettled && locationReady(r)) return isServiceTimeFarFuture(r) ? "SCHEDULED" : "READY FOR ASSIGNMENT";
@@ -1504,7 +1518,19 @@ const STAGES = [
        ticket under a different agent's login never reattributes it. NEW
        field, needs creating in Zoho before this can actually save. */
     extra:(r)=>({ Phone_Number:r.Phone_Number1||"", Computed_Service_Time:computeServiceTime(r), Lead_Source:"Call",
-      ...(!r.ID ? { Created_By_Agent_Email: LOGIN_EMAIL } : {}),
+      /* Service_Type goes with the save - 2026-10-14. For almost every ticket
+         this writes back the value it already had; it exists for the ones that
+         arrived without one and had it derived at open (see openTicket). The
+         field apps read this straight from Zoho for their own TOW branching, so
+         a derived value that stayed in the browser would leave a tow job looking
+         like a repair on the vendor's phone. Never sent blank. */
+      ...(String(r[CONFIG.serviceTypeField]||"").trim() ? { [CONFIG.serviceTypeField]: String(r[CONFIG.serviceTypeField]).trim() } : {}),
+      /* ALSO STAMPS AN INBOUND TICKET - 2026-10-14. This only ever fired on !r.ID,
+         so a ticket that arrived from WhatsApp or the website - which has an ID
+         before any agent sees it - could never be attributed to anyone. A ticket
+         that already HAS an owner is still never reattributed, which is the
+         protection the original line existed for; the only new case is a blank. */
+      ...((!r.ID || !String(r.Created_By_Agent_Email||"").trim()) ? { Created_By_Agent_Email: LOGIN_EMAIL } : {}),
       // Confirmation_Time (2026-09-07, user-provided LOCATIONS-DISTANCES-
       // DATETIME spec, "#5 Task Confirmation Time" — "time that case FIRST
       // went to READY status OR SCHEDULED status, whichever is earlier").
@@ -1718,7 +1744,7 @@ const STAGES = [
     // the Payment stage's own copy is already read-only, so locking this one
     // too would strand every such ticket at Quote forever).
     fields:[
-    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>s.Service_Type==="TOW", row:"rate1" },
+    { n:"Distance_For_Quote_RT_KM", l:"Distance for Quote (RT KM)", t:"number", recompute:true, when:(s)=>isTowTicket(s), row:"rate1" },
     { n:"Suggested_Rate", l:"Suggested Rate", t:"number", readonly:true, row:"rate1" },
     // readonly added 2026-08-19 (real bug fixed, user-reported live: "after
     // remaining fee payment is completed by online mode (Zoho Payments), the
@@ -2398,7 +2424,14 @@ const STAGES = [
     // "location" template/1-parameter shape as the breakdown-location
     // button, just locationType:"drop" so the customer page shows the drop
     // pin capture instead of the breakdown one.
-    { n:"Send_Link_For_The_Drop_Location", l:"Send Drop Location Link", t:"button", full:true, when:(s)=>s.Service_Type==="TOW",
+    /* repeatable:true - 2026-10-14. Without it this button locked into a green,
+       disabled "Location Link Sent" the moment the flag was first written, so the
+       agent could never send the link again and the step looked as though it had
+       sent it by itself. Nothing here sends on arrival - the only send is this
+       button's own action below. Same flag its breakdown sibling above has always
+       carried, which is why that one still reads as a send button on the same
+       screen. The flag is still written and saved; only the permanent lock goes. */
+    { n:"Send_Link_For_The_Drop_Location", l:"Send Drop Location Link", t:"button", full:true, repeatable:true, when:(s)=>isTowTicket(s),
       buttonLabel:"Send Drop Location Link to Customer", doneLabel:"Location Link Sent",
       action:(r)=>{
         sendWhatsAppTemplate(r.Phone_Number1, "tow_confirm_customer_location_details", [], null, customerPageButtonPath(r, "location", {locationType:"drop"}))
@@ -2415,19 +2448,19 @@ const STAGES = [
     // field in this group - the Send button, DropLatLongPaste, DropLocationLat,
     // DropLocationLong - already carries this exact guard. Same condition, so
     // the whole drop group now appears and disappears together.
-    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true, when:(s)=>s.Service_Type==="TOW",
+    { n:"__LocationLinkDisplay_Drop", l:"Drop Location Share Link", t:"navlink", full:true, when:(s)=>isTowTicket(s),
       hrefCompute:(r)=>buildCustomerPageUrl(r, "location", {locationType:"drop"}),
       linkLabel:"📍 Open Location Page", emptyMsg:"Not available yet." },
-    { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>s.Service_Type==="TOW", parseTarget:["DropLocationLat","DropLocationLong"] },
+    { n:"DropLatLongPaste", l:"Paste Drop Lat,Long", t:"text", full:true, when:(s)=>isTowTicket(s), parseTarget:["DropLocationLat","DropLocationLong"] },
     // readonly:true added 2026-08-06 (user request) — see Latitude/Longitude's
     // own matching comment above, same reasoning applies to the drop pair.
-    { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>s.Service_Type==="TOW", readonly:true },
-    { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>s.Service_Type==="TOW", readonly:true },
+    { n:"DropLocationLat", l:"Drop Latitude", t:"decimal", when:(s)=>isTowTicket(s), readonly:true },
+    { n:"DropLocationLong", l:"Drop Longitude", t:"decimal", when:(s)=>isTowTicket(s), readonly:true },
     /* Round-trip distance calc is TOW-only (RSR's distances live on the wip
        stage's own fields instead). Clicking recalculates from the static
        office location -> breakdown -> drop -> office each time; repeatable
        since coordinates might get corrected after a first calculation. */
-    { n:"Calculate_Distance", l:"Calculate Round-Trip Distance", t:"button", full:true, repeatable:true, when:(s)=>s.Service_Type==="TOW",
+    { n:"Calculate_Distance", l:"Calculate Round-Trip Distance", t:"button", full:true, repeatable:true, when:(s)=>isTowTicket(s),
       buttonLabel:"Calculate Round-Trip Distance", action:(r)=>{
         // Diagnostic logging (2026-08-04, user-reported live: "not
         // calculating distance") — dumps the exact inputs/output so a
@@ -2443,7 +2476,7 @@ const STAGES = [
        which read as one field shown twice. The measured one is the one that
        belongs there, so this copy is hidden from CLOSURE only - it still works
        on this step, where the agent actually uses it. */
-    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>s.Service_Type==="TOW", closureHide:true },
+    { n:"RT_KM", l:"Round-Trip KM", t:"number", when:(s)=>isTowTicket(s), closureHide:true },
     // "Remarks [Text Area – optional]" — same shared field as create/quote's
     // own copies (2026-07-31 flow spec shows it here too), editable on all three.
     { n:"Remarks", l:"Remarks", t:"remarks", full:true, closureHide:true }   // Task Tracker item 43 - hidden from CLOSURE only; this step keeps its own box
@@ -3586,15 +3619,20 @@ const STAGES = [
     // vendorTicket's own payment screen already restored 2026-08-04 (see that
     // widget's own comment); this agent-side screen never had it back.
     { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:"Cash", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    // closureHide:true (2026-09-11, Task Tracker PDF item 17 — "REMOVE FROM
-    // CLOSURE PAGE (DUPLICATE FIELD OF PAYMENT STATUS)"). Still fully live/
-    // editable on this Final Payment step itself — including still reachable
-    // via CLOSURE_ALWAYS_EDITABLE_FIELDS' OWN click-to-edit mechanism if that
-    // ever needs it again, since that list only controls edit-lock behavior
-    // for a row that IS shown, not whether the row renders at all; with this
-    // row now hidden from the summary entirely, that list entry is simply
-    // inert for this field, not broken.
-    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },
+    /* SHOWN ON THE CLOSURE PAGE AGAIN - 2026-10-14, user request. It carried
+       closureHide:true from 2026-09-11, Task Tracker PDF item 17: "REMOVE FROM
+       CLOSURE PAGE (DUPLICATE FIELD OF PAYMENT STATUS)".
+
+       That duplicate does not exist. Payment_Status is read by the booking-fee
+       gate (bookingFeeAlreadyPaid and the status ladder above it) and is not a
+       row in any stage, so it never renders as a field anywhere - which left the
+       closure page with no payment indicator at all once this one was hidden.
+
+       Click-to-edit comes back with it, unchanged: this field is already named in
+       CLOSURE_ALWAYS_EDITABLE_FIELDS, and that list only ever governed the edit
+       lock on a row that is SHOWN. Hiding the row made the entry inert; showing
+       it again makes it work, with no change to that list. */
+    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s) },
     // Decorative QR block (2026-08-11, user request) — same placeholder
     // pattern vendorTicket's own renderPaymentScreen() already uses (no real
     // gateway/webhook wired up on that side either, see its own comment) —
@@ -4634,13 +4672,22 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   SERVICE_TYPE_BRANCH_ROW,   // 2026-10-13 - the one value both of this section's RSR/TOW splits hang on
   { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
-  // closureHide:true (2026-09-11, Task Tracker PDF item 16 — "REMOVE FROM
-  // CLOSURE PAGE"; the PDF's suggested new home, "display along with invite
-  // status of various vendors in the Assignment page," is a separate,
-  // bigger UI addition to the live Assignment step — not built as part of
-  // this pass, flagged for a follow-up). Field itself is untouched — still
-  // written exactly as before, just no longer shown in Final Closure.
-  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11
+  /* SHOWN ON THE CLOSURE PAGE AGAIN - 2026-10-14, user request. It carried
+     closureHide:true from 2026-09-11, Task Tracker PDF item 16: "REMOVE FROM
+     CLOSURE PAGE", with a new home named in the same breath - "display along
+     with invite status of various vendors in the Assignment page".
+
+     That second half was a larger addition to the live Assignment step, was
+     flagged as a follow-up at the time, and was never built. So the field did
+     not move: the closure page has simply shown no reject time since.
+
+     The when: guard below is what keeps it from appearing twice, and is doing
+     the job closureHide was doubling up on - this copy renders only in
+     VENDOR-driven mode, because in agent-entering mode the per-stage editable
+     copy is the one that shows. Service_Acceptance and Service_Acceptance_For_Tow
+     directly above run on exactly that arrangement with no closureHide of their
+     own, so this is the established pattern here, not a new risk. */
+  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
   // Real bug fixed 2026-08-11 (user-reported via the "Missing Fields & Field
   // Behavior" spec's own item 3: "these fields should be read-only for the
   // agent while [the vendor is using the app]") — this was the ONE field in
@@ -5198,10 +5245,43 @@ function vendorIdByName(name){
    (RSID == recordId) — best-effort; if it silently matches nothing, this
    degrades to occasionally creating a duplicate Invites record rather than
    losing data, so flagged as low-risk pending live verification. */
+/* A rejected invite, made live again - 2026-10-14. See this change's own note.
+   Returns true only when a row was genuinely reset, so the log says what
+   happened rather than what was attempted. */
+async function reviveRejectedInvite(inv, name, recordId){
+  if(!inv || inv.ID==null) return false;
+  /* PENDING and ACCEPTED rows are never touched. inviteWasRejected() is the
+     same test the Accept/Reject panel uses, which is the point - a row born
+     carrying the form's "RSP REJECT" initial value is not a reject, and an
+     accepted vendor must not be knocked back to awaiting-response. */
+  if(!inviteWasRejected(inv)) return false;
+  try{
+    /* Known-good values only - see this change's own note on why this call
+       carries nothing experimental. */
+    await apiUpdateReport(CONFIG.invitesReport, inv.ID, {
+      Status: "RSP IRA (INVITE RESPONSE AWAITED)",
+      Invited_At: fmtDateTime(new Date())
+    });
+    console.log("[Get-Rescue] reviveRejectedInvite: vendor", name, "previously rejected ticket", recordId, "- their existing invite row", inv.ID, "has been reset to awaiting-response and re-stamped, so this re-assignment will actually reach their app. No second invite row was created.");
+  }catch(e){
+    console.warn("[Get-Rescue] reviveRejectedInvite: could NOT reset invite row "+inv.ID+" for vendor "+name+" on ticket "+recordId+" - that vendor's app will keep hiding this ticket because their invite row still reads as rejected. Everything else about this assignment saved normally.", e);
+    return false;
+  }
+  /* Cosmetic, and kept out of the call above on purpose: a refused column here
+     must not undo the reset that has already landed. Without it the agent's
+     panel would show a fresh invite alongside the old reject reason and
+     response time. */
+  try{ await apiUpdateReport(CONFIG.invitesReport, inv.ID, { Reject_Reason:"", Responded_At:"" }); }
+  catch(e){ console.warn("[Get-Rescue] reviveRejectedInvite: the invite row "+inv.ID+" WAS reset and the vendor can see the ticket; only the old Reject_Reason/Responded_At could not be cleared, so the agent panel may still show them.", e); }
+  return true;
+}
 async function syncInvites(recordId, vendorNames){
   const names=(Array.isArray(vendorNames)?vendorNames:(vendorNames?[vendorNames]:[])).filter(Boolean);
   if(!recordId || !names.length) return;
   let existingVendorIds=[];
+  /* The ROWS as well as the ids - 2026-10-14. The ids answer "has this vendor
+     been invited before"; the row is what a re-invite has to reset. */
+  const existingInviteByVendor={};
   // Real bug fixed (2026-08-07, user-reported live, confirmed via a real
   // Zoho error): "(RSID == recordId)" as a server-side criteria string
   // against a Lookup field never actually worked — Zoho rejects it outright
@@ -5220,12 +5300,26 @@ async function syncInvites(recordId, vendorNames){
     // Same tolerant match as the panel - 2026-10-09. If this check has been
     // failing, every re-save of this step has created duplicate invite rows.
     const existing = all.filter(function(inv){ return inviteBelongsToTicket(inv, recordId); });
-    existingVendorIds = existing.map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); }).filter(Boolean);
+    existing.forEach(function(inv){
+      const vid=String(unwrapLookup(inv.Vendor)||"");
+      if(!vid) return;
+      existingVendorIds.push(vid);
+      /* First row wins. Duplicates should not exist, but they did once (see this
+         function's own 2026-08-07 note), and picking one deterministically beats
+         resetting whichever happened to come last. */
+      if(existingInviteByVendor[vid]==null) existingInviteByVendor[vid]=inv;
+    });
   }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
   const fn=resolve("addRecords"); if(!fn) return;
   for(const name of names){
     const vendorId=String(vendorIdByName(name));
-    if(existingVendorIds.indexOf(vendorId)>=0) continue; // already invited — don't duplicate
+    if(existingVendorIds.indexOf(vendorId)>=0){
+      /* Already invited - still never a second row. But if that row carries a
+         REJECT from an earlier round, the vendor's app is hiding this ticket and
+         re-assigning them has no effect at all until the row is cleared. */
+      await reviveRejectedInvite(existingInviteByVendor[vendorId], name, recordId);
+      continue;
+    }
     try{
       // Invited_At (2026-09-07, user-provided LOCATIONS-DISTANCES-DATETIME
       // spec, "#6 RSP Invite Time" — "time that the assigned RSP was sent
@@ -5553,9 +5647,13 @@ function distanceNotComputedYet(v){
    the Close Case page once the agent has chosen a Closure Status, instead of
    only when Close Case is pressed. See this change's own note for why the status
    is the trigger rather than the page opening. */
-const CLOSURE_DIST_FIELDS = ["Vendor_Fleet_Location_Lat","Vendor_Fleet_Location_Lon","Vendor_Round_Trip_Distance","Vendor_Distance","Roundtrip_Distance"];
+const CLOSURE_DIST_FIELDS = ["Vendor_Fleet_Location_Lat","Vendor_Fleet_Location_Lon","Vendor_Round_Trip_Distance","Vendor_Distance","Roundtrip_Distance","Mechanic_To_Breakdown"];
 let CLOSURE_DIST_KEY = null;        // recordId|status already previewed
 let CLOSURE_DIST_BASELINE = null;   // the five fields as Zoho sent them
+/* 2026-10-14 - which preview run owns the answer. Taken before the Google round
+   trip and checked after it: a run the agent has already moved past throws its
+   figures away instead of writing them under somebody else's status. */
+let CLOSURE_DIST_RUN = 0;
 async function previewClosureDistances(){
   if(!state.recordId) return;
   /* An already-closed ticket is a finished record - its figures are whatever was
@@ -5576,12 +5674,31 @@ async function previewClosureDistances(){
   const key = String(state.recordId)+"|"+status;
   if(CLOSURE_DIST_KEY===key) return;
   CLOSURE_DIST_KEY = key;   // set BEFORE awaiting, so the re-render below cannot re-enter
-  CLOSURE_DIST_FIELDS.forEach(function(n){ state.record[n] = CLOSURE_DIST_BASELINE[n]; });
-  const before = CLOSURE_DIST_FIELDS.map(function(n){ return String(state.record[n]==null?"":state.record[n]); }).join("|");
-  try{ await runClosureDistanceCalculations(state.record); }
+  const myRun = ++CLOSURE_DIST_RUN;
+  /* ON A COPY - 2026-10-14. runClosureDistanceCalculations() writes its results
+     straight into the record it is given, so handing it state.record meant two
+     overlapping runs fought over the same five fields and the agent saw whichever
+     won. A clone cannot be seen by anything on screen until this run is confirmed
+     as still current, and it also means nothing is blanked while Google is being
+     asked. */
+  const draft = Object.assign({}, state.record);
+  CLOSURE_DIST_FIELDS.forEach(function(n){ draft[n] = CLOSURE_DIST_BASELINE[n]; });
+  try{ await runClosureDistanceCalculations(draft); }
   catch(e){ console.warn("[Get-Rescue] previewClosureDistances failed (non-fatal, Close Case still computes these):", e); return; }
-  const after = CLOSURE_DIST_FIELDS.map(function(n){ return String(state.record[n]==null?"":state.record[n]); }).join("|");
-  if(after!==before){
+  if(myRun!==CLOSURE_DIST_RUN){
+    console.log("[Get-Rescue] previewClosureDistances: the figures for Closure_Status =", status, "arrived after the agent had already picked a different status - discarded, because writing them now would show one status's distances against another's.");
+    return;
+  }
+  /* Both directions. A status that produces no figure has to CLEAR whatever the
+     previous status left behind, or the agent reads a distance that belongs to a
+     closure they did not choose. */
+  let changed=false;
+  CLOSURE_DIST_FIELDS.forEach(function(n){
+    const was=String(state.record[n]==null?"":state.record[n]);
+    const now=String(draft[n]==null?"":draft[n]);
+    if(was!==now){ state.record[n]=draft[n]; changed=true; }
+  });
+  if(changed){
     console.log("[Get-Rescue] previewClosureDistances: closure distances worked out for Closure_Status =", status, "- shown now, saved when Close Case is pressed.");
     rerenderCurrentView();
   }
@@ -5761,6 +5878,37 @@ if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null
               record.Vendor_Distance=km;
             }
           }
+        }
+      }
+    }
+    /* --- Mechanic -> Breakdown - 2026-10-14. See this change's own note: the
+       field has only ever held the literal 0 that calc4PointRoundtrip() writes,
+       because in July there was no mechanic position to measure from. There is
+       now, so the leg is filled in here. --- */
+    if(distanceNotComputedYet(record.Mechanic_To_Breakdown)){
+      /* The same two points, already measured at accept. Reused rather than
+         re-measured so this row can never disagree with the Distance to
+         Breakdown row directly above it on the same panel. */
+      const atAccept = Number(isTow ? record.Distance_To_Breakdown_TOW : record.Distance_To_Breakdown);
+      if(!isNaN(atAccept) && atAccept>0){
+        record.Mechanic_To_Breakdown = atAccept;
+        console.log("[Get-Rescue] Mechanic_To_Breakdown: reusing the "+atAccept+" km the vendor app already measured from their start position to the breakdown at accept time - the same leg, so it is not measured a second time.");
+      } else {
+        /* Agent-run, or an accept that never recorded a start position. Same
+           origin ladder as every other leg in this function. */
+        let from = vendorOriginFor(record, null);
+        if(!from){
+          const fLat=parseCoord(record.Vendor_Fleet_Location_Lat), fLon=parseCoord(record.Vendor_Fleet_Location_Lon);
+          if(fLat!=null && fLon!=null) from={ lat:fLat, lon:fLon, source:"vendor fleet location" };
+        }
+        if(from){
+          const km=await legDistanceKm([from,{lat:bLat,lon:bLon}], travelModeFor(record));
+          if(km!=null){
+            record.Mechanic_To_Breakdown=km;
+            console.log("[Get-Rescue] Mechanic_To_Breakdown: no Distance to Breakdown on file, so "+from.source+" -> breakdown was measured instead:", km, "km.");
+          }
+        } else {
+          console.warn("[Get-Rescue] Mechanic_To_Breakdown stays empty: this ticket has no vendor start GPS, no Distance to Breakdown and no fleet location, so there is no point to measure from.");
         }
       }
     }
@@ -11942,6 +12090,33 @@ async function openTicket(rec){
   // this ticket simply never had a vendor saved: raw (pre-unwrap, straight
   // off Zoho) vs. after unwrap, plus whether OPTIONS.vendors itself loaded.
   console.log("[Get-Rescue] openTicket Vendors1 — raw from Zoho:", JSON.stringify(rec.Vendors1), "| after unwrap:", JSON.stringify(state.record.Vendors1), "| OPTIONS.vendors loaded:", OPTIONS.vendors.length, "record(s)");
+  /* Schedule Date & Time for a ticket that never had one - 2026-10-14. Inbound
+     tickets carry Time_of_service but not Computed_Service_Time (see
+     createTicket.deluge), so this box was empty until the agent saved the Create
+     step. Filled for display only, and only when blank - a stored value is never
+     touched. The next save writes this exact figure, since extra() calls the same
+     function on the same anchor. */
+  if(!String(state.record.Computed_Service_Time||"").trim()){
+    const seeded = computeServiceTime(state.record);
+    if(seeded) state.record.Computed_Service_Time = seeded;
+  }
+  /* Service_Type, derived when the ticket arrived without one - 2026-10-14.
+     See this change's own note. Runs here because Vehicle_Issue has just been
+     unwrapped to bare ids and setPath() is the very next line, so the correct
+     branch is built on the first render. */
+  if(!String(state.record[CONFIG.serviceTypeField]||"").trim()){
+    const derivedFrom = Array.isArray(state.record.Vehicle_Issue) ? state.record.Vehicle_Issue
+      : (state.record.Vehicle_Issue ? [state.record.Vehicle_Issue] : []);
+    /* OPTIONS.issues must have loaded. isTowIssue() returns false for an id it
+       cannot find, so deriving against an empty list would relabel every TOW
+       ticket as RSR - silently, and far worse than the blank it is fixing. */
+    if(derivedFrom.length && OPTIONS.issues.length){
+      state.record[CONFIG.serviceTypeField] = derivedFrom.some(isTowIssue) ? "TOW" : "RSR";
+      console.warn("[Get-Rescue] openTicket: this ticket had no Service_Type on it, so it was worked out from its issue(s) as \""+state.record[CONFIG.serviceTypeField]+"\". Tickets raised by the website form before 2026-10-14 all landed this way - see CreateServiceTicket.deluge. It is saved with the next save of the Create step.");
+    } else if(derivedFrom.length){
+      console.warn("[Get-Rescue] openTicket: this ticket has no Service_Type and the issue list has not loaded, so it cannot be worked out. The ticket will show the REPAIR branch until the list loads and it is reopened - deliberately left blank rather than guessed at.");
+    }
+  }
   setPath();
   const st=readVal(rec,CONFIG.stageField);
   // resumeStepIndex() (2026-08-11, see its own comment) — prefers the step the
@@ -12071,8 +12246,9 @@ function renderClosure(){
   hydrateFilePreviewsIn("#closureFields");
 }
 function setPath(){
-  const t=(state.record[CONFIG.serviceTypeField]||"").toUpperCase();
-  state.path=buildPath(t==="TOW"?"TOW":"RSR");
+  /* Same helper the fields use - 2026-10-14. These two used to be separate
+     comparisons and could disagree; see isTowTicket()'s own note. */
+  state.path=buildPath(isTowTicket(state.record)?"TOW":"RSR");
   if(state.stepIndex>state.path.length-1) state.stepIndex=state.path.length-1;
 }
 /* shown on stepper steps beyond state.maxStepIndex — mandatory fields on an
@@ -12771,12 +12947,17 @@ function buildField(f){
     // full reasoning. Purely additive, right next to the plain tel: link
     // above (unchanged) — opt-in via f.ozonetelCall, so no other field is
     // affected.
-    const ozonetelCallHtml = (f.t==="tel" && f.ozonetelCall && cur) ? ` <a href="#" id="${id}_ozonetelCall" style="display:inline-block;margin-top:6px;margin-left:10px;font-family:var(--f-mono);font-size:12px;color:var(--accent-ink,#7A3D0C);text-decoration:none" title="Call ${esc(cur)} via Ozonetel">📲 Call via System</a>` : "";
+    /* OFF - 2026-10-14, user request: the button is not wanted on ticket
+       creation, which is the only place it appears. Everything behind it is
+       left wired up, so this is one word to reverse. See this change's own note
+       for why the plain tel: link is NOT restored in its place. */
+    const SHOW_OZONETEL_CALL_BUTTON = false;
+    const ozonetelCallHtml = (SHOW_OZONETEL_CALL_BUTTON && f.t==="tel" && f.ozonetelCall && cur) ? ` <a href="#" id="${id}_ozonetelCall" style="display:inline-block;margin-top:6px;margin-left:10px;font-family:var(--f-mono);font-size:12px;color:var(--accent-ink,#7A3D0C);text-decoration:none" title="Call ${esc(cur)} via Ozonetel">📲 Call via System</a>` : "";
     // Same function-or-string hint as the file branch above (2026-10-08) -
     // Booking_Fee uses it to say why it is locked rather than just greying out.
     const inputHint = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
     wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+ozonetelCallHtml+(inputHint?`<span class="hint">${esc(inputHint)}</span>`:"");
-    if(f.t==="tel" && f.ozonetelCall && cur){
+    if(SHOW_OZONETEL_CALL_BUTTON && f.t==="tel" && f.ozonetelCall && cur){
       setTimeout(function(){
         const ozBtn=$(id+"_ozonetelCall");
         if(ozBtn) ozBtn.onclick=function(e){ e.preventDefault(); placeVoiceCallbackFromTicket(cur); };
@@ -13239,6 +13420,13 @@ function wireField(f,id){
       o.classList.add("sel"); o.setAttribute("aria-checked","true"); o.tabIndex=0;
       if(focus) o.focus();
       state.record[f.n]=o.dataset.value;
+      /* Time_of_service drives the Schedule Date & Time mirror - 2026-10-14.
+         Computed_Service_Time is only written at save, so without this an existing
+         ticket showed an empty box under NOW until it was saved. Recomputing is
+         safe because computeServiceTime() anchors on the ticket's own Added_Time
+         and returns the same answer every time. Display only - extra() still does
+         the writing. */
+      if(f.n==="Time_of_service") state.record.Computed_Service_Time = computeServiceTime(state.record);
       if(RERENDER.indexOf(f.n)>=0){ collectStep(false); rerenderCurrentView(); }
     };
     opts.forEach((o,i)=>{
@@ -14950,6 +15138,12 @@ async function saveClosure(){
       [CONFIG.stageField]:"CLOSED"
     };
     if(closureCountsAsFeeBearing(r.Closure_Status)) payload.Total_Service_Fee=finalTSF;
+    /* Only when there is a real figure - 2026-10-14. Sent conditionally rather
+       than joining the payload above, because a field that is on the form but
+       missing from the report LAYOUT reads back as undefined while every write
+       still succeeds: an unconditional entry would quietly overwrite a stored
+       value with "" on every close. */
+    if(!distanceNotComputedYet(r.Mechanic_To_Breakdown)) payload.Mechanic_To_Breakdown=r.Mechanic_To_Breakdown;
     await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
     // See uploadPendingFiles()'s own comment (awaited + folded into one toast
     // now, same fix as saveStep()'s matching call).

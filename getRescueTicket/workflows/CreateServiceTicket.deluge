@@ -1,4 +1,4 @@
-try
+try 
 {
 	rawIssueText = input.Vehicle_Issue;
 	issueList = List();
@@ -7,7 +7,7 @@ try
 		issueList = rawIssueText.toList(";");
 	}
 	cleanIssues = List();
-	for each issueItem in issueList
+	for each  issueItem in issueList
 	{
 		trimmedItem = issueItem.trim();
 		if(trimmedItem != "")
@@ -15,12 +15,18 @@ try
 			cleanIssues.add(trimmedItem);
 		}
 	}
-
 	allIssues = Vehicle_Issue[ID != 0];
 	matchedIssueIds = List();
-	for each wantedIssue in cleanIssues
+	// Service_Type - 2026-10-14. This workflow never wrote the field, so every
+	// ticket from the website form landed with it blank. Blank is not "TOW", so
+	// the agent app built the RSR path: no Loading / At Drop / Unload steps and no
+	// drop-location fields on the Location page. Same rule as createTicket.deluge
+	// and createServiceRequest.deluge - the matched issue's Issue_Type containing
+	// "tow", case-insensitive - deliberately copied rather than reinvented.
+	isTowWeb = false;
+	for each  wantedIssue in cleanIssues
 	{
-		for each issueRec in allIssues
+		for each  issueRec in allIssues
 		{
 			issueName = issueRec.Issue_Name;
 			if(issueName != null)
@@ -28,13 +34,37 @@ try
 				if(issueName.trim().equalsIgnoreCase(wantedIssue))
 				{
 					matchedIssueIds.add(issueRec.ID);
+					issueTypeWeb = "";
+					if(issueRec.Issue_Type != null)
+					{
+						issueTypeWeb = issueRec.Issue_Type.toString();
+					}
+					if(issueTypeWeb.toLowerCase().contains("tow"))
+					{
+						isTowWeb = true;
+					}
 					break;
 				}
 			}
 		}
 	}
+	serviceTypeWeb = "RSR";
+	if(isTowWeb)
+	{
+		serviceTypeWeb = "TOW";
+	}
+	info "Service_Type resolved to " + serviceTypeWeb + " from the matched issues.";
 	info "Vehicle Issue matched IDs: " + matchedIssueIds.toString();
-
+	// Status "NEW" - 2026-10-14, client rule: a ticket that has arrived but that
+	// no agent has opened yet is NEW. It becomes SERVICE FEE QUOTE only when an
+	// agent submits the pre-filled Create page in getRescueTicket, which is also
+	// what stamps the Agent (Owner). Writing SERVICE FEE QUOTE here claimed work
+	// nobody had done, and made the agent app resume the ticket at the Quote step
+	// instead of at Create. All three inbound creators were changed together.
+	//
+	// This note sits OUTSIDE the insert block on purpose: Deluge parses everything
+	// between the square brackets as field assignments, so a // line in there is a
+	// syntax error - reported against the enclosing try, not against itself.
 	newRecordId = insert into Create_Case
 	[
 		Customer_Name=input.Name
@@ -46,12 +76,13 @@ try
 		Time_of_service=input.Time_of_service
 		Schedule_Date=input.Schedule_Date
 		Service_Time=input.Service_Time
-		Status="SERVICE FEE QUOTE"
+		Status="NEW"
+		Service_Type=serviceTypeWeb
 		Added_User=zoho.loginuser
 		Vehicle=input.Vehicle
 		Vehicle_Issue=matchedIssueIds
+		Client="ON DEMAND"
 	];
-
 	idStr = newRecordId.toString();
 	last6 = idStr;
 	if(idStr.length() > 6)
@@ -61,7 +92,6 @@ try
 	caseId = "RSID" + last6;
 	newRec = Create_Case[ID == newRecordId];
 	newRec.Case_ID=caseId;
-
 }catch (e)
 {
 	info "CreateServiceTicket workflow failed: " + e.toString();

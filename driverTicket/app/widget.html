@@ -1324,9 +1324,20 @@ function issueNamesFor(r){
 }
 let toastT=null;
 function toast(msg,kind){ const t=$("toast"); t.textContent=msg; t.className="toast show"+(kind?(" "+kind):""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
+/* Does this ticket name ME as the one working it? - 2026-10-14. ONLY the
+   singular holder fields (CONFIG.myEmailFieldCandidates), never the plural
+   Technician_Emails hand-off list - being invited is not holding it, and that
+   difference is what lets this safely override a stale reject. Strict equality
+   against this login's own address, so it can only ever recognise my own
+   ticket. isMine() calls it below rather than repeating the comparison. */
+function ticketIsMineNow(rec){
+  const myLogin=String(LOGIN_EMAIL||"").trim().toLowerCase();
+  if(!myLogin) return false;
+  return CONFIG.myEmailFieldCandidates.some(function(fld){ return String(rec[fld]||"").trim().toLowerCase()===myLogin; });
+}
 function isMine(rec){
   if(!LOGIN_EMAIL) return true;
-  if(CONFIG.myEmailFieldCandidates.some(function(f){ return String(rec[f]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); })) return true;
+  if(ticketIsMineNow(rec)) return true;
   // Technician_Emails (2026-07-31, per user request): hidden, comma-separated
   // field vendorTicket's fleet hand-off now populates alongside Assigned_Technician_Email.
   const emails=String(rec.Technician_Emails||"").split(",").map(function(e){ return e.trim().toLowerCase(); });
@@ -1376,7 +1387,11 @@ async function fetchMyTickets(){
        inviteMap already in hand - no extra fetch. */
     .filter(function(r){
       const inv = inviteMap[String(r.ID)];
-      if(inviteIsRejected(inv)) return false;
+      /* Not for a ticket I am now holding - 2026-10-14. A ticket I turned down
+         is not assigned to me, so every genuine reject still leaves the list at
+         once; what no longer happens is a reject from an earlier round hiding a
+         job I have since been given. Holder fields only - see ticketIsMineNow(). */
+      if(inviteIsRejected(inv) && !ticketIsMineNow(r)) return false;
       return inv!=null || isMine(r);
     });
 }

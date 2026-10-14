@@ -429,11 +429,68 @@ invoiceURL="";
 		// invoice this function has always created. Worst case the invoice is made
 		// without the template fields — today's behaviour, unchanged — and the log
 		// line below says precisely which step to finish in Books.
+		/* RUNG 2 - 2026-10-14. See this change's own note. Books refuses the whole
+		   invoice when ANY cf_* key names a field that is not set up in the org, and
+		   dropping all of them was turning one missing field into seven blank ones.
+		   Service Date, Service Description and Mode are the three that have never
+		   existed in this Books org; the other four are proven to, so they get their
+		   own attempt before anything is given up. */
 		if(invoiceRespCode != 0)
 		{
 			if(customFieldCount > 0)
 			{
-				info "onDemandInvoicing - invoice creation was rejected while sending the tax-invoice custom fields (" + createInvoiceResp.get("message") + "). Retrying WITHOUT them. If this keeps happening, the six custom fields are not set up on the Invoice module in Zoho Books yet - Settings -> Preferences -> Invoices -> Field Customization. Labels must be exactly: Service Date, Vehicle Make, Registration No, Service Type, Service Description, Mode, GST No.";
+				info "onDemandInvoicing - invoice creation was rejected while sending all " + customFieldCount + " tax-invoice custom field(s) (" + createInvoiceResp.get("message") + "). Retrying WITHOUT Service Date, Service Description and Mode, which are the three that have never been created in this Books org. Create them in Settings -> Preferences -> Invoices -> Field Customization (labels exactly: Service Date, Service Description, Mode) and all seven will go in on the first attempt.";
+				invoiceMap.remove("cf_service_date");
+				invoiceMap.remove("cf_service_description");
+				invoiceMap.remove("cf_mode");
+				/* Rebuilt from what is LEFT in the map, the same subText rule the first
+				   array was built with - so the two can never disagree about which
+				   fields are in play. */
+				invoiceMap.remove("custom_fields");
+				coreFieldsList = List();
+				for each coreKey in invoiceMap.keys()
+				{
+					coreKeyText = coreKey.toString();
+					if(coreKeyText.length() > 3)
+					{
+						if(coreKeyText.subText(0,3) == "cf_")
+						{
+							coreEntry = Map();
+							coreEntry.put("api_name",coreKeyText);
+							coreEntry.put("value",invoiceMap.get(coreKeyText));
+							coreFieldsList.add(coreEntry);
+						}
+					}
+				}
+				if(coreFieldsList.size() > 0)
+				{
+					invoiceMap.put("custom_fields",coreFieldsList);
+				}
+				/* Honest reporting for the read-back diagnostic further down: this is
+				   what is actually being sent now, not what was first intended. */
+				customFieldCount = coreFieldsList.size();
+				info "onDemandInvoicing - second attempt carries " + customFieldCount + " custom field(s): " + coreFieldsList.toString();
+				jsonPayload = invoiceMap.toString();
+				createInvoiceResp = invokeurl
+				[
+					url :books_base_url + "/invoices?organization_id=" + organization_id
+					type :POST
+					parameters:jsonPayload
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_books_connection"
+				];
+				invoiceRespCode = createInvoiceResp.get("code");
+			}
+		}
+		/* RUNG 3 - the original all-or-nothing fallback, unchanged in effect: creating
+		   the invoice is this function's one critical job, so if custom fields are
+		   still what stands in the way, they go entirely. Reached only when rung 2 was
+		   also refused, which means the problem is not the three template extras. */
+		if(invoiceRespCode != 0)
+		{
+			if(customFieldCount > 0)
+			{
+				info "onDemandInvoicing - the invoice was STILL rejected with only the four core custom fields (" + createInvoiceResp.get("message") + "). Retrying with none of them, so the invoice itself is created. One of cf_vehicle_make / cf_registration_no / cf_service_type / cf_gst_no is not set up in this Books org, or is refusing the value sent - the message in brackets names it.";
 				invoiceMap.remove("cf_service_date");
 				invoiceMap.remove("cf_vehicle_make");
 				invoiceMap.remove("cf_registration_no");
@@ -441,9 +498,8 @@ invoiceURL="";
 				invoiceMap.remove("cf_service_description");
 				invoiceMap.remove("cf_mode");
 				invoiceMap.remove("cf_gst_no");
-				// The array form too - 2026-10-13. Without this the retry would resend
-				// the very fields it is dropping, and a genuine rejection would repeat.
 				invoiceMap.remove("custom_fields");
+				customFieldCount = 0;
 				jsonPayload = invoiceMap.toString();
 				createInvoiceResp = invokeurl
 				[

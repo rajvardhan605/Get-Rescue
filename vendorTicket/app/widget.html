@@ -1762,11 +1762,36 @@ function inviteIsRejected(inv){
   const responded=String(inv.Responded_At||"").trim();
   return reason!=="" || responded!=="";
 }
-/* Did THIS device reject this ticket? Only ever a yes/no now — the 24h window
-   that needed the actual time is gone (see REJECT_STAMP_KEY above). */
-function locallyRejected(ticketId){
-  try{ return rejectStamps()[String(ticketId)]!=null; }
-  catch(e){ return false; }
+/* Did THIS device reject this ticket, and does that still mean anything?
+   2026-10-14. The time was dropped when the 24-hour window went (2026-10-06),
+   leaving a stamp that never expired - so a ticket re-assigned to this vendor
+   months later was still hidden on this one phone, with nothing on screen to
+   explain it. The stamp keeps its real job, covering the seconds between a
+   reject and the invite row catching up (updateMyInvite is best-effort and
+   documented to no-op silently), and now ends where that job ends: an invite
+   issued AFTER it was written makes it stale.
+
+   Invited_At only. Added_Time is when the row was created and can never show a
+   re-invite, so where Invited_At is absent from the report layout - the exact
+   risk FIELDS.md flags for this field - nothing is cleared and this behaves
+   exactly as it did before. */
+function clearRejectStamp(ticketId){
+  try{
+    const m=rejectStamps();
+    if(m[String(ticketId)]==null) return;
+    delete m[String(ticketId)];
+    localStorage.setItem(REJECT_STAMP_KEY, JSON.stringify(m));
+    console.log("[GR-Vendor] clearRejectStamp: ticket "+ticketId+" was rejected on this device, but a NEWER invite has since been issued for it - the old stamp has been dropped and the ticket can appear again.");
+  }catch(e){ /* storage blocked: the ticket stays hidden on this device, as before */ }
+}
+function locallyRejected(ticketId, inv){
+  try{
+    const at=rejectStamps()[String(ticketId)];
+    if(at==null) return false;
+    const reInvitedAt=parseInvitedAt(inv && inv.Invited_At);
+    if(reInvitedAt!=null && reInvitedAt>Number(at)){ clearRejectStamp(ticketId); return false; }
+    return true;
+  }catch(e){ return false; }
 }
 /* Is any OTHER invited vendor still able to take this ticket? */
 async function otherInvitesStillLive(ticketId){
@@ -1829,6 +1854,26 @@ function notifyMissed(list){
     : ("Missed "+fresh.length+" tickets: "+fresh.map(function(x){ return x.label; }).join(", "));
   if(typeof toast==="function") toast(msg,"err");
 }
+/* Does this ticket name ME as the vendor working it? - 2026-10-14. Not "was I
+   invited", which is what the rest of the filter asks: this is about who holds
+   the case now. See this change's own note for why that has to outrank both the
+   invite gate and the reject veto.
+
+   Assigned_Vendor first and the accepting email only when it is blank - the same
+   precedence the filter below already uses, so the two can never disagree. Both
+   are strict equality against this login's own identity: this can only ever
+   recognise a ticket as mine, never reveal somebody else's. */
+function ticketIsMineNow(r){
+  const assignedId=lookupId(r.Assigned_Vendor);
+  if(assignedId!=null && String(assignedId).trim()!==""){
+    /* Named, and named as someone - if that someone is not me, it is not mine,
+       and if this login never resolved we cannot claim it either. */
+    return !!(currentVendorRecord && String(assignedId)===String(currentVendorRecord.id));
+  }
+  const acceptedBy=acceptedByEmail(r);
+  const myLogin=String(LOGIN_EMAIL||"").trim().toLowerCase();
+  return !!(acceptedBy && myLogin && acceptedBy===myLogin);
+}
 async function fetchMyTickets(){
   let inviteMap={};
   try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[GR-Vendor] loadMyInvites failed (falling back to Vendor_Emails/name match only)", e); }
@@ -1839,14 +1884,24 @@ async function fetchMyTickets(){
   console.log("[GR-Vendor] fetchMyTickets: "+statusMatched.length+" match MY_STATUSES ("+MY_STATUSES.join(", ")+")");
   const missed=[];
   const mine = statusMatched.filter(function(r){
-    if(!(inviteMap[String(r.ID)]!=null || isMine(r))) return false;
+    /* Holding the case is the fourth way in - 2026-10-14. The three before it
+       are all invite signals, and a ticket can be assigned to a vendor who was
+       never invited to it or who has since been pruned out of Vendors1. That
+       vendor is the one person who must be able to see it. */
+    const mineNow = ticketIsMineNow(r);
+    if(!(inviteMap[String(r.ID)]!=null || isMine(r) || mineNow)) return false;
     /* This vendor turned it down — it goes now, not in 24 hours. Either
        signal is enough: the invite row may not have been updated yet (that
        write is not awaited and can silently no-op), and the local stamp is
        missing on a different device. Requiring both would reintroduce the
        bug on whichever one happened to fail. */
     const myInv=inviteMap[String(r.ID)];
-    if(inviteIsRejected(myInv) || locallyRejected(r.ID)) return false;
+    /* Skipped for a case I am holding - 2026-10-14. A ticket I turned down is
+       not assigned to me, so every genuine reject still disappears at once; what
+       no longer happens is a reject from an earlier round hiding a job I have
+       since been given. The stamp is checked against this invite so a re-invite
+       can retire it - see locallyRejected(). */
+    if(!mineNow && (inviteIsRejected(myInv) || locallyRejected(r.ID, myInv))) return false;
     const st=String(r[CONFIG.stageField]||"").trim().toUpperCase();
     if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){
       /* Unanswered for longer than the SLA — drop it and say so.
@@ -1863,7 +1918,11 @@ async function fetchMyTickets(){
          rather than guessing it is stale — the same rule the agent-side
          "Timed Out" label uses. */
       const invitedAt = inviteStartedAt(myInv);
-      if(invitedAt!=null && (Date.now()-invitedAt) >= INVITE_TIMEOUT_MS){
+      /* mineNow guard added 2026-10-14: a pending invite has no Assigned_Vendor,
+         so nothing that genuinely timed out can return through this - but a ticket
+         assigned to me is not a pending invite and must not be dropped as one,
+         however long the status has been sitting at RSP IRA. */
+      if(!mineNow && invitedAt!=null && (Date.now()-invitedAt) >= INVITE_TIMEOUT_MS){
         missed.push({ id:r.ID, label:caseLabel(r), why:"not accepted in time" });
         return false;
       }
