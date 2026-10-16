@@ -2233,7 +2233,7 @@ function renderReachedDropScreen(){
   $("reachedDropBtn").onclick=reachedDrop;
 }
 async function reachedDrop(){
-  if(effectivePhotoCount("Drop_Location_Photo")<4){ toast("4 drop-location photos required","err"); return; }
+  if(effectivePhotoCount("Drop_Location_Photo")<2){ toast("2 drop-location photos required","err"); return; }
   setDisabled("reachedDropBtn",true);
   try{
     const r=state.current;
@@ -3527,6 +3527,117 @@ function startLocationHeartbeat(){
   locationHeartbeatTimer=setInterval(function(){ pingCurrentLocation(false); }, LOCATION_HEARTBEAT_MS);
 }
 function stopLocationHeartbeat(){ if(locationHeartbeatTimer){ clearInterval(locationHeartbeatTimer); locationHeartbeatTimer=null; } }
+/* ATTENDANCE - 2026-10-15, client request: every online/offline change is
+   logged with name, status, time and position. See this change's own note for
+   why it is called after the write and never awaited.
+
+   Best-effort by construction: every failure path - no addRecords method, no
+   GPS, no Attendance form in Zoho yet, a refused write - is caught here and
+   logged, so nothing it does can reach the toggle. */
+const ATTENDANCE_FORM = "Attendance";
+/* Who to put in the Name column - 2026-10-15. See this change's own note: the
+   display name is not always resolved even when the toggle works, so this tries
+   the record the toggle just wrote to before giving up and using the login. */
+const ATTENDANCE_NAME_FIELDS = [CONFIG.techNameField, "Technician_Name","Driver_Name","Name","Full_Name","Driver"];
+function attendanceName(){
+  const resolved = String(MY_TECH_NAME||"").trim();
+  if(resolved) return { name:resolved, from:"the resolved profile name" };
+  const rec = currentTechRecord && currentTechRecord.data;
+  if(rec){
+    for(var i=0;i<ATTENDANCE_NAME_FIELDS.length;i++){
+      const key = ATTENDANCE_NAME_FIELDS[i];
+      if(!key) continue;
+      const v = String(readVal(rec, key)||"").trim();
+      /* An address in a name column is not a name - skipping it stops this
+         quietly reproducing the exact bug it was written to fix. */
+      if(v && v.indexOf("@")===-1) return { name:v, from:"the availability record’s " + key + " column" };
+    }
+  }
+  /* fallback:true is what triggers the email lookup in logAttendance() - see
+     attendanceNameByEmail(). Marked rather than inferred, so a real name that
+     happens to equal the login can never be mistaken for a failure. */
+  return { name:String(LOGIN_EMAIL||"").trim(), from:"the login email - no name is on file for this address", fallback:true };
+}
+/* The name for this login, searched for rather than remembered - 2026-10-15.
+   Only called when attendanceName() has already given up; see this change’s
+   own note. Cached per session - a second toggle costs nothing. */
+const ATTENDANCE_NAME_REPORTS = [CONFIG.techReport];
+const ATTENDANCE_EMAIL_FIELDS = [CONFIG.techEmailField, "Email", "Technician_Email", "Email_Address"];
+let ATTENDANCE_NAME_LOOKUP = null;
+function attendanceEmailMatches(rec, wantedLower){
+  if(!rec || !wantedLower) return false;
+  for(var i=0;i<ATTENDANCE_EMAIL_FIELDS.length;i++){
+    const fld = ATTENDANCE_EMAIL_FIELDS[i];
+    if(fld && String(readVal(rec,fld)||"").trim().toLowerCase()===wantedLower) return true;
+  }
+  /* ANY column carrying exactly this address. Same last resort, and the same
+     reasoning, as vendorEmailFieldMatching(): being unable to name someone who
+     can log in is the bug, and a scan of their own record is cheap. */
+  for(var key in rec){
+    if(String(readVal(rec,key)||"").trim().toLowerCase()===wantedLower) return true;
+  }
+  return false;
+}
+async function attendanceNameByEmail(){
+  if(ATTENDANCE_NAME_LOOKUP) return ATTENDANCE_NAME_LOOKUP;
+  const wanted = String(LOGIN_EMAIL||"").trim().toLowerCase();
+  if(!wanted) return null;
+  for(var r=0;r<ATTENDANCE_NAME_REPORTS.length;r++){
+    const rep = ATTENDANCE_NAME_REPORTS[r];
+    if(!rep) continue;
+    try{
+      const recs = await apiGetReport(rep, null, 1000);
+      for(var i=0;i<recs.length;i++){
+        if(!attendanceEmailMatches(recs[i], wanted)) continue;
+        for(var n=0;n<ATTENDANCE_NAME_FIELDS.length;n++){
+          const key = ATTENDANCE_NAME_FIELDS[n];
+          if(!key) continue;
+          const v = String(readVal(recs[i], key)||"").trim();
+          if(v && v.indexOf("@")===-1){
+            ATTENDANCE_NAME_LOOKUP = { name:v, from:rep+"."+key+", matched on the login email" };
+            return ATTENDANCE_NAME_LOOKUP;
+          }
+        }
+        console.warn("[GR-Driver] attendance: found a record in "+rep+" for "+LOGIN_EMAIL+", but none of "+ATTENDANCE_NAME_FIELDS.join(" / ")+" held a usable name on it. Its own columns:", Object.keys(recs[i]));
+      }
+    }catch(e){ console.warn("[GR-Driver] attendance: could not read "+rep+" to look up a name (not fatal - the record is still written).", e); }
+  }
+  return null;
+}
+async function logAttendance(statusText){
+  try{
+    const fn = resolve("addRecords");
+    if(!fn){ console.warn("[GR-Driver] attendance: addRecords is unavailable, so this driver status change was not logged. The toggle itself worked."); return; }
+    /* Never blocks and never rejects - getPositionSafe() resolves null on a
+       denied permission or a timeout. 30s lets a fix the heartbeat already took
+       be reused rather than waking the GPS on every tap. */
+    /* The search only runs when the answer would otherwise be the login itself,
+       so a vendor whose name already resolves pays for no extra read. */
+    let who = attendanceName();
+    if(who.fallback){
+      const found = await attendanceNameByEmail();
+      if(found) who = found;
+    }
+    let pos = null;
+    try{ pos = await getPositionSafe(30000); }catch(e){ pos = null; }
+    const data = {
+      Name: who.name,
+      Status: statusText,
+      /* fmtDateTime() is what writes Last_Online_At in this same handler, and
+         that is a real Zoho Date-Time column - so this format is already proven
+         against this field type. */
+      Date_Time: fmtDateTime(new Date()),
+      LatLong: pos ? (pos.lat + "," + pos.lon) : "",
+      User_Type: "Driver",
+      /* The stable key. Two people can share a display name; a login cannot. */
+      Email: String(LOGIN_EMAIL || "").trim()
+    };
+    await fn({ app_name:CONFIG.appName, form_name:ATTENDANCE_FORM, payload:{ data:data } });
+    console.log("[GR-Driver] attendance logged:", data.Status, data.Date_Time, data.LatLong||"(no location)", "| Name taken from " + who.from + ".");
+  }catch(e){
+    console.warn("[GR-Driver] attendance was NOT logged for this status change - the toggle itself worked and the driver is now the status they chose. Most likely the \"Attendance\" form does not exist in Zoho yet, or one of its field names differs from Name / Status / Date_Time / LatLong / User_Type / Email.", e);
+  }
+}
 async function onToggleClick(){
   if(!currentTechRecord){
     // Real bug fixed 2026-08-24 — see technicianTicket's own matching
@@ -3552,6 +3663,12 @@ async function onToggleClick(){
     await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
     if(wantOnline) startLocationHeartbeat(); else stopLocationHeartbeat();
+    /* Attendance - 2026-10-15. Deliberately here: after the awaited write, so
+       only a change that really landed is logged; and NOT awaited, so it cannot
+       delay the toggle or fall into the catch below and revert a status change
+       that already succeeded. Repeat taps are already impossible meanwhile -
+       .toggle.locked sets pointer-events:none until the finally clause. */
+    logAttendance(wantOnline?"Online":"Offline");
   }catch(e){ el.classList.toggle("on", !wantOnline); toast("Couldn't update availability","err"); }
   finally{ el.classList.remove("locked"); }
 }

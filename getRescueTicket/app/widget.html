@@ -6082,10 +6082,12 @@ function sendRescuerEtaMessage(r){
    does NOT call this, or a second click would repeat the opener. */
 async function sendOpenerMessages(r){
   try{
-    const ok1 = await sendWhatsAppTemplate(r.Phone_Number1, "initiate_conversation", []);
-    if(!ok1) console.warn("[Get-Rescue] SEND 1 initiate_conversation failed (non-blocking) — the customer may have opted out of marketing messages.");
+    // const ok1 = await sendWhatsAppTemplate(r.Phone_Number1, "initiate_conversation", []);
+    // if(!ok1) console.warn("[Get-Rescue] SEND 1 initiate_conversation failed (non-blocking) — the customer may have opted out of marketing messages.");
+    // const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", []);
+    // if(!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
     const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", []);
-    if(!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
+if (!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
   }catch(e){ console.warn("[Get-Rescue] opener messages threw (non-blocking)", e); }
 }
 /* SEND 5 / 6 / 7 — 2026-09-25, from the LOGIC-REPAIR and LOGIC-TOW sheets.
