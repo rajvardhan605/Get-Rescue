@@ -440,6 +440,18 @@ async function apiGetReport(report, criteria, max){
   try{
     const r=await fn(cfg);
     console.log("[GR-Vendor] getRecords response:", r);
+    /* A REFUSAL IS NOT AN EMPTY REPORT - 2026-10-16. Both still come back as [],
+       because every caller is written around that and changing it would be a
+       rewrite; but 2898 now says so in the console. Without this, "Vendors_Report
+       returned nothing" reads as missing data when it actually means this portal
+       profile has no View permission on it - which is what it meant. */
+    if(r && r.code!==3000){
+      if(String(r.code)==="2898"){
+        console.warn("[GR-Vendor] getRecords: PERMISSION DENIED on "+report+" (code 2898). This login's portal profile cannot view that report, so it comes back EMPTY rather than erroring. Anything derived from it will be missing until the profile is granted View access in Zoho.");
+      } else {
+        console.warn("[GR-Vendor] getRecords: "+report+" returned code "+r.code+" ("+(r.message||"no message")+") - treating as empty.");
+      }
+    }
     return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
   } catch(e){ console.log("[GR-Vendor] getRecords error:", e); return []; }
 }
@@ -2841,15 +2853,59 @@ async function showHandoffPanel(){
     console.warn("[GR-Vendor] showHandoffPanel: 0 records via", CONFIG.vendorReport+"."+CONFIG.vendorTechniciansField, "(ids:", MY_TECHNICIAN_IDS, ") — falling back to Technicians_Report's own vendor-link field instead.");
     try{
       const all = await apiGetReport(CONFIG.fleetTechnicianReport, null, 200);
-      const candidates=["Vendor_Name","Fleet_Vendor"];
+      /* Widened 2026-10-16 - the report column reads "Vendor Name" on screen, but
+         Zoho's own link name for it can be any of these. Tried in order; the
+         any-column scan below catches whatever is not on this list. */
+      const candidates=["Vendor_Name","Fleet_Vendor","Vendor","Vendor_Name1","Vendor1","Vendor_Id","Fleet_Vendor_Name"];
       for(const field of candidates){
         const matched = all.filter(function(t){
           const v=t[field];
           const vid=lookupId(v);
-          if(currentVendorRecord && vid!=null && String(vid)===String(currentVendorRecord.id)) return true;
+          /* The UNPROVEN id counts here - 2026-10-16. On a login whose portal
+             profile cannot read Vendors_Report (code 2898), identity comes from
+             My_Availability_Vendor and currentVendorRecord stays null by design,
+             so this comparison had nothing to work with. MY_VENDOR_ID_UNPROVEN is
+             that record's id, and listing a fleet's own technicians is read-only
+             - the worst a wrong id can do is match nothing, which is exactly the
+             behaviour being fixed. Assigned_Vendor keeps its Invites proof. */
+          const myIds = [currentVendorRecord && currentVendorRecord.id, MY_VENDOR_ID_UNPROVEN]
+            .map(function(x){ return x==null ? "" : String(x).trim(); }).filter(Boolean);
+          if(vid!=null && myIds.indexOf(String(vid).trim())>=0) return true;
           return String(readVal(t,field)||"").trim().toLowerCase()===MY_VENDOR_NAME.trim().toLowerCase();
         });
         if(matched.length){ techs=matched; console.warn("[GR-Vendor] showHandoffPanel: fallback matched", matched.length, "technician(s) via", CONFIG.fleetTechnicianReport+"."+field, "— consider switching CONFIG.vendorTechniciansField/the multi-lookup approach off if this fallback is what's actually working."); break; }
+      }
+      /* ANY COLUMN CARRYING THIS VENDOR - 2026-10-16. Reached only once every
+         named candidate above has missed. Exact equality after trim/lowercase
+         against this vendor's own id or display name, so another fleet's
+         technicians cannot be swept in, and the matching column is named in the
+         log so the real field can be added to `candidates` and this retired. */
+      if(!techs.length && all.length){
+        const myId = currentVendorRecord ? String(currentVendorRecord.id).trim() : "";
+        const myName = String(MY_VENDOR_NAME||"").trim().toLowerCase();
+        let hitField = "";
+        const scanned = all.filter(function(t){
+          for(var key in t){
+            const val = String(readVal(t,key)||"").trim();
+            if(!val) continue;
+            if((myId && val===myId) || (myName && val.toLowerCase()===myName)){ hitField = key; return true; }
+          }
+          return false;
+        });
+        if(scanned.length){
+          techs = scanned;
+          console.warn("[GR-Vendor] showHandoffPanel: none of the named candidates matched, but a full-record scan found "+scanned.length+" technician(s) linked to this vendor through "+CONFIG.fleetTechnicianReport+"."+hitField+". Add \""+hitField+"\" to the candidates list in this function so the scan is no longer needed.");
+        }
+      }
+      /* WHICH OF THE TWO FAILURES IS IT - 2026-10-16. Without this the log said
+         only "falling back", which cannot distinguish a report this login may not
+         read from a column whose name we have wrong. */
+      if(!techs.length){
+        if(!all.length){
+          console.warn("[GR-Vendor] showHandoffPanel: "+CONFIG.fleetTechnicianReport+" returned 0 records for this login. That is a PERMISSIONS answer, not a field-name one - this vendor's portal profile most likely has no View access to that report, and no field name will fix it. Check the profile's permissions in Zoho.");
+        } else {
+          console.warn("[GR-Vendor] showHandoffPanel: read "+all.length+" record(s) from "+CONFIG.fleetTechnicianReport+" but none is linked to this vendor (id "+(currentVendorRecord?currentVendorRecord.id:"unresolved")+", name \""+MY_VENDOR_NAME+"\"). That is a DATA or FIELD-NAME answer - either no technician names this vendor, or the value is stored in a shape none of the checks above recognise. First record's own columns:", Object.keys(all[0]), "| first record:", all[0]);
+        }
       }
     }catch(e){ console.warn("[GR-Vendor] showHandoffPanel: fallback fetch failed", e); }
   }

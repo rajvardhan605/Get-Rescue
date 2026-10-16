@@ -3122,7 +3122,11 @@ const STAGES = [
     // untouched, since stopping the calculation itself is a bigger,
     // structurally different change not requested by this PDF pass.
     { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
-    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    /* closureHide:true - 2026-10-16, user request: hidden from the closure page.
+       This copy is the AGENT-ENTERING one; the Distance & ETA Metrics copy carries
+       the same flag, because between them they cover both modes. Still fully live
+       and editable on this step - closureHide only ever affects the summary. */
+    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true }
   ]},
 
@@ -3466,7 +3470,11 @@ const STAGES = [
     // untouched, since stopping the calculation itself is a bigger,
     // structurally different change not requested by this PDF pass.
     { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
-    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    /* closureHide:true - 2026-10-16, user request: hidden from the closure page.
+       This copy is the AGENT-ENTERING one; the Distance & ETA Metrics copy carries
+       the same flag, because between them they cover both modes. Still fully live
+       and editable on this step - closureHide only ever affects the summary. */
+    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
     // Added 2026-08-11 — RSP_Start_Latitude/Longitude's own "Reached Drop
     // Location" reuse (see this stage's own comment a few lines up) never
@@ -4591,7 +4599,16 @@ const DISTANCE_METRICS_FIELDS=[
   { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) },
   { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) },
   { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; closureHide — Task Tracker PDF item 23, see `reach`'s own matching comment
-  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11 — NOT in the PDF's removal list, left visible
+  /* closureHide:true - 2026-10-16, user request: hidden from the closure page.
+     Replaces this row's own 2026-08-11 note, which recorded that it was
+     deliberately KEPT when the Task Tracker PDF removed its siblings - that
+     decision is now reversed, so the note is corrected rather than dropped.
+
+     The two stage copies carry the same flag; this one covers vendor-driven
+     cases and those cover agent-entering ones. The closure backfill added on
+     2026-10-14 is untouched, so the stored figure stays correct for reports and
+     exports - it is only no longer shown on this page. */
+  { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true },
   { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; closureHide — Task Tracker PDF item 24
   { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
   { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },

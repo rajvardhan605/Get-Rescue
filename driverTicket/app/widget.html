@@ -40,6 +40,10 @@ img,svg{max-width:100%}
 .toggle .knob{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(20,22,28,.3);transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
 .toggle.on .knob{transform:translateX(64px)}
 .toggle.locked{opacity:.6;pointer-events:none}
+/* 2026-10-16 - dimmed but still tappable. A toggle that cannot be tapped cannot
+   explain itself, and there is no console or tooltip on a phone. onToggleClick()
+   retries the match and toasts the reason, so the tap has to reach it. */
+.toggle.unresolved{opacity:.6}
 
 .sec-head{display:flex;align-items:center;gap:8px;margin:6px 2px 10px}
 .sec-head h2{font-family:var(--f-disp);font-size:18px;font-weight:800}
@@ -251,6 +255,12 @@ const CONFIG = {
   techReport: "Technicians_Report",
   techStatusField: "Availability_Status",
   techEmailField: "Email",
+  /* Identity fallback - 2026-10-16, user-confirmed report name. Read ONLY when
+     techReport above comes back refused (code 2898) or carries no row for this
+     login. Same arrangement vendorTicket has had with My_Availability_Vendor
+     since 2026-10-06, and for the same reason: the portal profile a technician
+     actually logs in with can read this one. */
+  availabilityReport: "My_Availability_Technicians",
   techNameField: "Technician_Name",
   techPhoneField: "Phone", // user-confirmed 2026-09-06 — needed for the WhatsApp "dispatched" message (spec template 8)
   // Added 2026-08-17 (user request — see pingCurrentLocation()'s own
@@ -314,7 +324,20 @@ async function apiGetReport(report, criteria, max){
   const fn=resolve("getRecords"); if(!fn) return [];
   const cfg={ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:max||200 };
   if(criteria) cfg.criteria=criteria;
-  try{ const r=await fn(cfg); return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : []; } catch(e){ return []; }
+  try{
+    const r=await fn(cfg);
+    /* A REFUSAL IS NOT AN EMPTY REPORT - 2026-10-16, same fix as vendorTicket.
+       Both still return [], because every caller is written around that; but a
+       2898 now says so, instead of reading as missing data. */
+    if(r && r.code!==3000){
+      if(String(r.code)==="2898"){
+        console.warn("[GR-Driver] getRecords: PERMISSION DENIED on "+report+" (code 2898). This login's portal profile cannot view that report, so it comes back EMPTY rather than erroring. Identity and anything else derived from it will be missing until the profile is granted View access in Zoho.");
+      } else {
+        console.warn("[GR-Driver] getRecords: "+report+" returned code "+r.code+" ("+(r.message||"no message")+") - treating as empty.");
+      }
+    }
+    return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  } catch(e){ return []; }
 }
 async function apiUpdate(id, data){ return apiUpdateReport(CONFIG.reportName, id, data); }
 async function apiUpdateReport(report, id, data){
@@ -3413,7 +3436,12 @@ $("cameraShutter").onclick=capturePhoto;
 let currentTechRecord=null;
 function lockAvailabilityToggle(){
   const el=$("availToggle"); if(!el) return;
-  el.classList.add("locked");
+  /* "unresolved", not "locked" - 2026-10-16. .locked also sets pointer-events:none,
+     which made this button silently dead: no console on a phone, and a title
+     tooltip never shows on touch. Dimmed and still tappable means onToggleClick()
+     runs, retries the match once, and toasts a real reason. .locked keeps its own
+     job of blocking a double tap while a write is in flight. */
+  el.classList.add("unresolved");
   el.title="Availability unavailable — no matching "+CONFIG.techReport+" record found for your login.";
 }
 // Extracted 2026-08-24 (see onToggleClick()'s own retry call below) — same
@@ -3430,17 +3458,76 @@ function lockAvailabilityToggle(){
 // 200->1000 records too, same reasoning as vendorTicket's own
 // resolveVendorRecord() fix (rules out Technicians_Report simply exceeding
 // the old cap).
+/* Which column holds this login's address - 2026-10-16. A straight port of
+   vendorTicket's vendorEmailFieldMatching(): the configured column first, then
+   the usual spellings, then ANY column on the record carrying exactly this
+   address. A technician who can log in but cannot be identified is the bug this
+   exists for, and a scan of their own record is cheap. Returns the matching
+   field name, or null. */
+const TECH_EMAIL_FIELD_CANDIDATES=[CONFIG.techEmailField,"Email","email","Technician_Email","Email_Address","Login_Email","Primary_Email"];
+function techEmailFieldMatching(rec, wantedLower){
+  if(!rec || !wantedLower) return null;
+  for(var i=0;i<TECH_EMAIL_FIELD_CANDIDATES.length;i++){
+    const fld=TECH_EMAIL_FIELD_CANDIDATES[i];
+    if(fld && String(readVal(rec,fld)||"").trim().toLowerCase()===wantedLower) return fld;
+  }
+  for(var key in rec){
+    if(String(readVal(rec,key)||"").trim().toLowerCase()===wantedLower) return key;
+  }
+  return null;
+}
 async function resolveTechRecord(logContext){
   if(!LOGIN_EMAIL) return currentTechRecord;
   const recs=await apiGetReport(CONFIG.techReport, null, 1000);
-  const mine=recs.find(function(r){ return String(r[CONFIG.techEmailField]||"").trim().toLowerCase()===LOGIN_EMAIL.trim().toLowerCase(); });
+  /* Widened 2026-10-16 - was CONFIG.techEmailField alone. See
+     techEmailFieldMatching(): strictly more logins match than before, never fewer. */
+  const wantedEmail=LOGIN_EMAIL.trim().toLowerCase();
+  let techMatchField=null;
+  const mine=recs.find(function(r){
+    const hit=techEmailFieldMatching(r, wantedEmail);
+    if(hit){ techMatchField=hit; return true; }
+    return false;
+  });
+  if(mine && techMatchField && techMatchField!==CONFIG.techEmailField){
+    console.warn("[GR-Driver] "+logContext+": matched this login on \""+techMatchField+"\", NOT the configured CONFIG.techEmailField (\""+CONFIG.techEmailField+"\"). Identity resolves now, but set techEmailField to \""+techMatchField+"\" so the first attempt succeeds.");
+  }
   if(mine){
-    currentTechRecord={ id:mine.ID, data:mine };
+    /* `report` - 2026-10-16. Both write sites take the id from here; they have to
+       aim it at the report it actually came from. See this change's own note. */
+    currentTechRecord={ id:mine.ID, data:mine, report:CONFIG.techReport };
     MY_TECH_NAME=mine[CONFIG.techNameField]||"";
     MY_TECH_PHONE=mine[CONFIG.techPhoneField]||"";
     $("techName").textContent=MY_TECH_NAME||"Driver";
   } else {
     console.warn("[Get-Rescue] "+logContext+": no", CONFIG.techReport, "record's", CONFIG.techEmailField, "matched", LOGIN_EMAIL, "— toggle stays locked/inert. Records loaded:", recs.length, "| first record's own keys:", recs[0]);
+    /* SECOND CHANCE via the availability report - 2026-10-16. "Records loaded: 0"
+       above is what a 2898 refusal looks like from here, and no amount of email
+       matching can help with a report this login cannot read. Only reached once
+       the real report has already failed, so a working workspace never comes
+       here. */
+    try{
+      const arecs=await apiGetReport(CONFIG.availabilityReport, null, 1000);
+      let availMatchField=null;
+      const myAvail=arecs.find(function(r){
+        const hit=techEmailFieldMatching(r, wantedEmail);
+        if(hit){ availMatchField=hit; return true; }
+        return false;
+      });
+      if(!myAvail){
+        console.warn("[Get-Rescue] "+logContext+": "+CONFIG.availabilityReport+" has no record carrying "+LOGIN_EMAIL+" either, so this login matches no technician anywhere. Records loaded:", arecs.length, "| first record's own keys:", arecs[0] && Object.keys(arecs[0]));
+      } else {
+        /* No Invites "proof" gate here, unlike vendorTicket's equivalent - see
+           this change's own note. This id is never written onto a ticket; it only
+           updates the technician's own availability row. */
+        currentTechRecord={ id:myAvail.ID, data:myAvail, report:CONFIG.availabilityReport };
+        MY_TECH_NAME = readVal(myAvail,CONFIG.techNameField) || readVal(myAvail,"technician_name") || readVal(myAvail,"Name") || "";
+        MY_TECH_PHONE = readVal(myAvail,CONFIG.techPhoneField) || "";
+        if($("techName")) $("techName").textContent = MY_TECH_NAME || "Technician";
+        console.warn("[Get-Rescue] "+logContext+": identity resolved through "+CONFIG.availabilityReport+" instead of "+CONFIG.techReport+" (record "+myAvail.ID+", \""+MY_TECH_NAME+"\", matched on \""+availMatchField+"\"). The availability toggle and the location heartbeat will write to THAT report. Worth granting this portal profile View access to "+CONFIG.techReport+" so the primary path works.");
+      }
+    }catch(e){
+      console.warn("[Get-Rescue] "+logContext+": the "+CONFIG.availabilityReport+" identity fallback threw; identity stays unresolved, exactly as before this fallback existed.", e);
+    }
   }
   return currentTechRecord;
 }
@@ -3509,7 +3596,7 @@ async function pingCurrentLocation(announce){
        one left over from yesterday. Written in the SAME update as the coordinates,
        so the timestamp can never disagree with the position it describes. */
     payload["Location_Last_Updated_At"]=fmtDateTime(new Date());
-    await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
+    await fn({ app_name:CONFIG.appName, report_name:(currentTechRecord.report||CONFIG.techReport), id:currentTechRecord.id, payload:{data:payload} });
     // Logged so a wrong-but-present fix (a VPN or a desktop IP lookup putting
     // someone in another country) is visible rather than guessed at.
     console.log("[Get-Rescue] location updated —", pos.lat, pos.lon);
@@ -3561,7 +3648,9 @@ function attendanceName(){
 /* The name for this login, searched for rather than remembered - 2026-10-15.
    Only called when attendanceName() has already given up; see this change’s
    own note. Cached per session - a second toggle costs nothing. */
-const ATTENDANCE_NAME_REPORTS = [CONFIG.techReport];
+/* Both reports - 2026-10-16. A technician whose identity came from the
+   availability report is logged by name rather than by email. */
+const ATTENDANCE_NAME_REPORTS = [CONFIG.techReport, CONFIG.availabilityReport];
 const ATTENDANCE_EMAIL_FIELDS = [CONFIG.techEmailField, "Email", "Technician_Email", "Email_Address"];
 let ATTENDANCE_NAME_LOOKUP = null;
 function attendanceEmailMatches(rec, wantedLower){
@@ -3660,7 +3749,7 @@ async function onToggleClick(){
        online, and overwriting it on sign-off would turn it into "last toggled"
        and lose that. */
     if(wantOnline) payload["Last_Online_At"]=fmtDateTime(new Date());
-    await fn({ app_name:CONFIG.appName, report_name:CONFIG.techReport, id:currentTechRecord.id, payload:{data:payload} });
+    await fn({ app_name:CONFIG.appName, report_name:(currentTechRecord.report||CONFIG.techReport), id:currentTechRecord.id, payload:{data:payload} });
     toast(wantOnline?"You're online":"You're offline","ok");
     if(wantOnline) startLocationHeartbeat(); else stopLocationHeartbeat();
     /* Attendance - 2026-10-15. Deliberately here: after the awaited write, so
