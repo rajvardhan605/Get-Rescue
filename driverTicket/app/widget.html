@@ -373,6 +373,24 @@ let LAST_WA_RESPONSE = "";
    exist. Deliberately narrow. A broad "looks like an error" test would
    eventually treat a delivered message as failed and send the customer the
    same request twice, which is worse than the problem it would solve. */
+/* What WhatsApp refused with, or "" if it did not refuse - 2026-10-17.
+   sendWhatsAppTemplate() returns true for any response that did not throw, and a
+   rejection arrives as an ordinary response, so a refused message was counting as
+   a sent one. Parsed rather than string-matched, so an error shape nobody has
+   seen yet is still caught, and WhatsApp's own wording is returned so it can go
+   on screen rather than into a console nobody on a phone can open. */
+function waResponseError(){
+  const raw = LAST_WA_RESPONSE;
+  if(!raw) return "";
+  let obj = null;
+  try{ obj = JSON.parse(raw); }catch(e){ return ""; }
+  let inner = obj && obj.result;
+  if(typeof inner === "string"){ try{ inner = JSON.parse(inner); }catch(e){ inner = null; } }
+  const err = (inner && inner.error) || (obj && obj.error);
+  if(!err) return "";
+  if(typeof err === "string") return err;
+  return String(err.message || err.code || err.type || "WhatsApp would not accept the message.");
+}
 function waResponseSaysTemplateMissing(){
   const s = String(LAST_WA_RESPONSE || "").toLowerCase();
   if(!s) return false;
@@ -380,7 +398,7 @@ function waResponseSaysTemplateMissing(){
       || s.indexOf("template not found") !== -1
       || s.indexOf("does not exist") !== -1;
 }
-async function sendWhatsAppTemplate(phone, templateName, params){
+async function sendWhatsAppTemplate(phone, templateName, params, buttonParam){
   const to=formatIndianPhone(phone);
   if(!to){ console.warn("[Get-Rescue Driver] sendWhatsAppTemplate: no phone number to send to (template", templateName, ")"); return false; }
   const fn=resolve("invokeCustomApi");
@@ -398,6 +416,18 @@ async function sendWhatsAppTemplate(phone, templateName, params){
     // the dispatch message (spec template 8: name + phone + ETA).
     payload: { phone: to, templateName: templateName, param1: params[0]||"", param2: params[1]||"", param3: params[2]||"" }
   };
+  /* The dynamic URL button - 2026-10-17. This parameter existed in the vendor
+     app and not here, so the feedback call's fourth argument was dropped on the
+     floor: sendWhatsAppMessage.deluge received no button value for
+     confirm_booking_fee_and_total_fee, which its own urlButtonTemplates list
+     says has a URL button, and WhatsApp answered "(#131008) Required parameter
+     is missing". param3 doubles as the button slot in that API, which is why it
+     is filled too whenever it is free. Copied from vendorTicket unchanged. */
+  if(buttonParam){
+    config.payload.buttonParam = buttonParam;
+    if(!params[2]) config.payload.param3 = buttonParam;
+  }
+  console.log("[Get-Rescue Driver] sendWhatsAppTemplate:", templateName, "->", to, "| payload:", JSON.stringify(config.payload));
   try{
     /* The response is KEPT now - 2026-10-13. It was fetched and discarded, which
        is how a 404 template_not_found went unnoticed for weeks. The return value
@@ -657,7 +687,147 @@ let dmService=null;
 // and distance type should be two wheeler for REPAIR/RSR cases"). Defaults
 // to "DRIVING" so any call site not yet updated keeps its exact previous
 // behavior — fully backward compatible.
-function googleDistanceMatrix(origins,destinations,travelMode){
+/* ---------- Google Routes API: computeRoutes - 2026-10-17 ----------
+   Replaces the Distance Matrix engine below, which is kept as
+   legacyDistanceMatrix() and still used whenever Routes is unavailable.
+
+   The client's own spec: travelMode DRIVE for four-wheeler/TOW and TWO_WHEELER
+   for RSR, routingPreference TRAFFIC_AWARE_OPTIMAL, a departureTime, and the
+   X-Goog-FieldMask header - without that header the API returns no durations at
+   all. travelModeFor() already made the four/two-wheeler split, so only the
+   names change here. */
+const ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
+const ROUTES_FIELD_MASK = "routes.distanceMeters,routes.duration,routes.staticDuration";
+const ROUTES_TIMEOUT_MS = 10000;
+/* Tripped only by an auth/enablement failure - see this change's own note. */
+let routesApiOff = false;
+/* A coordinate Google can actually resolve - 2026-10-17. Rejects 0,0 on
+   purpose: Number("") and Number(null) are both 0, so a blank Latitude on a
+   ticket used to arrive here as a legal coordinate in the Atlantic and be sent,
+   processed and billed. isFinite() covers null, "", undefined and NaN alike. */
+function validCoord(lat, lon){
+  const a = Number(lat), b = Number(lon);
+  if(!isFinite(a) || !isFinite(b)) return false;
+  if(a === 0 && b === 0) return false;
+  return Math.abs(a) <= 90 && Math.abs(b) <= 180;
+}
+function routesTravelMode(mode){
+  return String(mode||"").toUpperCase()==="TWO_WHEELER" ? "TWO_WHEELER" : "DRIVE";
+}
+/* Routes returns a duration as a string of seconds, e.g. "1131s". */
+function routesSeconds(v){
+  const n = parseFloat(String(v==null?"":v).replace(/[^0-9.]/g,""));
+  return isNaN(n) ? 0 : Math.round(n);
+}
+/* Shaped exactly like a Distance Matrix element, so every existing caller reads
+   it without knowing anything changed. duration carries the TRAFFIC-AWARE time
+   now; static_duration is the same trip without traffic, kept for the log. */
+function routesElement(route){
+  if(!route) return { status:"ZERO_RESULTS" };
+  const secs = routesSeconds(route.duration);
+  return { status:"OK",
+           distance:{ value: Number(route.distanceMeters)||0 },
+           duration:{ value: secs },
+           duration_in_traffic:{ value: secs },
+           static_duration:{ value: routesSeconds(route.staticDuration) } };
+}
+/* An enablement problem, as opposed to a blip. Only this latches the session
+   back to Distance Matrix; a timeout or a 500 must not. */
+function routesFatal(err){
+  const s = String((err && err.message) || err || "").toUpperCase();
+  return s.indexOf("HTTP 401")>=0 || s.indexOf("HTTP 403")>=0
+      || s.indexOf("SERVICE_DISABLED")>=0 || s.indexOf("PERMISSION_DENIED")>=0
+      || s.indexOf("API_KEY")>=0 || s.indexOf("HAS NOT BEEN USED")>=0;
+}
+async function routesComputeLeg(o, d, travelMode){
+  const mode = routesTravelMode(travelMode);
+  const body = {
+    origin:      { location:{ latLng:{ latitude:Number(o.lat), longitude:Number(o.lon) } } },
+    destination: { location:{ latLng:{ latitude:Number(d.lat), longitude:Number(d.lon) } } },
+    travelMode: mode,
+    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
+    /* 30 seconds ahead, not exactly now - 2026-10-17. Routes rejects a
+       departureTime in the past, and a phone clock running a few seconds slow
+       would make "now" exactly that by the time the request lands. A slightly
+       future time is read as predictive traffic, which is what a rescue ETA
+       wants anyway. */
+    departureTime: new Date(Date.now()+30000).toISOString()
+  };
+  let timer = null;
+  const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
+  try{
+    const resp = await Promise.race([
+      fetch(ROUTES_API_URL, { method:"POST",
+        headers:{ "Content-Type":"application/json",
+                  "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+                  "X-Goog-FieldMask": ROUTES_FIELD_MASK },
+        body: JSON.stringify(body) }),
+      timeout ]);
+    if(!resp.ok){
+      let detail = "";
+      try{ detail = JSON.stringify(await resp.json()); }catch(e){}
+      throw new Error("Routes API HTTP "+resp.status+" "+detail);
+    }
+    const data = await resp.json();
+    const el = routesElement(data && data.routes && data.routes[0]);
+    if(el.status==="OK"){
+      console.log("[Get-Rescue] Routes "+mode+": "+(el.distance.value/1000).toFixed(1)+" km | "+Math.round(el.duration.value/60)+" min with traffic | "+Math.round(el.static_duration.value/60)+" min without");
+    }
+    return el;
+  } finally { if(timer) clearTimeout(timer); }
+}
+/* The same rows[i].elements[j] shape Distance Matrix returned. Only the
+   diagonal is ever read (every caller was checked); the rest is filled in so an
+   off-diagonal read degrades to a miss instead of throwing. */
+function routesRows(legs, n){
+  const rows = [];
+  for(let i=0;i<n;i++){
+    const elements = [];
+    for(let j=0;j<n;j++) elements.push(i===j ? legs[i] : { status:"ZERO_RESULTS" });
+    rows.push({ elements: elements });
+  }
+  return rows;
+}
+/* Same name, same arguments, same return shape as the Distance Matrix version
+   it replaces - which is why none of this app's call sites needed touching. */
+async function googleDistanceMatrix(origins, destinations, travelMode){
+  const n = Math.min((origins||[]).length, (destinations||[]).length);
+  if(!n) return null;
+  const usable = [];
+  for(let i=0;i<n;i++){
+    usable.push(validCoord(origins[i] && origins[i].lat, origins[i] && origins[i].lon)
+             && validCoord(destinations[i] && destinations[i].lat, destinations[i] && destinations[i].lon));
+  }
+  /* Nothing worth asking about: returning null is exactly what a failed call
+     already did, so callers fall back to their Haversine estimate as before -
+     the difference is that no request is sent and nothing is billed. */
+  if(usable.indexOf(true) === -1){
+    console.warn("[Get-Rescue] googleDistanceMatrix: every leg has an unusable coordinate (blank or 0,0), so no request was sent. origins:", JSON.stringify(origins), "destinations:", JSON.stringify(destinations));
+    return null;
+  }
+  if(!routesApiOff){
+    try{
+      const legs = await Promise.all(origins.slice(0,n).map(function(o,i){
+        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode)
+                         : Promise.resolve({ status:"INVALID_REQUEST" });
+      }));
+      return routesRows(legs, n);
+    }catch(e){
+      if(routesFatal(e)){
+        routesApiOff = true;
+        console.warn("[Get-Rescue] Routes API refused the request, so this session falls back to the Distance Matrix service. Times will be free-flow, not traffic-aware. Enable Routes API on the Google Cloud project that owns this key, confirm billing, and add it to the key's API restrictions.", e);
+      } else {
+        console.warn("[Get-Rescue] Routes API call failed; using the Distance Matrix service for this calculation only. The next one will try Routes again.", e);
+      }
+    }
+  }
+  const rows = await legacyDistanceMatrix(origins, destinations, travelMode);
+  /* An unusable leg must not quietly pick up a Distance Matrix answer either. */
+  if(rows) for(let i=0;i<n;i++){ if(!usable[i] && rows[i] && rows[i].elements) rows[i].elements[i] = { status:"INVALID_REQUEST" }; }
+  return rows;
+}
+/* The Distance Matrix engine, unchanged, now only a fallback. */
+async function legacyDistanceMatrix(origins,destinations,travelMode){
   const mode=travelMode||"DRIVING";
   return loadGoogleMaps().then(function(ok){
     if(!ok || !window.google || !window.google.maps) return null;
@@ -1844,7 +2014,7 @@ function reportMissedCase(holder){
 async function acceptService(){
   setDisabled("acceptBtn",true);
   try{
-    const pos = await getPositionSafe();
+    const pos = await requireLocation();
     const r=state.current;
     const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
     // Google ON - Accept: start -> breakdown (item 1).
@@ -2026,7 +2196,7 @@ async function markReached(){
     // NEW field. Best-effort — a denied/unavailable location just means
     // these two fields are skipped, same tolerance Accept/Cancel's own GPS
     // fixes already have.
-    const reachPos = await getPositionSafe();
+    const reachPos = await requireLocation();
     if(reachPos){
       payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
       const bLat=Number(r.Latitude), bLon=Number(r.Longitude);
@@ -2063,7 +2233,7 @@ async function confirmCancel(){
     // Cancellation_Time/Cancel_Location_Lat/Lon/Cancel_Distance capture,
     // not repeated here.
     const payload={ Reject_Reason2: reason, Status:"RSP CANCELLED", Cancellation_Time: fmtDateTime(new Date()) };
-    const pos = await getPositionSafe();
+    const pos = await requireLocation();
     if(pos){
       payload.Cancel_Location_Lat=pos.lat; payload.Cancel_Location_Lon=pos.lon;
       const startLat=Number(r.RSP_Start_Latitude), startLon=Number(r.RSP_Start_Longitude);
@@ -2165,7 +2335,7 @@ async function vehiclePicked(){
     // Mock says Drop distance/ETA are "based on current GPS location of
     // Driver" (not the ticket's static breakdown Lat/Lon) — use a live fix,
     // falling back to the breakdown location if GPS isn't available.
-    const pos = await getPositionSafe();
+    const pos = await requireLocation();
     /* MEASURED FROM THE STORED REACH POSITION - 2026-10-09, per the spec:
        "from vendor REACH BREAKDOWN location to Drop Location". This used to
        use the live fix taken at the Picked-Up tap. The two are metres apart in
@@ -2275,7 +2445,7 @@ async function reachedDrop(){
     // denied here), so this never simply breaks on older/incomplete data.
     const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
     const bLat = eLat!=null ? eLat : Number(r.Latitude), bLon = eLon!=null ? eLon : Number(r.Longitude);
-    const pos=await getPositionSafe();
+    const pos=await requireLocation();
     const dLat = pos ? pos.lat : parseCoord(r.DropLocationLat), dLon = pos ? pos.lon : parseCoord(r.DropLocationLong);
     const legs=await calc4PointRoundtrip(bLat,bLon,dLat,dLon,travelModeFor(r));
     const odo=$("odoDrop").value;
@@ -2358,7 +2528,7 @@ async function confirmDropped(){
     // file already uses (Accept/Reach/Loading/Cancel) — best-effort, `pos` is
     // simply null if GPS is denied/unavailable, same graceful-degrade
     // convention as everywhere else.
-    const pos = await getPositionSafe();
+    const pos = await requireLocation();
     const payload = {
       Handover_to_Name:name, Handover_to_Number:number, Handover_to_Designation:designation,
       // "Route to Action 8 (Final Payment Collection)" per the spec — same
@@ -2502,13 +2672,39 @@ function renderPaymentScreen(){
       <div id="receiptBlock">${photoFieldHtml("Upload_Photo_of_receipt","Receipt Photo",1,1)}</div>
       <div class="fld"><label>Payment Status</label><input type="text" id="paymentStatusDisplay" value="${alreadySuccess?"PAID":"PENDING"}" readonly></div>
     </div>
+    ${alreadySuccess ? "" : `<div class="card" id="feedbackLinkBlock">
+      <div class="fld"><label>Send the customer a feedback link</label>
+        <span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">WhatsApps the feedback request to the customer. This is sent automatically when you record the payment — use this only to send it again.</span>
+      </div>
+      <button class="btn" id="sendFeedbackBtn" type="button">Send Feedback Link</button>
+    </div>`}
     <button class="btn ok" id="paymentReceivedBtn" type="button" disabled>Payment Received</button>`;
   wirePhotoField("Upload_Photo_of_receipt",1);
+  /* Send Feedback Link - 2026-10-17, ported from vendorTicket. The same one
+     function the automatic send uses, with force set: someone asked to send it
+     again should be able to, while an agent who switched the request off on the
+     ticket is still respected. The reason goes on screen because there is no
+     console on a phone, and most refusals are not failures. */
+  if($("sendFeedbackBtn")){
+    $("sendFeedbackBtn").onclick = async function(){
+      setDisabled("sendFeedbackBtn",true);
+      const res = await maybeSendFeedbackRequest(state.current, true);
+      toast(res && res.sent ? "Feedback link sent" : ((res && res.why) || "Could not send the feedback link"), (res && res.sent) ? "ok" : "err");
+      setDisabled("sendFeedbackBtn",false);
+    };
+  }
   const methodEl=$("Payment_Method_Final");
   function syncMethod(){
     const gateway=methodEl.value==="Payment Gateway";
     $("qrBlock").style.display=gateway?"":"none";
     $("receiptBlock").style.display=gateway?"none":"";
+    /* Feedback card is CASH ONLY - 2026-10-17, mirroring vendorTicket. On cash
+       the money is in hand and the job is done, so feedback is the next step; on
+       any other method the payment is still being chased and the request would be
+       premature. Guarded on existence because the card is legitimately absent
+       once the gateway has already settled the ticket. */
+    const fbBlock=$("feedbackLinkBlock");
+    if(fbBlock) fbBlock.style.display = (methodEl.value==="Cash") ? "" : "none";
     refreshPayButton();
   }
   methodEl.onchange=syncMethod; syncMethod();
@@ -2647,9 +2843,15 @@ async function maybeSendFeedbackRequest(r, force){
     else{
       ok = await sendWhatsAppTemplate(phone, "google_feedback", []);
     }
-    if(!ok){
-      console.warn("[Get-Rescue] feedback request to "+phone+" for ticket "+r.ID+" was not accepted by WhatsApp. Nothing is marked as sent, so it can be retried.");
-      return { sent:false, why:"WhatsApp would not accept the message. Try again shortly." };
+    /* WhatsApp can refuse the message while the call itself succeeds - 2026-10-17.
+       A rejection was being reported as "Feedback link sent" AND stamped into
+       Feedback_Sent_At, which is the duplicate guard - so the automatic send then
+       skipped the ticket as already done and the customer got nothing, silently.
+       Checked here only: every other template caller keeps its old behaviour. */
+    const waErr = ok ? waResponseError() : "";
+    if(!ok || waErr){
+      console.warn("[Get-Rescue] feedback request to "+phone+" for ticket "+r.ID+" was not accepted by WhatsApp. Nothing is marked as sent, so it can be retried.", LAST_WA_RESPONSE || "");
+      return { sent:false, why: waErr || "WhatsApp would not accept the message. Try again shortly." };
     }
     console.log("[Get-Rescue] feedback request sent to "+phone+" for ticket "+r.ID+" using "+sentWhat+".");
     /* Stamped only after a send that landed, so a failure never blocks a retry.
@@ -3250,7 +3452,7 @@ let cameraStream=null, currentPhotoField=null, currentPhotoMax=1;
 // photo's already-resolved position instead of waiting up to 8s all over
 // again. Does not touch enableHighAccuracy or the 8s timeout itself — a
 // genuinely cold GPS fix (first photo of a session) is unaffected either way.
-function getPositionSafe(maximumAge){
+function getPositionSafe(maximumAge, timeoutMs){
   return new Promise(function(res){
     if(!navigator.geolocation){ res(null); return; }
     navigator.geolocation.getCurrentPosition(
@@ -3260,8 +3462,58 @@ function getPositionSafe(maximumAge){
       // which can exceed Number.MAX_SAFE_INTEGER for lat/lon-sized values.
       function(pos){ res({lat:Number(pos.coords.latitude.toFixed(15)), lon:Number(pos.coords.longitude.toFixed(15))}); },
       function(){ res(null); },
-      { enableHighAccuracy:true, timeout:8000, maximumAge:maximumAge||0 }
+      { enableHighAccuracy:true, timeout:timeoutMs||8000, maximumAge:maximumAge||0 }   // both optional, same defaults as before - 2026-10-17, the location gate asks for longer
     );
+  });
+}
+/* ---------- Location is required to use this app - 2026-10-17 ----------
+   Client request: the app may not be used without location capture. Every job
+   step records where it happened, and a step recorded without a position puts a
+   silent fallback into a field that reads exactly like a real measurement.
+
+   requireLocation() resolves ONLY once the device gives a fix. Until then the
+   overlay covers the app and offers one button. There is no dismiss on purpose -
+   a way past this is a way to use the app without location. */
+let LOCATION_GATE_EL = null;
+function hideLocationGate(){
+  if(LOCATION_GATE_EL && LOCATION_GATE_EL.parentNode) LOCATION_GATE_EL.parentNode.removeChild(LOCATION_GATE_EL);
+  LOCATION_GATE_EL = null;
+}
+function requireLocation(){
+  return new Promise(function(resolve){
+    let attempts = 0;
+    function paint(){
+      if(!LOCATION_GATE_EL){
+        LOCATION_GATE_EL = document.createElement("div");
+        LOCATION_GATE_EL.id = "locationGate";
+        LOCATION_GATE_EL.setAttribute("style","position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:var(--bg,#fff);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center");
+        document.body.appendChild(LOCATION_GATE_EL);
+      }
+      LOCATION_GATE_EL.innerHTML =
+        '<div style="max-width:420px">' +
+        '<div style="font-size:38px;line-height:1;margin-bottom:12px">&#128205;</div>' +
+        '<h2 style="font-family:var(--f-disp);font-weight:800;font-size:18px;margin:0 0 10px">Location is required</h2>' +
+        '<p style="font-size:14px;line-height:1.6;margin:0 0 10px">This app records where each step of a job happens, so it cannot be used until location is switched on.</p>' +
+        '<p style="font-family:var(--f-mono);font-size:11px;color:var(--muted);line-height:1.6;margin:0 0 16px">Turn location on for this app in your phone settings, not only in the browser prompt - inside the Zoho Creator portal app the app itself needs the permission. Then tap Try Again.</p>' +
+        '<button class="btn" id="locGateBtn" type="button">Try Again</button>' +
+        (attempts > 1 ? '<p style="font-family:var(--f-mono);font-size:11px;color:var(--muted);margin:14px 0 0">Still no position after ' + attempts + ' attempts.</p>' : "");
+      const btn = LOCATION_GATE_EL.querySelector("#locGateBtn");
+      if(btn) btn.onclick = attempt;
+    }
+    function attempt(){
+      attempts++;
+      const btn = LOCATION_GATE_EL && LOCATION_GATE_EL.querySelector("#locGateBtn");
+      if(btn){ btn.disabled = true; btn.textContent = "Checking\u2026"; }
+      /* 20s and a 60s-old fix are fine HERE and nowhere else: a cold GPS lock
+         often takes longer than the 8s the job calls use, and failing this gate
+         on a slow fix would lock out someone whose permission is correct. */
+      getPositionSafe(60000, 20000).then(function(pos){
+        if(pos){ hideLocationGate(); resolve(pos); return; }
+        console.warn("[GR-Driver] location gate: no position fix (attempt " + attempts + "). In the Zoho Creator portal app this usually means the app itself lacks the OS location permission, not the browser.");
+        paint();
+      });
+    }
+    attempt();
   });
 }
 async function openCamera(fieldName,max){
@@ -3789,6 +4041,10 @@ async function boot(){
     LOGIN_EMAIL=(params&&params.loginUser)||"";
     INIT_PARAMS=params; // zohoAppLinkName()'s own envUrlFragment lookup
   }catch(e){ console.warn("getInitParams failed", e); }
+  /* Nothing loads until there is a position - 2026-10-17, client request. Placed
+     before the first fetch so an app without location never reaches a dashboard,
+     and before any render so the overlay is the first thing on screen. */
+  await requireLocation();
   await loadAvailability();
   await loadVehicleNames();
   await loadIssueNames();

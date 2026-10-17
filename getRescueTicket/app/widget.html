@@ -4563,7 +4563,9 @@ function fleetLocationForDisplay(r, which){
   if(stored!=="") return stored;
   const raw = vendorRawForTicket(r);
   if(!raw) return "";
-  const base = nearestVendorBaseLocation(raw, parseCoord(r.Latitude), parseCoord(r.Longitude)) || vendorStaticLatLon(raw);
+  /* Nearest of ALL the vendor's locations - 2026-10-17. Same rule the closure
+     applies, so what this previews is what a close will store. */
+  const base = nearestVendorLocation(raw, parseCoord(r.Latitude), parseCoord(r.Longitude)) || vendorStaticLatLon(raw);
   if(!base || base.lat==null || base.lon==null) return "";
   return String(which==="lat" ? base.lat : base.lon);
 }
@@ -5198,7 +5200,7 @@ function vendorInfo(opt, breakdown){
      value — this can only ever sharpen the figure, never blank it. */
   let nearestBase=null;
   if(!hasLive && breakdown && breakdown.lat!=null && breakdown.lon!=null){
-    nearestBase = nearestVendorBaseLocation(raw, breakdown.lat, breakdown.lon);
+    nearestBase = nearestVendorLocation(raw, breakdown.lat, breakdown.lon);   // 2026-10-17 - the registered address is a candidate now, not just the fallback
   }
   const ll = hasLive ? live : (nearestBase || staticLL);
   const lat=ll.lat, lon=ll.lon;
@@ -5404,7 +5406,147 @@ function travelModeFor(record){
   return isTow ? "DRIVING" : "TWO_WHEELER";
 }
 let dmService=null;
-function googleDistanceMatrix(origins,destinations,travelMode){
+/* ---------- Google Routes API: computeRoutes - 2026-10-17 ----------
+   Replaces the Distance Matrix engine below, which is kept as
+   legacyDistanceMatrix() and still used whenever Routes is unavailable.
+
+   The client's own spec: travelMode DRIVE for four-wheeler/TOW and TWO_WHEELER
+   for RSR, routingPreference TRAFFIC_AWARE_OPTIMAL, a departureTime, and the
+   X-Goog-FieldMask header - without that header the API returns no durations at
+   all. travelModeFor() already made the four/two-wheeler split, so only the
+   names change here. */
+const ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
+const ROUTES_FIELD_MASK = "routes.distanceMeters,routes.duration,routes.staticDuration";
+const ROUTES_TIMEOUT_MS = 10000;
+/* Tripped only by an auth/enablement failure - see this change's own note. */
+let routesApiOff = false;
+/* A coordinate Google can actually resolve - 2026-10-17. Rejects 0,0 on
+   purpose: Number("") and Number(null) are both 0, so a blank Latitude on a
+   ticket used to arrive here as a legal coordinate in the Atlantic and be sent,
+   processed and billed. isFinite() covers null, "", undefined and NaN alike. */
+function validCoord(lat, lon){
+  const a = Number(lat), b = Number(lon);
+  if(!isFinite(a) || !isFinite(b)) return false;
+  if(a === 0 && b === 0) return false;
+  return Math.abs(a) <= 90 && Math.abs(b) <= 180;
+}
+function routesTravelMode(mode){
+  return String(mode||"").toUpperCase()==="TWO_WHEELER" ? "TWO_WHEELER" : "DRIVE";
+}
+/* Routes returns a duration as a string of seconds, e.g. "1131s". */
+function routesSeconds(v){
+  const n = parseFloat(String(v==null?"":v).replace(/[^0-9.]/g,""));
+  return isNaN(n) ? 0 : Math.round(n);
+}
+/* Shaped exactly like a Distance Matrix element, so every existing caller reads
+   it without knowing anything changed. duration carries the TRAFFIC-AWARE time
+   now; static_duration is the same trip without traffic, kept for the log. */
+function routesElement(route){
+  if(!route) return { status:"ZERO_RESULTS" };
+  const secs = routesSeconds(route.duration);
+  return { status:"OK",
+           distance:{ value: Number(route.distanceMeters)||0 },
+           duration:{ value: secs },
+           duration_in_traffic:{ value: secs },
+           static_duration:{ value: routesSeconds(route.staticDuration) } };
+}
+/* An enablement problem, as opposed to a blip. Only this latches the session
+   back to Distance Matrix; a timeout or a 500 must not. */
+function routesFatal(err){
+  const s = String((err && err.message) || err || "").toUpperCase();
+  return s.indexOf("HTTP 401")>=0 || s.indexOf("HTTP 403")>=0
+      || s.indexOf("SERVICE_DISABLED")>=0 || s.indexOf("PERMISSION_DENIED")>=0
+      || s.indexOf("API_KEY")>=0 || s.indexOf("HAS NOT BEEN USED")>=0;
+}
+async function routesComputeLeg(o, d, travelMode){
+  const mode = routesTravelMode(travelMode);
+  const body = {
+    origin:      { location:{ latLng:{ latitude:Number(o.lat), longitude:Number(o.lon) } } },
+    destination: { location:{ latLng:{ latitude:Number(d.lat), longitude:Number(d.lon) } } },
+    travelMode: mode,
+    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
+    /* 30 seconds ahead, not exactly now - 2026-10-17. Routes rejects a
+       departureTime in the past, and a phone clock running a few seconds slow
+       would make "now" exactly that by the time the request lands. A slightly
+       future time is read as predictive traffic, which is what a rescue ETA
+       wants anyway. */
+    departureTime: new Date(Date.now()+30000).toISOString()
+  };
+  let timer = null;
+  const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
+  try{
+    const resp = await Promise.race([
+      fetch(ROUTES_API_URL, { method:"POST",
+        headers:{ "Content-Type":"application/json",
+                  "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+                  "X-Goog-FieldMask": ROUTES_FIELD_MASK },
+        body: JSON.stringify(body) }),
+      timeout ]);
+    if(!resp.ok){
+      let detail = "";
+      try{ detail = JSON.stringify(await resp.json()); }catch(e){}
+      throw new Error("Routes API HTTP "+resp.status+" "+detail);
+    }
+    const data = await resp.json();
+    const el = routesElement(data && data.routes && data.routes[0]);
+    if(el.status==="OK"){
+      console.log("[Get-Rescue] Routes "+mode+": "+(el.distance.value/1000).toFixed(1)+" km | "+Math.round(el.duration.value/60)+" min with traffic | "+Math.round(el.static_duration.value/60)+" min without");
+    }
+    return el;
+  } finally { if(timer) clearTimeout(timer); }
+}
+/* The same rows[i].elements[j] shape Distance Matrix returned. Only the
+   diagonal is ever read (every caller was checked); the rest is filled in so an
+   off-diagonal read degrades to a miss instead of throwing. */
+function routesRows(legs, n){
+  const rows = [];
+  for(let i=0;i<n;i++){
+    const elements = [];
+    for(let j=0;j<n;j++) elements.push(i===j ? legs[i] : { status:"ZERO_RESULTS" });
+    rows.push({ elements: elements });
+  }
+  return rows;
+}
+/* Same name, same arguments, same return shape as the Distance Matrix version
+   it replaces - which is why none of this app's call sites needed touching. */
+async function googleDistanceMatrix(origins, destinations, travelMode){
+  const n = Math.min((origins||[]).length, (destinations||[]).length);
+  if(!n) return null;
+  const usable = [];
+  for(let i=0;i<n;i++){
+    usable.push(validCoord(origins[i] && origins[i].lat, origins[i] && origins[i].lon)
+             && validCoord(destinations[i] && destinations[i].lat, destinations[i] && destinations[i].lon));
+  }
+  /* Nothing worth asking about: returning null is exactly what a failed call
+     already did, so callers fall back to their Haversine estimate as before -
+     the difference is that no request is sent and nothing is billed. */
+  if(usable.indexOf(true) === -1){
+    console.warn("[Get-Rescue] googleDistanceMatrix: every leg has an unusable coordinate (blank or 0,0), so no request was sent. origins:", JSON.stringify(origins), "destinations:", JSON.stringify(destinations));
+    return null;
+  }
+  if(!routesApiOff){
+    try{
+      const legs = await Promise.all(origins.slice(0,n).map(function(o,i){
+        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode)
+                         : Promise.resolve({ status:"INVALID_REQUEST" });
+      }));
+      return routesRows(legs, n);
+    }catch(e){
+      if(routesFatal(e)){
+        routesApiOff = true;
+        console.warn("[Get-Rescue] Routes API refused the request, so this session falls back to the Distance Matrix service. Times will be free-flow, not traffic-aware. Enable Routes API on the Google Cloud project that owns this key, confirm billing, and add it to the key's API restrictions.", e);
+      } else {
+        console.warn("[Get-Rescue] Routes API call failed; using the Distance Matrix service for this calculation only. The next one will try Routes again.", e);
+      }
+    }
+  }
+  const rows = await legacyDistanceMatrix(origins, destinations, travelMode);
+  /* An unusable leg must not quietly pick up a Distance Matrix answer either. */
+  if(rows) for(let i=0;i<n;i++){ if(!usable[i] && rows[i] && rows[i].elements) rows[i].elements[i] = { status:"INVALID_REQUEST" }; }
+  return rows;
+}
+/* The Distance Matrix engine, unchanged, now only a fallback. */
+async function legacyDistanceMatrix(origins,destinations,travelMode){
   return loadGoogleMaps().then(function(ok){
     if(!ok || !window.google || !window.google.maps) return null;
     if(!dmService) dmService=new google.maps.DistanceMatrixService();
@@ -5504,6 +5646,32 @@ function nearestVendorBaseLocation(vendorRaw, breakdownLat, breakdownLon){
      runClosureDistanceCalculations() does its own fallback. See both. */
   return best;
 }
+/* WHICHEVER of the vendor's locations is nearest the breakdown - 2026-10-17,
+   user request ("use the locations based on the vendor all location which is
+   near the breakdown location"). Candidates are all five Base_Location pairs
+   AND the registered address, which the vendor form labels "GPS - Home
+   Location Lat/Long". Crow-flight, matching the spec's own "(Crow distance)"
+   and the base scan above - picking WHERE to measure from must not itself cost
+   a Google call, and a straight line is enough to rank candidates.
+
+   Returns null when there is nothing to compare, exactly as the base scan does,
+   so every caller's existing `|| vendorStaticLatLon(raw)` tail still covers a
+   ticket with no breakdown coordinate. .source names the winner for the log. */
+function nearestVendorLocation(vendorRaw, breakdownLat, breakdownLon){
+  if(!vendorRaw || breakdownLat==null || breakdownLon==null) return null;
+  const candidates=[];
+  const base=nearestVendorBaseLocation(vendorRaw, breakdownLat, breakdownLon);
+  if(base && base.lat!=null && base.lon!=null) candidates.push({lat:base.lat, lon:base.lon, source:"nearest Base_Location"});
+  const home=vendorStaticLatLon(vendorRaw);
+  if(home && home.lat!=null && home.lon!=null) candidates.push({lat:home.lat, lon:home.lon, source:"registered address (GPS - Home Location)"});
+  let best=null, bestKm=Infinity;
+  for(let i=0;i<candidates.length;i++){
+    const c=candidates[i];
+    const km=haversineKm(breakdownLat, breakdownLon, c.lat, c.lon);
+    if(km<bestKm){ bestKm=km; best={lat:c.lat, lon:c.lon, source:c.source, km:Math.round(km*10)/10}; }
+  }
+  return best;
+}
 /* Sums Google API driving distance leg-by-leg across a chain of points
    (points[0]→points[1]→points[2]→...), falling back to Haversine for
    whichever individual leg Google doesn't return an OK status for — never
@@ -5524,7 +5692,15 @@ async function legDistanceKm(points, travelMode){
     if(el && el.status==="OK") total += el.distance.value/1000;
     else total += haversineKm(origins[i].lat,origins[i].lon,destinations[i].lat,destinations[i].lon);
   }
-  return Math.round(total*10)/10;
+  /* null, never NaN - 2026-10-17. The Haversine fallback above returns NaN for a
+     coordinate that would not parse, one NaN poisons the sum, and every caller
+     guards with `if(km!=null)` - which NaN passes. The NaN was stored on the
+     record and sent at Close Case, where JSON.stringify turned it into null and
+     Zoho answered "Enter a valid number for Mechanic To Breakdown". Returning
+     null instead routes it into the "nothing measurable" path every caller
+     already handles, so the field is left blank rather than filled with rubbish. */
+  const km = Math.round(total*10)/10;
+  return isFinite(km) ? km : null;
 }
 /* Orchestrates the whole Agent Closure distance calc, called from
    saveClosure() (spec item "ACTIONS ON AGENT CLOSURE" #1 "CALCULATE VENDOR
@@ -5658,7 +5834,13 @@ async function writeRoundtripAtConfirmation(){
 function distanceNotComputedYet(v){
   if(v==null || v==="") return true;
   const n=Number(v);
-  return !isNaN(n) && n===0;
+  /* A value that is not a number is not a computed figure - 2026-10-17. This
+     used to answer FALSE for NaN and for any unparseable string, i.e. "yes,
+     that is a real figure", so saveClosure() sent it and Zoho refused the whole
+     save. It also stopped the recompute branches from recomputing. A real 0 is
+     still "not computed yet", exactly as before. */
+  if(isNaN(n)) return true;
+  return n===0;
 }
 /* Closure-page PDF item 15 - 2026-10-14. Fills the closure distance figures on
    the Close Case page once the agent has chosen a Closure Status, instead of
@@ -5754,7 +5936,7 @@ async function runClosureDistanceCalculations(record){
     if(vendorOpt){
       let base=null;
       if(record.Vendor_Fleet_Location_Lat==null || record.Vendor_Fleet_Location_Lat===""){
-        base=nearestVendorBaseLocation(vendorOpt.raw, bLat, bLon);
+        base=nearestVendorLocation(vendorOpt.raw, bLat, bLon);   // 2026-10-17 - all of the vendor's locations, nearest wins; the address fallback below still covers a ticket with no breakdown pin
         /* FALLBACK - 2026-10-14. The five Base_Location pairs are a 2026-08-17
            addition and are empty for every vendor set up before it, so this came
            back null and the whole block below was skipped - leaving Vendor Fleet
@@ -9149,8 +9331,28 @@ function pruneSingleVendorIfTicketRejected(){
   if(!already) state.inviteStatuses=(state.inviteStatuses||[]).concat([{ Vendor:vendorId, Status:"RSP REJECT", Reject_Reason: state.record.Reject_Reason||state.record.Reject_Reason1||"" }]);
   state.record.Vendors1=[];
 }
+/* Does this Lookup actually point at something? - 2026-10-17. Creator returns an
+   unset Lookup in several shapes - "", null, [], {} and the all-empty user object
+   this file documents elsewhere ({prefix:"",first_name:"",...}) - and the last
+   three are truthy, so `!=null && !==""` lets them through. That is how a
+   Technician-only hand-off row (RSID + Technician, no Vendor - see vendorTicket's
+   assignTechnician()) reached the panel below disguised as a nameless vendor. */
+function inviteLookupSet(v){
+  if(v==null || v==="") return false;
+  if(Array.isArray(v)) return v.some(inviteLookupSet);
+  if(typeof v==="object"){
+    const id = v.ID!=null ? v.ID : v.id;
+    if(id!=null && String(id).trim()!=="") return true;
+    return String(unwrapLookupDisplay(v)||"").trim()!=="";
+  }
+  return String(v).trim()!=="";
+}
 function assignInviteStatusHtml(){
-  const invites = (state.inviteStatuses||[]).filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; });
+  /* Vendor OR Technician - 2026-10-17. A fleet hand-off row carries only a
+     Technician and belongs on this panel: the agent needs to see that the vendor
+     passed the job on. Judged through inviteLookupSet() so an unset Lookup in any
+     of Creator's shapes is unset, rather than an anonymous "—" row. */
+  const invites = (state.inviteStatuses||[]).filter(function(inv){ return inviteLookupSet(inv.Vendor) || inviteLookupSet(inv.Technician); });
   /* An empty panel used to render as nothing at all, which reads the same as
      "no vendors invited" and the same as a read that came back empty - and was
      reported as the status simply not showing. It now names which it is. */
@@ -9191,9 +9393,51 @@ function assignInviteStatusHtml(){
   const takenByName = acceptedInvite
     ? (lookupNamesFor(acceptedInvite.Vendor, OPTIONS.vendors) || "a vendor")
     : (lookupNamesFor(state.record && state.record.Assigned_Vendor, OPTIONS.vendors) || "a vendor");
+  /* Named for the banner - 2026-10-17. Assigned_Technician is written by the
+     vendor's own hand-off (and by the agent on this screen), so a non-blank one
+     means the job went on to a technician - the half of the story the panel was
+     not telling. lookupId() first because an unassigned Zoho user field is an
+     all-empty object rather than blank, as this file notes elsewhere. */
+  /* A NAME or nothing - 2026-10-17. This printed a raw record id
+     ("448881000001174007") whenever the ticket's Assigned_Technician was not in
+     OPTIONS.technicians, because lookupNamesFor()'s last resort is String(item).
+     The hand-off invite row beside it resolved the name fine - its Technician
+     lookup carries a display_value - so that answer is preferred, and an
+     all-digits leftover is dropped rather than shown. */
+  const handoffRow = invites.find(function(inv){ return !inviteLookupSet(inv.Vendor) && inviteLookupSet(inv.Technician); });
+  const techNameRaw = (handoffRow ? (lookupNamesFor(handoffRow.Technician, OPTIONS.technicians) || unwrapLookupDisplay(handoffRow.Technician) || "") : "")
+    || (lookupId(state.record && state.record.Assigned_Technician)
+        ? (lookupNamesFor(state.record.Assigned_Technician, OPTIONS.technicians) || unwrapLookupDisplay(state.record.Assigned_Technician) || "")
+        : "");
+  const handoffTechName = /^[0-9]+$/.test(String(techNameRaw).trim()) ? "" : String(techNameRaw).trim();
   const rows = invites.map(function(inv){
-    const name = lookupNamesFor(inv.Vendor, OPTIONS.vendors) || "—";
-    const st = inviteStatusFor(inv);
+    /* The same name ladder loadInviteAudit() uses over this same data, so the
+       audit table and this panel cannot disagree about who a row is. */
+    const name = lookupNamesFor(inv.Vendor, OPTIONS.vendors)
+              || lookupNamesFor(inv.Technician, OPTIONS.technicians)
+              || unwrapLookupDisplay(inv.Vendor) || unwrapLookupDisplay(inv.Technician) || "—";
+    const isHandoff = !inviteLookupSet(inv.Vendor) && inviteLookupSet(inv.Technician);
+    let st = inviteStatusFor(inv);
+    /* A hand-off row is a record of the vendor passing the job to their own
+       technician, not an invitation waiting on a reply - 2026-10-17. Left to
+       inviteStatusFor() it read "Awaiting response" forever, because nobody ever
+       answers it and nothing ever writes to it. */
+    if(isHandoff){
+      st = { label:"Assigned by "+takenByName, color:"var(--ok)" };
+    }
+    /* This vendor holds the case, whatever their invite row still says -
+       2026-10-17. Assigned_Vendor is the field this file already treats as the
+       authoritative answer to "which vendor is on this job", and the banner above
+       already trusts it; before this the rows did not, so a vendor who took the
+       case through a fleet hand-off (which never touched the invite row until
+       today's matching vendorTicket fix) read "Timed Out" directly underneath a
+       banner naming them as having accepted. Only an unanswered row is upgraded:
+       a genuine Rejected stands, so a vendor who rejected and was re-assigned
+       later still shows that they rejected. */
+    else if(takenByAssigned && (st.label==="Awaiting response" || st.label==="Timed Out")
+            && String(lookupId(inv.Vendor)||"").trim()===String(assignedId).trim()){
+      st = { label:"Accepted", color:"var(--ok)" };
+    }
     const reason = st.label==="Rejected" ? (readVal(inv,"Reject_Reason")||"") : "";
     // Elapsed-since-invited text (2026-09-10, alongside the new "Timed Out"
     // status just above) — only shown for the two still-open states, where
@@ -9219,7 +9463,7 @@ function assignInviteStatusHtml(){
   }).join("");
   return `<div class="form-card" style="margin-top:14px">
     <h3 style="margin:0 0 8px">Vendor Invite Status</h3>
-    ${alreadyTaken ? `<div class="va-hint" style="display:block;margin:0 0 10px;color:var(--ok)">✓ <b>${esc(takenByName)}</b> accepted this case. The other vendors below can no longer act on it, and it cannot be sent out again.</div>` : ""}
+    ${alreadyTaken ? `<div class="va-hint" style="display:block;margin:0 0 10px;color:var(--ok)">✓ <b>${esc(takenByName)}</b> accepted this case. The other vendors below can no longer act on it, and it cannot be sent out again.${handoffTechName ? ` They then assigned it to their technician <b>${esc(handoffTechName)}</b>.` : ""}</div>` : ""}
     <div class="summary editable">${rows}</div>
   </div>`;
 }
@@ -9352,9 +9596,18 @@ async function calcAcceptanceDistanceToBreakdown(r, distField, etaField, vendorI
   const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===String(vendorId); })
     || OPTIONS.vendors.find(function(o){ return String(o.v)===String(vendorId); });
   if(!vopt) return;
-  const vLL = vendorStaticLatLon(vopt.raw);
   const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
+  /* Nearest of ALL the vendor's locations - 2026-10-17, user request. This was
+     the one place still measuring from the registered address alone, ignoring
+     the five Base_Location pairs that every other consumer already preferred -
+     so a vendor with a base around the corner from the job was measured from
+     home. The breakdown coordinates are read first because which origin is
+     nearest depends on them; the address stays as the fallback for a vendor who
+     has no base pairs, which is exactly what this did before. */
+  const vNear = nearestVendorLocation(vopt.raw, bLat, bLon);
+  const vLL = vNear || vendorStaticLatLon(vopt.raw);
   if(vLL.lat==null||vLL.lon==null||bLat==null||bLon==null) return;
+  console.log("[Get-Rescue] calcAcceptanceDistanceToBreakdown: measuring from the vendor's "+(vNear ? vNear.source+" ("+vNear.km+" km away, crow-flight)" : "registered address (no base locations on file)")+".");
   const key = state.recordId+"|"+distField+"|"+vendorId+"|"+bLat+","+bLon;
   if(ACCEPTANCE_DISTANCE_FETCH_KEY===key) return;
   ACCEPTANCE_DISTANCE_FETCH_KEY=key;
@@ -14723,6 +14976,26 @@ function invalidColumnFrom(err){
   const m=msg.match(/Invalid column value for\s+([A-Za-z0-9_]+)/i);
   return m ? m[1] : null;
 }
+/* EVERY column Zoho named, across both of its rejection shapes - 2026-10-17.
+   invalidColumnFrom() above reads "Invalid column value for X". Creator also
+   answers with a JSON map, {"Mechanic_To_Breakdown":"Enter a valid number for
+   Mechanic To Breakdown"}, which nothing parsed - so updateTicketTolerant()
+   could not see the column, rethrew, and the agent lost the whole Close Case
+   save to a raw JSON toast. */
+function rejectedColumnsFrom(err){
+  const msg=(err && (err.message||String(err))) || "";
+  const out=[];
+  const m=msg.match(/Invalid column value for\s+([A-Za-z0-9_]+)/i);
+  if(m) out.push(m[1]);
+  const j=msg.match(/\{[\s\S]*\}/);
+  if(j){
+    try{
+      const obj=JSON.parse(j[0]);
+      Object.keys(obj||{}).forEach(function(key){ if(typeof obj[key]==="string" && out.indexOf(key)<0) out.push(key); });
+    }catch(e){}
+  }
+  return out;
+}
 /* Retries an update once, re-shaping ONE rejected tick-box column.
 
    Creator has two single-tick field types and they want different values: a
@@ -14737,9 +15010,11 @@ async function updateTicketTolerant(recordId, payload){
     return await updateTicket(recordId, payload);
   }catch(e){
     const col=invalidColumnFrom(e);
-    if(!col || !(col in payload)) throw e;
-    const sent=payload[col];
-    if(!Array.isArray(sent)) throw e;
+    /* The tick-box retry below is unchanged and still runs first, on exactly the
+       same condition. Only the unconditional rethrow that used to sit here has
+       gone, so the distance branch underneath can be reached. */
+    const sent = (col && (col in payload)) ? payload[col] : null;
+    if(!col || !(col in payload) || !Array.isArray(sent)) return await saveWithoutRejectedDistance(recordId, payload, e);
     const retry=Object.assign({},payload);
     retry[col]= sent.indexOf("Yes")>=0;
     console.warn("[Get-Rescue] updateTicketTolerant: Zoho rejected "+col+" as "+JSON.stringify(sent)+
@@ -14749,6 +15024,31 @@ async function updateTicketTolerant(recordId, payload){
     console.warn("[Get-Rescue] updateTicketTolerant: the boolean retry for "+col+" SUCCEEDED.");
     return out;
   }
+}
+/* Saves everything else when Zoho refuses a COMPUTED DISTANCE - 2026-10-17.
+
+   A rejected distance used to discard the entire Close Case save: closure
+   status, remarks, invoice flags, all of it, for one derived kilometre figure.
+   Those figures are recomputed by the closure anyway, so dropping one and
+   saving the rest is plainly the better trade.
+
+   KM_DISTANCE_FIELDS only. A field the agent typed is never dropped - losing
+   their input silently would be worse than the error they can see.
+
+   The value goes ON SCREEN with the field name, because that pair is what
+   identifies the cause: "Mechanic_To_Breakdown=10.5" refused by a field that
+   holds 2.5 elsewhere on the same panel points straight at a Creator "Number"
+   (integer) field that should be "Decimal". */
+async function saveWithoutRejectedDistance(recordId, payload, err){
+  const bad = rejectedColumnsFrom(err).filter(function(c){ return (c in payload) && KM_DISTANCE_FIELDS.indexOf(c)>=0; });
+  if(!bad.length) throw err;
+  const detail = bad.map(function(c){ return c+"="+JSON.stringify(payload[c]); }).join(", ");
+  const retry = Object.assign({}, payload);
+  bad.forEach(function(c){ delete retry[c]; });
+  console.warn("[Get-Rescue] saveWithoutRejectedDistance: Zoho refused "+detail+", so the save is being retried without it. Everything else on this close is kept. Check that field's TYPE in Zoho - a Creator \"Number\" field is integer-only and will refuse a value like 10.5; its siblings on the same panel store decimals, so they are Decimal fields.", err);
+  const out = await updateTicket(recordId, retry);
+  try{ toast("Saved. "+bad.join(", ")+" could not be stored ("+detail+") - that field's type in Zoho needs checking.","err"); }catch(e){}
+  return out;
 }
 async function saveStep(advance){
   const step=state.path[state.stepIndex];
