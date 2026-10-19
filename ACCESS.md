@@ -18,7 +18,7 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 
 | Profile / Widget | Forms needing **Add** | Reports needing **View** | Reports needing **View + Edit** |
 |---|---|---|---|
-| **Agent** (`getRescueTicket`) | `Create_Case`, `Invites` | `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Vendors_Report`, `Technicians_Report`, `Client_Report`, `Rate_Master_Report`, `Invites_Report` (duplicate check before creating) | `Agent_Ticket_Report` |
+| **Agent** (`getRescueTicket`) | `Create_Case`, `Invites`, `Task_Edit_Log` | `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Vendors_Report`, `Technicians_Report`, `Client_Report`, `Rate_Master_Report`, `Invites_Report` (duplicate check before creating), `Task_Edit_Log_Report` | `Agent_Ticket_Report` |
 | **Kanban / Ops board** (`ticketKanbanGetRescue`) | `Create_Case` (only if a ticket is somehow opened before it has an ID — see its own code comment) | same option reports as Agent | `Agent_Ticket_Report` |
 | **Vendor** (`vendorTicket`) | `Task_Rejections`, `Invites` (fleet hand-off only) | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (corrected 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report` (read for fleet hand-off list, but see note below), `Invites_Report` |
 | **Technician** (`technicianTicket`) | `Task_Rejections` | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (added 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
@@ -47,6 +47,9 @@ The back-office agent creates and drives a ticket through its entire lifecycle, 
 - **`Invites` (form) — Add.** `syncInvites()` creates one `Invites_Report` record per invited vendor when the Assignment step is saved.
 - **`Invites_Report` — View.** Read before adding, so `syncInvites()` never creates a duplicate record for the same ticket/vendor pair on a re-save.
 - **Custom APIs `getVoiceCallbackDetails`/`getCallbackStatus`** — added 2026-09-14. Same two Ozonetel-backed Custom APIs `callCenter` already uses (see that widget's own section below) — this widget now also calls them directly, for the Create step's "📲 Call via System" button. Not a Form/Report permission (Custom APIs aren't governed by this file's usual View/Add/Edit model) — noted here only for completeness/consistency, since this is a new dependency this widget didn't have before.
+
+- **`Task_Edit_Log` (form) — Add.** Added 2026-10-17, Task Details spec group 7 ("ONLY VIEW - LOGS OF ALL DATA EDITS FOR THE TASK"). `logTaskEdits()` writes one row per field that actually changed, after each save on the wizard and the Final Closure page. Best-effort: a refused write is swallowed and logged, so a missing permission degrades to an empty log rather than a failed save.
+- **`Task_Edit_Log_Report` — View.** The Edit Log panel on the Final Closure page. **View only, deliberately — no Edit, no Delete.** The spec calls this view-only and nothing in the widget updates or removes a row; granting Edit would let an agent rewrite the audit trail the log exists to provide.
 
 Not needed: `Task_Rejections` (agent never writes a rejection log — only the field-facing widgets do, since only they ever reject a job).
 

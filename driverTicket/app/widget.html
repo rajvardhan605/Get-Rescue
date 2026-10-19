@@ -739,20 +739,26 @@ function routesFatal(err){
       || s.indexOf("SERVICE_DISABLED")>=0 || s.indexOf("PERMISSION_DENIED")>=0
       || s.indexOf("API_KEY")>=0 || s.indexOf("HAS NOT BEEN USED")>=0;
 }
-async function routesComputeLeg(o, d, travelMode){
+async function routesComputeLeg(o, d, travelMode, trafficAware){
   const mode = routesTravelMode(travelMode);
   const body = {
     origin:      { location:{ latLng:{ latitude:Number(o.lat), longitude:Number(o.lon) } } },
     destination: { location:{ latLng:{ latitude:Number(d.lat), longitude:Number(d.lon) } } },
     travelMode: mode,
-    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
-    /* 30 seconds ahead, not exactly now - 2026-10-17. Routes rejects a
-       departureTime in the past, and a phone clock running a few seconds slow
-       would make "now" exactly that by the time the request lands. A slightly
-       future time is read as predictive traffic, which is what a rescue ETA
-       wants anyway. */
-    departureTime: new Date(Date.now()+30000).toISOString()
+    /* Traffic only where a duration is actually read - 2026-10-17, client spec
+       ("traffic is important only for the two eta calculations"). An unaware
+       request bills at the cheaper tier and returns the same road distance;
+       departureTime is omitted with it because it only means anything to a
+       traffic model. Defaults to aware, so this is opt-out. */
+    routingPreference: (trafficAware===false) ? "TRAFFIC_UNAWARE" : "TRAFFIC_AWARE_OPTIMAL"
   };
+  if(trafficAware!==false){
+    /* 30 seconds ahead, not exactly now: Routes rejects a departureTime in the
+       past, and a phone clock running slow would make "now" exactly that by the
+       time the request lands. A slightly future time reads as predictive
+       traffic, which is what a rescue ETA wants anyway. */
+    body.departureTime = new Date(Date.now()+30000).toISOString();
+  }
   let timer = null;
   const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
   try{
@@ -790,7 +796,7 @@ function routesRows(legs, n){
 }
 /* Same name, same arguments, same return shape as the Distance Matrix version
    it replaces - which is why none of this app's call sites needed touching. */
-async function googleDistanceMatrix(origins, destinations, travelMode){
+async function googleDistanceMatrix(origins, destinations, travelMode, trafficAware){
   const n = Math.min((origins||[]).length, (destinations||[]).length);
   if(!n) return null;
   const usable = [];
@@ -808,7 +814,7 @@ async function googleDistanceMatrix(origins, destinations, travelMode){
   if(!routesApiOff){
     try{
       const legs = await Promise.all(origins.slice(0,n).map(function(o,i){
-        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode)
+        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode, trafficAware)
                          : Promise.resolve({ status:"INVALID_REQUEST" });
       }));
       return routesRows(legs, n);
@@ -877,11 +883,27 @@ async function calcDistanceETA(fromLat,fromLon,toLat,toLon,travelMode,useGoogle)
    Drop_To_Office_Distance), all saved individually plus the Roundtrip_Distance
    total. Google Distance Matrix first (one matrix call covering all legs at
    once via the diagonal of an NxN request), Haversine fallback below. */
+/* Is this an ON-DEMAND (walk-in) ticket? - 2026-10-19, client spec: the round
+   trip is "Not needed for ON-demand cases". These apps never loaded a client
+   list, so this reads the ticket's own Client value directly.
+
+   TRUE ONLY ON A POSITIVE MATCH. A bare lookup id, a blank, or any shape not
+   recognised returns false and the ticket behaves exactly as it does today.
+   The rule can fail to skip; it cannot wrongly skip a contracted client. */
+function isOnDemandTicket(r){
+  const raw = r && r.Client;
+  const txt = (raw && typeof raw==="object")
+    ? (raw.display_value || raw.zc_display_value || raw.value || "")
+    : (raw==null ? "" : raw);
+  const hit = String(txt).trim().toUpperCase()==="ON DEMAND";
+  if(hit) console.log("[GR-Driver] ON DEMAND ticket - Roundtrip_Distance is not calculated or written (client spec).");
+  return hit;
+}
 async function calc4PointRoundtrip(bLat,bLon,dLat,dLon,travelMode){
   const hasDrop = dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon);
   const origins = hasDrop ? [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:dLat,lon:dLon}] : [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}];
   const dests   = hasDrop ? [{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},{lat:OFFICE_LAT,lon:OFFICE_LON}] : [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
-  const rows=await googleDistanceMatrix(origins,dests,travelMode);
+  const rows=await googleDistanceMatrix(origins,dests, travelMode, false);
   let officeToBreakdown,breakdownToDrop,dropToOffice,ok=!!rows;
   if(ok){
     const legs=[];
@@ -2252,7 +2274,9 @@ async function confirmCancel(){
       // (cancel-click) position -> office, reusing calc4PointRoundtrip()
       // with pos as the "breakdown" point and no drop point.
       const legs = await calc4PointRoundtrip(pos.lat,pos.lon,null,null,travelModeFor(r));
-      payload.Roundtrip_Distance = legs.total;
+      /* Not written for ON DEMAND - 2026-10-19, client spec. The calculation
+         above still runs because its other legs are wanted either way. */
+      if(!isOnDemandTicket(r)) payload.Roundtrip_Distance = legs.total;
       // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office
       // (2026-08-04, per user request — "this also work for the Driver"):
       // same per-leg breakdown just added to technicianTicket's/vendorTicket's
@@ -2392,7 +2416,11 @@ async function confirmCxRejectLoading(){
     // Same shared "RSP_Completion_Time" as the RSR WIP screen's own Cx Reject — see technicianTicket's own comment.
     // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office — see
     // confirmCancel()'s own matching comment on this same addition.
-    await apiUpdate(r.ID, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Roundtrip_Distance: legs.total, Office_To_Mechanic: legs.officeToMechanic, Mechanic_To_Breakdown: legs.mechanicToBreakdown, Breakdown_To_Office: legs.dropToOffice, Status:"REMAINING FEE DUE" });
+    /* Built first so Roundtrip_Distance can be left out for an ON DEMAND case -
+       2026-10-19, client spec. Every other field is unchanged. */
+    const cxPayload = { Roundtrip_Distance: legs.total };
+    if(isOnDemandTicket(r)) delete cxPayload.Roundtrip_Distance;
+    await apiUpdate(r.ID, Object.assign(cxPayload, { Rejection_Reason: reason, RSP_Completion_Time: fmtDateTime(new Date()), Office_To_Mechanic: legs.officeToMechanic, Mechanic_To_Breakdown: legs.mechanicToBreakdown, Breakdown_To_Office: legs.dropToOffice, Status:"REMAINING FEE DUE" }));
     toast("Saved","ok");
     goToStatus("REMAINING FEE DUE");
   }catch(e){ toast((e&&e.message)||"Could not save","err"); }
@@ -2463,6 +2491,10 @@ async function reachedDrop(){
       // already used above for the roundtrip calc).
       Drop_Location_Arrival_Time: fmtDateTime(new Date())
     };
+    /* Not written for ON DEMAND - 2026-10-19, client spec. Removed after the
+       literal rather than built conditionally, so the other legs this same
+       calculation produced are still saved exactly as before. */
+    if(isOnDemandTicket(r)) delete payload.Roundtrip_Distance;
     // CHANGED 2026-09-11 (part of the wider "capture location+time at every
     // relevant step" request, real bug fix) — this used to reuse the SAME
     // RSP_Start_Latitude/Longitude fields Accept already writes (a 2026-08-04

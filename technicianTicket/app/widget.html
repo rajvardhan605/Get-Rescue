@@ -779,20 +779,26 @@ function routesFatal(err){
       || s.indexOf("SERVICE_DISABLED")>=0 || s.indexOf("PERMISSION_DENIED")>=0
       || s.indexOf("API_KEY")>=0 || s.indexOf("HAS NOT BEEN USED")>=0;
 }
-async function routesComputeLeg(o, d, travelMode){
+async function routesComputeLeg(o, d, travelMode, trafficAware){
   const mode = routesTravelMode(travelMode);
   const body = {
     origin:      { location:{ latLng:{ latitude:Number(o.lat), longitude:Number(o.lon) } } },
     destination: { location:{ latLng:{ latitude:Number(d.lat), longitude:Number(d.lon) } } },
     travelMode: mode,
-    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
-    /* 30 seconds ahead, not exactly now - 2026-10-17. Routes rejects a
-       departureTime in the past, and a phone clock running a few seconds slow
-       would make "now" exactly that by the time the request lands. A slightly
-       future time is read as predictive traffic, which is what a rescue ETA
-       wants anyway. */
-    departureTime: new Date(Date.now()+30000).toISOString()
+    /* Traffic only where a duration is actually read - 2026-10-17, client spec
+       ("traffic is important only for the two eta calculations"). An unaware
+       request bills at the cheaper tier and returns the same road distance;
+       departureTime is omitted with it because it only means anything to a
+       traffic model. Defaults to aware, so this is opt-out. */
+    routingPreference: (trafficAware===false) ? "TRAFFIC_UNAWARE" : "TRAFFIC_AWARE_OPTIMAL"
   };
+  if(trafficAware!==false){
+    /* 30 seconds ahead, not exactly now: Routes rejects a departureTime in the
+       past, and a phone clock running slow would make "now" exactly that by the
+       time the request lands. A slightly future time reads as predictive
+       traffic, which is what a rescue ETA wants anyway. */
+    body.departureTime = new Date(Date.now()+30000).toISOString();
+  }
   let timer = null;
   const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
   try{
@@ -830,7 +836,7 @@ function routesRows(legs, n){
 }
 /* Same name, same arguments, same return shape as the Distance Matrix version
    it replaces - which is why none of this app's call sites needed touching. */
-async function googleDistanceMatrix(origins, destinations, travelMode){
+async function googleDistanceMatrix(origins, destinations, travelMode, trafficAware){
   const n = Math.min((origins||[]).length, (destinations||[]).length);
   if(!n) return null;
   const usable = [];
@@ -848,7 +854,7 @@ async function googleDistanceMatrix(origins, destinations, travelMode){
   if(!routesApiOff){
     try{
       const legs = await Promise.all(origins.slice(0,n).map(function(o,i){
-        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode)
+        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode, trafficAware)
                          : Promise.resolve({ status:"INVALID_REQUEST" });
       }));
       return routesRows(legs, n);
@@ -914,11 +920,27 @@ async function calcDistanceETA(fromLat,fromLon,toLat,toLon,travelMode,useGoogle)
 // bLat/bLon/dLat/dLon kept as this function's own names (breakdown/drop) even
 // though RSR has no drop point — dLat/dLon simply stay null/NaN for every RSR
 // call site, same as before this Google swap.
+/* Is this an ON-DEMAND (walk-in) ticket? - 2026-10-19, client spec: the round
+   trip is "Not needed for ON-demand cases". These apps never loaded a client
+   list, so this reads the ticket's own Client value directly.
+
+   TRUE ONLY ON A POSITIVE MATCH. A bare lookup id, a blank, or any shape not
+   recognised returns false and the ticket behaves exactly as it does today.
+   The rule can fail to skip; it cannot wrongly skip a contracted client. */
+function isOnDemandTicket(r){
+  const raw = r && r.Client;
+  const txt = (raw && typeof raw==="object")
+    ? (raw.display_value || raw.zc_display_value || raw.value || "")
+    : (raw==null ? "" : raw);
+  const hit = String(txt).trim().toUpperCase()==="ON DEMAND";
+  if(hit) console.log("[Get-Rescue Tech] ON DEMAND ticket - Roundtrip_Distance is not calculated or written (client spec).");
+  return hit;
+}
 async function calcRoundTripKm(bLat,bLon,dLat,dLon,travelMode){
   const hasDrop = dLat!=null && dLon!=null && !isNaN(dLat) && !isNaN(dLon);
   const origins = hasDrop ? [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:dLat,lon:dLon}] : [{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}];
   const dests   = hasDrop ? [{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},{lat:OFFICE_LAT,lon:OFFICE_LON}] : [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
-  const rows=await googleDistanceMatrix(origins,dests,travelMode);
+  const rows=await googleDistanceMatrix(origins,dests, travelMode, false);
   if(rows){
     let total=0, ok=true;
     for(let i=0;i<origins.length;i++){
@@ -943,7 +965,7 @@ async function calcRoundTripKm(bLat,bLon,dLat,dLon,travelMode){
    calc4PointRoundtrip() already relies on (see QUESTIONS_TO_ASK.md) —
    "Office_To_Mechanic" here just means office->breakdown. */
 async function officeRoundTripLegs(bLat,bLon,travelMode){
-  const rows=await googleDistanceMatrix([{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}], [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}],travelMode);
+  const rows=await googleDistanceMatrix([{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon}], [{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}], travelMode, false);
   let officeToBreakdown, breakdownToOffice, ok=!!rows;
   if(ok){
     const e0=rows[0] && rows[0].elements && rows[0].elements[0];
@@ -2273,11 +2295,18 @@ async function markReached(){
     // denied/unavailable, so Roundtrip_Distance is never simply skipped
     // the way Distance_Reach_To_Breakdown below is allowed to be.
     const rtLat = reachPos ? reachPos.lat : bLat, rtLon = reachPos ? reachPos.lon : bLon;
-    const rt=await calcRoundTripKm(rtLat,rtLon,parseCoord(r.DropLocationLat),parseCoord(r.DropLocationLong),travelModeFor(r));
+    /* Skipped for ON DEMAND - 2026-10-19. This calculation exists only to
+       produce Roundtrip_Distance, so for a walk-in there is nothing to ask
+       Google for. null,null rather than the drop pin: the spec says this leg
+       is office -> reach -> office, and passing a drop made an RSR ticket that
+       happened to carry one silently become a 3-leg trip. */
+    const rt = isOnDemandTicket(r) ? null
+      : await calcRoundTripKm(rtLat,rtLon,null,null,travelModeFor(r));
     // ETA (mins) manual-entry input hidden from this screen 2026-08-05 (user
     // request) — was captured automatically at Accept anyway; whatever's
     // already saved there stays as-is, simply not touched by this payload.
-    const payload={ Reach_Time: fmtDateTime(new Date()), Roundtrip_Distance: rt, Status:"WORK IN PROGRESS" };
+    const payload={ Reach_Time: fmtDateTime(new Date()), Status:"WORK IN PROGRESS" };
+    if(rt!=null) payload.Roundtrip_Distance = rt;
     if(reachPos){
       payload.Reach_Location_Lat=reachPos.lat; payload.Reach_Location_Lon=reachPos.lon;
       const reachDist = await calcDistanceETA(reachPos.lat,reachPos.lon,bLat,bLon,travelModeFor(r));
@@ -2338,7 +2367,9 @@ async function confirmCancel(){
       // drop point gives exactly office->pos->office. Written to the same
       // Roundtrip_Distance field markReached() sets, since a ticket only ever
       // reaches this via Cancel OR Reached, never both.
-      payload.Roundtrip_Distance = await calcRoundTripKm(pos.lat,pos.lon,null,null,travelModeFor(r));
+      /* Not written for ON DEMAND - 2026-10-19, client spec. The calculation
+         above still runs because its other legs are wanted either way. */
+      if(!isOnDemandTicket(r)) payload.Roundtrip_Distance = await calcRoundTripKm(pos.lat,pos.lon,null,null,travelModeFor(r));
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);

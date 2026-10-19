@@ -4327,6 +4327,34 @@ const CLOSURE_FIELDS=[
      would start downloading the moment the closure page opened. The player is
      paired with a plain link so a codec the browser cannot play, or a URL that
      needs a separate login, is still reachable rather than silently dead. */
+  /* LOG - 2026-10-17, Task Details spec group 7: "ONLY VIEW - LOGS OF ALL DATA
+     EDITS FOR THE TASK". Reads the cache loadTaskEditLogForTicket() fills when
+     the ticket opens. View only - nothing here writes. */
+  { n:"__TaskEditLog", l:"Edit Log", t:"htmlblock", full:true,
+    html:(r)=>{
+      const rows = TASK_EDIT_LOG_BY_TICKET[String(r.ID)];
+      const TH='style="text-align:left;padding:7px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)"';
+      const TD='style="padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:12.5px"';
+      const cell=(v)=>{ const t=(v==null?"":String(v)).trim(); return t ? esc(t) : `<span style="color:var(--muted)">—</span>`; };
+      if(rows===undefined) return `<div class="fld full"><label>Edit Log</label><div class="hint" style="display:block">Loading…</div></div>`;
+      /* Told apart on purpose: a refused read is not an unedited ticket. */
+      if(rows===null) return `<div class="fld full"><label>Edit Log</label><div class="hint" style="display:block">The edit log could not be read. Check that <b>${esc(TASK_EDIT_LOG_REPORT)}</b> exists and that this profile has View permission on it — see the console for Zoho\u2019s own message.</div></div>`;
+      if(!rows.length) return `<div class="fld full"><label>Edit Log</label><div class="hint" style="display:block">No edits recorded for this ticket.</div></div>`;
+      const body = rows.map(function(row){
+        return `<tr>`+
+          `<td ${TD} style="white-space:nowrap">${cell(readVal(row,"Changed_At"))}</td>`+
+          `<td ${TD}>${cell(readVal(row,"Field_Label"))}</td>`+
+          `<td ${TD} style="color:var(--muted)">${cell(readVal(row,"Old_Value"))}</td>`+
+          `<td ${TD}><b>${cell(readVal(row,"New_Value"))}</b></td>`+
+          `<td ${TD} style="white-space:nowrap">${cell(readVal(row,"Changed_By"))}</td>`+
+        `</tr>`;
+      }).join("");
+      return `<div class="fld full"><label>Edit Log <span style="font-weight:400;opacity:.7">— ${rows.length} change${rows.length===1?"":"s"}, newest first</span></label>`+
+        `<div style="overflow-x:auto;border:1px solid var(--line);border-radius:10px">`+
+        `<table style="width:100%;border-collapse:collapse">`+
+        `<thead><tr><th ${TH}>When</th><th ${TH}>Field</th><th ${TH}>From</th><th ${TH}>To</th><th ${TH}>By</th></tr></thead>`+
+        `<tbody>${body}</tbody></table></div></div>`;
+    } },
   { n:"__CallHistoryDisplay", l:"Call History", t:"htmlblock", full:true,
     html:(r)=>{
       const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
@@ -5458,20 +5486,26 @@ function routesFatal(err){
       || s.indexOf("SERVICE_DISABLED")>=0 || s.indexOf("PERMISSION_DENIED")>=0
       || s.indexOf("API_KEY")>=0 || s.indexOf("HAS NOT BEEN USED")>=0;
 }
-async function routesComputeLeg(o, d, travelMode){
+async function routesComputeLeg(o, d, travelMode, trafficAware){
   const mode = routesTravelMode(travelMode);
   const body = {
     origin:      { location:{ latLng:{ latitude:Number(o.lat), longitude:Number(o.lon) } } },
     destination: { location:{ latLng:{ latitude:Number(d.lat), longitude:Number(d.lon) } } },
     travelMode: mode,
-    routingPreference: "TRAFFIC_AWARE_OPTIMAL",
-    /* 30 seconds ahead, not exactly now - 2026-10-17. Routes rejects a
-       departureTime in the past, and a phone clock running a few seconds slow
-       would make "now" exactly that by the time the request lands. A slightly
-       future time is read as predictive traffic, which is what a rescue ETA
-       wants anyway. */
-    departureTime: new Date(Date.now()+30000).toISOString()
+    /* Traffic only where a duration is actually read - 2026-10-17, client spec
+       ("traffic is important only for the two eta calculations"). An unaware
+       request bills at the cheaper tier and returns the same road distance;
+       departureTime is omitted with it because it only means anything to a
+       traffic model. Defaults to aware, so this is opt-out. */
+    routingPreference: (trafficAware===false) ? "TRAFFIC_UNAWARE" : "TRAFFIC_AWARE_OPTIMAL"
   };
+  if(trafficAware!==false){
+    /* 30 seconds ahead, not exactly now: Routes rejects a departureTime in the
+       past, and a phone clock running slow would make "now" exactly that by the
+       time the request lands. A slightly future time reads as predictive
+       traffic, which is what a rescue ETA wants anyway. */
+    body.departureTime = new Date(Date.now()+30000).toISOString();
+  }
   let timer = null;
   const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
   try{
@@ -5509,7 +5543,7 @@ function routesRows(legs, n){
 }
 /* Same name, same arguments, same return shape as the Distance Matrix version
    it replaces - which is why none of this app's call sites needed touching. */
-async function googleDistanceMatrix(origins, destinations, travelMode){
+async function googleDistanceMatrix(origins, destinations, travelMode, trafficAware){
   const n = Math.min((origins||[]).length, (destinations||[]).length);
   if(!n) return null;
   const usable = [];
@@ -5527,7 +5561,7 @@ async function googleDistanceMatrix(origins, destinations, travelMode){
   if(!routesApiOff){
     try{
       const legs = await Promise.all(origins.slice(0,n).map(function(o,i){
-        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode)
+        return usable[i] ? routesComputeLeg(o, destinations[i], travelMode, trafficAware)
                          : Promise.resolve({ status:"INVALID_REQUEST" });
       }));
       return routesRows(legs, n);
@@ -5685,7 +5719,7 @@ async function legDistanceKm(points, travelMode){
   if(!points || points.length<2) return null;
   const origins=points.slice(0,-1), destinations=points.slice(1);
   let rows=null;
-  try{ rows=await googleDistanceMatrix(origins,destinations,travelMode); }catch(e){ rows=null; }
+  try{ rows=await googleDistanceMatrix(origins,destinations, travelMode, false); }catch(e){ rows=null; }
   let total=0;
   for(let i=0;i<origins.length;i++){
     const el = rows && rows[i] && rows[i].elements && rows[i].elements[i];
@@ -5804,6 +5838,9 @@ async function writeRoundtripAtConfirmation(){
   if(!state.recordId || !r) return;
   if(!String(r.Confirmation_Time||"").trim()) return;              // not confirmed yet
   if(!(r.Roundtrip_Distance==null || r.Roundtrip_Distance==="")) return;  // never overwritten
+  /* ON DEMAND - Roundtrip_Distance is not needed for a walk-in (2026-10-19,
+     client spec, stated against both the TOW and REPAIR scenario lists). */
+  if(isOnDemandClient(r)){ console.log("[Get-Rescue] writeRoundtripAtConfirmation: ON DEMAND ticket - skipped (client spec)."); return; }
   const bLat=parseCoord(r.Latitude), bLon=parseCoord(r.Longitude);
   if(bLat==null || bLon==null) return;
   const office={lat:OFFICE_LAT, lon:OFFICE_LON};
@@ -6115,7 +6152,10 @@ if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null
     // "IF ROUND TRIP DISTANCE IS EMPTY, UPDATE" — "Rescue" = this app's own
     // already-hardcoded OFFICE_LAT/OFFICE_LON, same base point
     // Office_To_Mechanic/Breakdown_To_Office already use elsewhere) ---
-    if(distanceNotComputedYet(record.Roundtrip_Distance)){   // item 32
+    /* ON DEMAND is skipped entirely, and REPAIR has no fallback at all -
+       2026-10-19, client spec: the TOW list has a closure fallback (scenario 5)
+       and the REPAIR list states "4. Does not need fall-back plan". */
+    if(distanceNotComputedYet(record.Roundtrip_Distance) && !isOnDemandClient(record) && isTow){   // item 32
       let legs=null;
       if(isTow){
         const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
@@ -6771,6 +6811,15 @@ async function maybeGenerateBooksInvoiceOnClosure(r, finalTsf){
 // slabKm-sized chunk beyond baseKm (ROUNDUP, so a distance 1km into a new
 // slab still charges the full slab, matching the spec's own "ROUNDUP"
 // wording exactly, not a floor/round).
+/* Charge per whole completed block of time - 2026-10-17. The vendor card prices
+   waiting per 60 minutes and overtime per 30; this turns minutes into a fee.
+   Rounded DOWN, so a part-block is free - see computeVendorFee()'s own note on
+   why this differs from the KM slab. A missing rate or zero minutes costs 0. */
+function computeVendorBlockFee(minutes, blockMins, rate){
+  const mins=Number(minutes)||0, block=Number(blockMins)||0, r=Number(rate)||0;
+  if(mins<=0 || block<=0 || r<=0) return 0;
+  return Math.floor(mins/block)*r;
+}
 function computeVendorKmFee(actualKm, baseKm, kmRate, slabKm){
   const actual=Number(actualKm)||0, base=Number(baseKm)||0, rate=Number(kmRate)||0, slab=Number(slabKm)||0;
   if(actual<=base) return 0;
@@ -6788,12 +6837,19 @@ function computeVendorFee(input){
   const round2=(n)=>Math.round(n*100)/100;
   const baseFee=Number(input.baseFee)||0;
   const kmFee=computeVendorKmFee(input.actualKm, input.baseKm, input.kmRate, input.slabKm);
-  const grossFee=round2(baseFee+kmFee);
+  /* Wait and overtime - 2026-10-17, Vendor table spec. Whole completed blocks,
+     rounded DOWN: "every 60 mins" pays for each full hour, so 90 minutes is one
+     block. Deliberately not the KM slab's ROUNDUP, which the spec states there
+     and does not state here. Both are 0 unless a figure has been entered, so
+     grossFee is unchanged for every case that does not use them. */
+  const waitFee=round2(computeVendorBlockFee(input.waitMinutes, 60, input.waitRate));
+  const overtimeFee=round2(computeVendorBlockFee(input.overtimeMinutes, 30, input.overtimeRate));
+  const grossFee=round2(baseFee+kmFee+waitFee+overtimeFee);
   const extras=Number(input.extras)||0;
   const netFee=round2(grossFee+extras);
   const cashCollected=Number(input.cashCollected)||0;
   const balanceBeforeTds=round2(netFee-cashCollected);
-  return { kmFee:round2(kmFee), grossFee, netFee, balanceBeforeTds };
+  return { kmFee:round2(kmFee), waitFee, overtimeFee, grossFee, netFee, balanceBeforeTds };
 }
 // resolveIssueLabels() — like lookupNamesFor() (this file's own id->label
 // resolver, used elsewhere e.g. maybeCreateOnDemandInvoice()'s "Service"
@@ -7031,6 +7087,23 @@ function readVendorHour(vendorRaw, names){
   }
   return null;
 }
+/* The two time-based rates on the vendor card - 2026-10-17. Several candidate
+   names each, like the night-hour reader below: Creator derives the API name
+   from a label such as "WAIT CHARGES (EVERY 60 MINS)" in ways that cannot be
+   predicted from the spec, and a wrong guess must degrade to "not configured"
+   (charge nothing) rather than to an error. */
+const VENDOR_WAIT_RATE_FIELDS = ["WAIT_CHARGES_EVERY_60_MINS","Wait_Charges_Every_60_Mins",
+  "WAIT_CHARGES_60_MINS","Wait_Charges_60_Mins","WAIT_CHARGES","Wait_Charges","Waiting_Charges"];
+const VENDOR_OVERTIME_RATE_FIELDS = ["OVERTIME_CHARGES_EVERY_30MINS","OVERTIME_CHARGES_EVERY_30_MINS",
+  "Overtime_Charges_Every_30_Mins","OVERTIME_CHARGES_30_MINS","OVERTIME_CHARGES","Overtime_Charges"];
+function vendorWaitRate(vendorRaw){
+  const hit=readVendorNumber(vendorRaw, VENDOR_WAIT_RATE_FIELDS);
+  return hit ? hit.value : 0;
+}
+function vendorOvertimeRate(vendorRaw){
+  const hit=readVendorNumber(vendorRaw, VENDOR_OVERTIME_RATE_FIELDS);
+  return hit ? hit.value : 0;
+}
 function vendorNightWindow(vendorRaw){
   const start=readVendorHour(vendorRaw, ["NIGHT_START_HOUR","Night_Start_Hour","Night_Start","NIGHT_START"]);
   const end=readVendorHour(vendorRaw, ["NIGHT_END_HOUR","Night_End_Hour","Night_End","NIGHT_END"]);
@@ -7093,6 +7166,12 @@ function computeVendorFeeForTicket(record, vendorRaw){
     kmRate: resolvedKmRate,
     slabKm: slabKm,
     extras: record.Extras,
+    /* Wait/overtime - 2026-10-17. Rates off the vendor card, minutes off the
+       case. Both sides default to 0, so this adds nothing until it is used. */
+    waitMinutes: record.Waiting_Minutes,
+    overtimeMinutes: record.Overtime_Minutes,
+    waitRate: vendorWaitRate(vendorRaw),
+    overtimeRate: vendorOvertimeRate(vendorRaw),
     // Derived, not read from the stored field (2026-09-14) — see
     // cashCollectedForTicket()'s own header. The stored Cash_Collected is
     // written by saveVendorAcctApproval() FROM this same derivation, so the two
@@ -7775,8 +7854,12 @@ function closeVendorAcctInline(id){
 // to exist. Deliberately the ONE fee path both views share: a second copy of
 // this arithmetic is exactly how a grid total and a detail total drift apart.
 // roundTripOverride null means "leave the stored value alone".
-function vaFeeFor(r, vendorRaw, extrasOverride, roundTripOverride){
+function vaFeeFor(r, vendorRaw, extrasOverride, roundTripOverride, waitOverride, overtimeOverride){
   const record = Object.assign({}, r, {
+    /* 2026-10-17 - typed values win while the accordion is open; otherwise
+       whatever is stored on the case, which is what the bulk grid passes. */
+    Waiting_Minutes: waitOverride!=null ? (Number(waitOverride)||0) : r.Waiting_Minutes,
+    Overtime_Minutes: overtimeOverride!=null ? (Number(overtimeOverride)||0) : r.Overtime_Minutes,
     Extras: Number(extrasOverride)||0,
     Vendor_Round_Trip_Distance: roundTripOverride!=null
       ? (Number(roundTripOverride)||0) : r.Vendor_Round_Trip_Distance
@@ -7820,9 +7903,16 @@ async function apiUpdateApproval(id, payload){
     return out;
   }
 }
-function vendorAcctApprovalPayload(r, fee, extras, comments, roundTripKm){
+function vendorAcctApprovalPayload(r, fee, extras, comments, roundTripKm, waitMins, overtimeMins){
   const payload = {
     Extras: Number(extras)||0,
+    /* 2026-10-17. The minutes are the auditable input and the fees are what was
+       actually paid on them, so both are frozen onto the case - the rate card can
+       change later and an approved settlement must still explain itself. */
+    Waiting_Minutes: Number(waitMins!=null ? waitMins : r.Waiting_Minutes)||0,
+    Overtime_Minutes: Number(overtimeMins!=null ? overtimeMins : r.Overtime_Minutes)||0,
+    Vendor_Wait_Fee: Number(fee.waitFee)||0,
+    Vendor_Overtime_Fee: Number(fee.overtimeFee)||0,
     Ops_Approval_Comments: comments||"",
     Vendor_KM_Fee: fee.kmFee,
     Vendor_Gross_Fee: fee.grossFee,
@@ -7844,7 +7934,16 @@ function vendorAcctApprovalPayload(r, fee, extras, comments, roundTripKm){
 function vaFeePreview(r, vendorRaw){
   const ex = document.getElementById("vaExtras_"+r.ID);
   const rt = document.getElementById("vaRoundTripKm_"+r.ID);
-  return vaFeeFor(r, vendorRaw, ex ? ex.value : r.Extras, rt ? rt.value : null);
+  const wt = document.getElementById("vaWaitMins_"+r.ID);
+  const ot = document.getElementById("vaOvertimeMins_"+r.ID);
+  return vaFeeFor(r, vendorRaw, ex ? ex.value : r.Extras, rt ? rt.value : null,
+    wt ? wt.value : null, ot ? ot.value : null);
+}
+/* Whatever the screen is showing for a minutes box - the typed value while the
+   accordion is open, the stored one otherwise. Display only. */
+function vaMinsValue(r, prefix, field){
+  const el=document.getElementById(prefix+r.ID);
+  return el ? el.value : (r[field]||0);
 }
 function renderVendorAcctFeeBox(r, vendorRaw){
   const fee = vaFeePreview(r, vendorRaw);
@@ -7856,7 +7955,9 @@ function renderVendorAcctFeeBox(r, vendorRaw){
   const cashCollected = cashCollectedForTicket(r);
   box.innerHTML = `
     <div class="va-fee-row"><span>KM Fee</span><span>₹${fee.kmFee.toFixed(2)}</span></div>
-    <div class="va-fee-row"><span>Gross Fee (Base + KM Fee)</span><span>₹${fee.grossFee.toFixed(2)}</span></div>
+    ${fee.waitFee ? `<div class="va-fee-row"><span>Waiting (${Math.floor((Number(vaMinsValue(r,"vaWaitMins_","Waiting_Minutes"))||0)/60)} × 60 min @ ₹${vendorWaitRate(vendorRaw).toFixed(2)})</span><span>₹${fee.waitFee.toFixed(2)}</span></div>` : ""}
+    ${fee.overtimeFee ? `<div class="va-fee-row"><span>Overtime (${Math.floor((Number(vaMinsValue(r,"vaOvertimeMins_","Overtime_Minutes"))||0)/30)} × 30 min @ ₹${vendorOvertimeRate(vendorRaw).toFixed(2)})</span><span>₹${fee.overtimeFee.toFixed(2)}</span></div>` : ""}
+    <div class="va-fee-row"><span>Gross Fee (Base + KM${fee.waitFee?" + Waiting":""}${fee.overtimeFee?" + Overtime":""})</span><span>₹${fee.grossFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Net Fee (Gross + Extras)</span><span>₹${fee.netFee.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Cash Collected</span><span>₹${cashCollected.toFixed(2)}</span></div>
     <div class="va-fee-row"><span>Balance (before TDS)</span><span>₹${fee.balanceBeforeTds.toFixed(2)}</span></div>
@@ -7895,6 +7996,8 @@ function openVendorAcctInline(id){
     <div class="crow-ro"><span class="k">Base Fee</span><span class="v">₹${baseFee.toFixed(2)}</span></div>
     ${roundTripField}
     <div class="fld"><label>Extras</label><input type="number" id="vaExtras_${esc(r.ID)}" value="${esc(r.Extras||0)}"></div>
+    <div class="fld"><label>Waiting (mins)</label><input type="number" min="0" id="vaWaitMins_${esc(r.ID)}" value="${esc(r.Waiting_Minutes||0)}"></div>
+    <div class="fld"><label>Overtime (mins)</label><input type="number" min="0" id="vaOvertimeMins_${esc(r.ID)}" value="${esc(r.Overtime_Minutes||0)}"></div>
     <div class="fld"><label>Comments</label><textarea id="vaComments_${esc(r.ID)}">${esc(r.Ops_Approval_Comments||"")}</textarea></div>
     <div class="va-fee-box" id="vaFeeBox_${esc(r.ID)}"></div>
     <button class="btn primary" id="vaApproveBtn_${esc(r.ID)}" type="button" style="margin-top:10px">Operations Approved</button>
@@ -7902,6 +8005,11 @@ function openVendorAcctInline(id){
   box.classList.add("on");
   renderVendorAcctFeeBox(r, vendorRaw);
   document.getElementById("vaExtras_"+r.ID).oninput = function(){ renderVendorAcctFeeBox(r, vendorRaw); };
+  /* Same live re-preview as Extras, so the fee box tracks what is typed. */
+  ["vaWaitMins_","vaOvertimeMins_"].forEach(function(prefix){
+    const el=document.getElementById(prefix+r.ID);
+    if(el) el.oninput = function(){ renderVendorAcctFeeBox(r, vendorRaw); };
+  });
   const rtInput = document.getElementById("vaRoundTripKm_"+r.ID);
   if(rtInput) rtInput.oninput = function(){ renderVendorAcctFeeBox(r, vendorRaw); };
   document.getElementById("vaApproveBtn_"+r.ID).onclick = function(){ saveVendorAcctApproval(r, vendorRaw); };
@@ -7919,7 +8027,9 @@ async function saveVendorAcctApproval(r, vendorRaw){
     r, fee,
     document.getElementById("vaExtras_"+r.ID).value,
     document.getElementById("vaComments_"+r.ID).value,
-    rtInput ? rtInput.value : null
+    rtInput ? rtInput.value : null,
+    (document.getElementById("vaWaitMins_"+r.ID)||{}).value,
+    (document.getElementById("vaOvertimeMins_"+r.ID)||{}).value
   );
   try{
     await apiUpdateApproval(r.ID, payload);
@@ -12328,6 +12438,9 @@ async function openTicket(rec){
     startLockHeartbeat(rec.ID);
   }
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
+  /* The "before" for the edit log - 2026-10-17. Taken from the freshly
+     re-fetched record, because state.record is mutated by every keystroke. */
+  snapshotTaskForEditLog(rec);
   // Real bug fixed (2026-08-03, user-reported): Create_Case has a required
   // "Phone_Number" field (real, always populated) separate from the one this
   // widget's own Create step actually shows/edits ("Phone_Number1", mirrored
@@ -12418,6 +12531,11 @@ async function openTicket(rec){
   // Rejection History right above: the Agent Closure page is a step of THIS
   // wizard, not a separate screen, so anything that step needs has to be ready
   // by the time the agent navigates to it, however they got into the ticket.
+  /* The edit log, on the same terms as the call history below: not awaited, and
+     a failure leaves the panel to explain itself. */
+  loadTaskEditLogForTicket(state.recordId).then(function(rows){
+    if(rows && rows.length && state.recordId) rerenderCurrentView();
+  }).catch(function(e){ console.warn("[Get-Rescue] loadTaskEditLogForTicket rejected (non-blocking)", e); });
   // Deliberately NOT awaited — a Call_Log read must never delay opening a
   // ticket; the panel is empty for a moment and fills itself in via the
   // re-render below. Fully safe if the Call_Log form doesn't exist: the fetch
@@ -12475,6 +12593,9 @@ async function openClosure(rec){
   console.log("[Get-Rescue] openClosure raw record (before unwrap):", rec, "| Customer_Name:", JSON.stringify(rec.Customer_Name), "| Client:", JSON.stringify(rec.Client), "| Vehicle:", JSON.stringify(rec.Vehicle), "| Vehicle_Issue:", JSON.stringify(rec.Vehicle_Issue), "| Vendors1:", JSON.stringify(rec.Vendors1), "| Assigned_Vendor:", JSON.stringify(rec.Assigned_Vendor));
   console.log("[Get-Rescue] openClosure OPTIONS loaded so far — vehicles:", OPTIONS.vehicles.length, "clients:", OPTIONS.clients.length, "vendors:", OPTIONS.vendors.length, "technicians:", OPTIONS.technicians.length);
   state.record=Object.assign({},rec); state.files={}; state.recordId=rec.ID; state.editing=true;
+  /* The "before" for the edit log - 2026-10-17. Taken from the freshly
+     re-fetched record, because state.record is mutated by every keystroke. */
+  snapshotTaskForEditLog(rec);
   // Vendors1's own display-name unwrapping happens for free below — see
   // openTicket()'s own comment on this same pattern.
   STAGES.forEach(st=>st.fields.forEach(f=>{ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }));
@@ -14826,6 +14947,148 @@ const COORD_FIELDS=["Latitude","Longitude","DropLocationLat","DropLocationLong"]
    precision finally succeeds is what ends up saved) and should return
    whatever the caller needs (addTicket's new ID, or true for an update). */
 const COORD_PRECISION_FALLBACKS=[17,14,12,10,8,6,4,2,0];
+/* ===== Task edit log - 2026-10-17, Task Details spec group 7 =====
+   "ONLY VIEW - LOGS OF ALL DATA EDITS FOR THE TASK". One row per field that
+   actually changed, written after the save has already succeeded. Entirely
+   best-effort: an audit row that cannot be written must never turn a saved
+   ticket into an error on screen. */
+const TASK_EDIT_LOG_FORM = "Task_Edit_Log";
+const TASK_EDIT_LOG_REPORT = "Task_Edit_Log_Report";
+/* The record as Zoho last gave it to us. state.record cannot serve as the
+   "before" - the form mutates it on every keystroke. */
+let TASK_EDIT_SNAPSHOT = null;
+function snapshotTaskForEditLog(rec){
+  try{ TASK_EDIT_SNAPSHOT = rec ? JSON.parse(JSON.stringify(rec)) : null; }
+  catch(e){ TASK_EDIT_SNAPSHOT = null; }
+}
+/* A value as a human would read it: lookups to their display text, arrays
+   joined, everything else as plain text. Used for both sides of the diff, so a
+   field that only changed SHAPE (bare id one read, object the next) compares
+   equal and is not logged as an edit nobody made. */
+function editLogText(v){
+  if(v==null) return "";
+  if(Array.isArray(v)) return v.map(editLogText).filter(Boolean).join(", ");
+  if(typeof v==="object"){
+    const d=unwrapLookupDisplay(v);
+    if(d!=null && String(d).trim()!=="") return String(d).trim();
+    const id=lookupId(v);
+    return id==null ? "" : String(id).trim();
+  }
+  return String(v).trim();
+}
+/* The label the UI shows for a field, so the log reads the way the screen
+   does. Falls back to the API name for anything not on a stage. */
+let EDIT_LOG_LABELS = null;
+function editLogLabelFor(name){
+  if(!EDIT_LOG_LABELS){
+    EDIT_LOG_LABELS = {};
+    try{
+      (typeof STAGES!=="undefined" ? STAGES : []).forEach(function(stage){
+        (stage && stage.fields ? stage.fields : []).forEach(function(fl){
+          if(fl && fl.n && fl.l && !EDIT_LOG_LABELS[fl.n]) EDIT_LOG_LABELS[fl.n]=fl.l;
+        });
+      });
+    }catch(e){}
+  }
+  return EDIT_LOG_LABELS[name] || name;
+}
+/* Noise that is not a user edit: stamps the app writes on every save, and the
+   lock bookkeeping. Logging these would bury the real edits. */
+const EDIT_LOG_IGNORE = ["Agent_Wizard_Step","Locked_By","Locked_At","Agent_Closure_Time",
+  "Send_9_Due_At","Modified_Time","Added_Time","ID"];
+/* Every field in `payload` whose value differs from the snapshot. */
+function taskEditDiff(payload){
+  const before = TASK_EDIT_SNAPSHOT;
+  if(!before || !payload) return [];
+  const out=[];
+  Object.keys(payload).forEach(function(nm){
+    if(EDIT_LOG_IGNORE.indexOf(nm)>=0) return;
+    const was=editLogText(before[nm]);
+    const now=editLogText(payload[nm]);
+    if(was===now) return;
+    /* Blank -> blank in a different shape is not an edit. */
+    if(was==="" && now==="") return;
+    /* Nor is a lookup that only changed SHAPE - 2026-10-17. Zoho hands a lookup
+       back enriched ({ID, display_value}) and this app sends it back as the bare
+       id, so comparing display text alone reported "Sagar Tomar 773 -> 771" as
+       an edit nobody made. Same id on both sides means same value, whatever
+       shape it arrived in. */
+    const wasId=String(lookupId(before[nm])==null?"":lookupId(before[nm])).trim();
+    const nowId=String(lookupId(payload[nm])==null?"":lookupId(payload[nm])).trim();
+    if(wasId!=="" && wasId===nowId) return;
+    out.push({ name:nm, label:editLogLabelFor(nm), was:was, now:now });
+  });
+  return out;
+}
+/* Writes the rows. Never throws - see this block's own header. */
+/* Fits a Single Line field, and says when it did not fit. */
+function editLogClip(s){
+  const t = s==null ? "" : String(s);
+  return t.length>255 ? (t.slice(0,252)+"\u2026") : t;
+}
+async function logTaskEdits(recordId, payload){
+  let changes=[];
+  try{ changes = taskEditDiff(payload); }catch(e){ return; }
+  if(!changes.length){ refreshTaskEditSnapshot(payload); return; }
+  const stamp = fmtDateTime(new Date());
+  const who = LOGIN_EMAIL || "";
+  try{
+    const fn = resolve("addRecords");
+    if(!fn){ console.warn("[Get-Rescue] logTaskEdits: addRecords unavailable, "+changes.length+" edit(s) not logged."); refreshTaskEditSnapshot(payload); return; }
+    for(let i=0;i<changes.length;i++){
+      const c=changes[i];
+      try{
+        await fn({ app_name:CONFIG.appName, form_name:TASK_EDIT_LOG_FORM, payload:{ data:{
+          RSID: recordId, Field_Label: c.label,
+          /* Clipped - 2026-10-17. Old_Value/New_Value are Single Line fields in
+             Zoho, and a long Remarks edit would be refused outright, losing the
+             whole audit row over detail nobody reads in a log. */
+          Old_Value: editLogClip(c.was), New_Value: editLogClip(c.now),
+          Changed_By: who, Changed_At: stamp
+        } } });
+      }catch(e){
+        console.warn("[Get-Rescue] logTaskEdits: could not write the audit row for \""+c.label+"\". Create the "+TASK_EDIT_LOG_FORM+" form in Zoho (RSID, Field_Label, Old_Value, New_Value, Changed_By, Changed_At) and grant Create on it. The ticket itself saved fine.", e);
+        break;   // one refusal means they all fail; do not spam
+      }
+    }
+    console.log("[Get-Rescue] logTaskEdits: "+changes.length+" field(s) changed on ticket "+recordId+" -", changes.map(function(c){ return c.label+": \""+c.was+"\" -> \""+c.now+"\""; }).join(" | "));
+  }catch(e){ console.warn("[Get-Rescue] logTaskEdits threw (non-blocking - the ticket saved)", e); }
+  refreshTaskEditSnapshot(payload);
+}
+/* Fold the saved values into the snapshot, so a second edit in the same
+   sitting is diffed against what is now stored rather than the original. */
+function refreshTaskEditSnapshot(payload){
+  if(!TASK_EDIT_SNAPSHOT || !payload) return;
+  try{ Object.keys(payload).forEach(function(nm){ TASK_EDIT_SNAPSHOT[nm]=payload[nm]; }); }catch(e){}
+}
+/* Read side. Returns [] on any failure, including the form not existing. */
+/* Filled when a ticket opens, read by the __TaskEditLog htmlblock - the same
+   cache-then-render arrangement CALL_LOGS_BY_TICKET uses, for the same reason:
+   the panel renders synchronously and the fetch must not hold the page up. */
+let TASK_EDIT_LOG_BY_TICKET = {};
+/* null = the read failed or the form is not there yet; [] = genuinely no edits.
+   The panel says something different for each. */
+async function loadTaskEditLogForTicket(recordId){
+  const rows = await loadTaskEditLog(recordId);
+  if(rows){
+    /* Newest first, by record id - Changed_At is text and would sort lexically. */
+    rows.sort(function(a,b){ return String(b.ID).localeCompare(String(a.ID), undefined, {numeric:true}); });
+  }
+  TASK_EDIT_LOG_BY_TICKET[String(recordId)] = rows;
+  return rows;
+}
+async function loadTaskEditLog(recordId){
+  try{
+    const fn = resolve("getRecords");
+    if(!fn) return [];
+    const r = await fn({ app_name:CONFIG.appName, report_name:TASK_EDIT_LOG_REPORT, field_config:"all", max_records:1000 });
+    if(!(r && r.code===3000 && Array.isArray(r.data))) return [];
+    return r.data.filter(function(row){ return String(lookupId(row.RSID)||"").trim()===String(recordId).trim(); });
+  }catch(e){
+    console.warn("[Get-Rescue] loadTaskEditLog: could not read "+TASK_EDIT_LOG_REPORT+" (the panel will say so rather than showing an empty log)", e);
+    return null;
+  }
+}
 async function saveWithCoordFallback(payload, saveFn){
   for(let i=0;i<COORD_PRECISION_FALLBACKS.length;i++){
     if(i>0){
@@ -15043,9 +15306,36 @@ async function saveWithoutRejectedDistance(recordId, payload, err){
   const bad = rejectedColumnsFrom(err).filter(function(c){ return (c in payload) && KM_DISTANCE_FIELDS.indexOf(c)>=0; });
   if(!bad.length) throw err;
   const detail = bad.map(function(c){ return c+"="+JSON.stringify(payload[c]); }).join(", ");
+
+  /* A whole number first - 2026-10-17, user-confirmed that Mechanic_To_Breakdown
+     is a Creator "Number" field, which is integer-only, while the sibling km
+     fields on the same panel are Decimal. Rounding on REJECTION rather than
+     before every send keeps this self-correcting: change the field to Decimal in
+     Zoho and the real 10.5 is accepted first time, this retry never runs, and no
+     code changes. Skipped when the value is already whole, since then rounding
+     cannot be what Zoho objected to. */
+  const rounded = Object.assign({}, payload);
+  let anyRounded = false;
+  bad.forEach(function(c){
+    const n = Number(payload[c]);
+    if(isFinite(n) && Math.round(n) !== n){ rounded[c] = Math.round(n); anyRounded = true; }
+  });
+  if(anyRounded){
+    try{
+      const out = await updateTicket(recordId, rounded);
+      const asStored = bad.map(function(c){ return c+"="+JSON.stringify(rounded[c]); }).join(", ");
+      console.warn("[Get-Rescue] saveWithoutRejectedDistance: Zoho refused "+detail+" and accepted "+asStored+", so that field is a whole-number (Creator \"Number\") field. Change it to Decimal if the fraction matters - this retry then stops happening by itself.");
+      try{ toast("Saved. "+bad.join(", ")+" was rounded to "+asStored+" - that Zoho field only takes whole numbers.","err"); }catch(e){}
+      return out;
+    }catch(e2){
+      console.warn("[Get-Rescue] saveWithoutRejectedDistance: the rounded retry was refused too, so this is not a decimals problem. Dropping the field and saving the rest.", e2);
+    }
+  }
+
+  /* Last resort, unchanged: save everything else rather than lose the close. */
   const retry = Object.assign({}, payload);
   bad.forEach(function(c){ delete retry[c]; });
-  console.warn("[Get-Rescue] saveWithoutRejectedDistance: Zoho refused "+detail+", so the save is being retried without it. Everything else on this close is kept. Check that field's TYPE in Zoho - a Creator \"Number\" field is integer-only and will refuse a value like 10.5; its siblings on the same panel store decimals, so they are Decimal fields.", err);
+  console.warn("[Get-Rescue] saveWithoutRejectedDistance: Zoho refused "+detail+", so the save is being retried without it. Everything else on this close is kept.", err);
   const out = await updateTicket(recordId, retry);
   try{ toast("Saved. "+bad.join(", ")+" could not be stored ("+detail+") - that field's type in Zoho needs checking.","err"); }catch(e){}
   return out;
@@ -15101,6 +15391,12 @@ async function saveStep(advance){
          Assigning it here makes the freshly created record identical in shape
          to a reopened one, which is what the rest of the file already assumes. */
       state.record.ID=id;
+      /* Seed the edit-log baseline - 2026-10-17. A freshly created ticket never
+         went through openTicket(), so there was no snapshot and every edit made
+         before closing and reopening it went unlogged. Creating is not itself an
+         edit, so the values just saved become the baseline and the NEXT save is
+         what gets audited. */
+      snapshotTaskForEditLog(state.record);
       /* LOCK THE TICKET WE JUST CREATED — 2026-10-03, client-reported:
          "while CREATING a new ticket, when the agent reaches the second page
          (booking fee page), other agents are still allowed to open and edit
@@ -15163,6 +15459,9 @@ async function saveStep(advance){
       catch(e){ console.warn("[Get-Rescue] could not set Case_ID to", caseId, "on record", id, "— ticket was still created; Case_ID may be left at Zoho's own default:", e); }
     }
     else { await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p)); }
+    /* Audit the edit - 2026-10-17. After the save, never before: this is a
+       record of what WAS saved, and it must not be able to fail the save. */
+    logTaskEdits(state.recordId, payload).catch(function(e){ console.warn("[Get-Rescue] logTaskEdits rejected (non-blocking)", e); });
     // Real bug fixed (2026-08-19, user-reported live: assigning a vendor
     // then immediately saving Accept in the same session corrupted Status
     // to "Service Acceptance" — see buildPayload()'s own matching comment
@@ -15464,6 +15763,9 @@ async function saveClosure(){
        value with "" on every close. */
     if(!distanceNotComputedYet(r.Mechanic_To_Breakdown)) payload.Mechanic_To_Breakdown=r.Mechanic_To_Breakdown;
     await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
+    /* Audit the edit - 2026-10-17. After the save, never before: this is a
+       record of what WAS saved, and it must not be able to fail the save. */
+    logTaskEdits(state.recordId, payload).catch(function(e){ console.warn("[Get-Rescue] logTaskEdits rejected (non-blocking)", e); });
     // See uploadPendingFiles()'s own comment (awaited + folded into one toast
     // now, same fix as saveStep()'s matching call).
     const failedUploads = await uploadPendingFiles(state.recordId);
