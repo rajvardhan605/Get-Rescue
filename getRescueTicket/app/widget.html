@@ -10543,6 +10543,112 @@ async function findCallByUcid(ucid){
   const all = await apiGetReport(CONFIG.callLogReport, null, 500);
   return all.find(function(c){ return String(c.UCID==null?"":c.UCID).trim()===want; }) || null;
 }
+/* Every name Ozonetel might send a caller number, call id or direction under.
+   Copied verbatim from callCenter's own POP_* lists (2026-10-21) and kept in
+   step with them deliberately: if one app learns the real parameter name, the
+   other should already accept it.
+
+   ONLY DECLARED PAGE VARIABLES ARRIVE. A Creator widget runs in an iframe on a
+   different origin to the page, so window.parent.location is blocked and
+   document.referrer has its #fragment stripped by the browser - the SDK's
+   getQueryParams() is the only route, and it reports the variables declared on
+   the page. A name below that is not declared in Zoho simply never appears. */
+const POP_PHONE_KEYS = ["phone","Phone","callerId","callerID","CallerID","caller","Caller","mobile","Mobile","number","Number","from","From","customerNumber","CustomerNumber","ani","ANI","did","DID"];
+const POP_UCID_KEYS  = ["ucid","UCID","monitorUCID","monitorUcid","callId","callID","CallID","uuid"];
+const POP_TYPE_KEYS  = ["type","Type","callType","CallType","direction","Direction"];
+function popPick(params, keys){
+  for(const key of keys){
+    const v = params && params[key];
+    if(v!=null && String(v).trim()!=="") return String(v).trim();
+  }
+  return "";
+}
+/* The Call_Log row for this inbound call, creating it only if nothing else
+   already has - ported from callCenter 2026-10-21 (see this change's own note
+   at the top of the patch script).
+
+   THE EXISTING ROW ALWAYS WINS. findCallByUcid() runs first, so a row written
+   by callCenter, by recordRingingCall at ring time, or by an earlier load of
+   this same page is returned untouched, so a page refresh cannot duplicate.
+   It does NOT stop callCenter duplicating: that widget writes its row without
+   checking for one, so if both are on the page and race, two rows can result.
+   Remove callCenter from the page once this app is confirmed live - it is
+   redundant now that this function exists.
+
+   KEYED BY monitorUcid - 2026-10-21. Ozonetel names one call differently in
+   the ScreenPop URL (ucid=1622..., monitorUcid=2...) and in the end-of-call
+   push (UCID, monitorUCID). getCallbackStatus matches a row on either of the
+   push's ids; a row stored under the pop's plain ucid matched neither, so the
+   callback created a SECOND row and the call details never reached the ticket.
+   The pop's monitorUcid has the push's shape, so the row is keyed by it when
+   it arrives, and by ucid exactly as before when it does not.
+
+   NOT LINKED TO A TICKET. Create_Case is deliberately absent: per the client's
+   Ozonetel spec the RSID attaches at step 2, once the agent creates the case or
+   saves the assignment, and guessing it from the phone number here is what used
+   to attach calls to old cases.
+
+   Placed_By IS THE POINT. No server-side script writes it - it appears in zero
+   .deluge files - and callRowIsMine() needs it for the "this agent's own last
+   call" rule to offer anything at all. Writing it here is what revives both
+   that rule and the header Link Call button for an inbound call.
+
+   Best-effort throughout: every failure is logged and swallowed, exactly as
+   logCallAttempt() already behaves, so a refused write can never disturb a pop
+   that is otherwise working. */
+async function ensureInboundCallRow(ucid, phone10, direction, monitorUcid){
+  const popId = String(ucid||"").trim();
+  if(!popId) return null;   // nothing to identify a row by - never guess one
+  /* An un-substituted placeholder such as "$monitorUcid$" is treated as absent,
+     the same rule recordRingingCall.deluge applies to every pop parameter. */
+  let monId = String(monitorUcid||"").trim();
+  if(monId.indexOf("$")>=0 || monId===popId) monId = "";
+  const want = monId || popId;
+  try{
+    const existing = await findCallByUcid(want);
+    if(existing){
+      console.log("[Get-Rescue] ensureInboundCallRow: Call_Log row "+existing.ID+" already carries UCID "+want+" - left exactly as it is.");
+      return existing;
+    }
+    /* A row under the pop's plain ucid - written by callCenter, or by this app
+       before rows were keyed by monitorUcid. Re-keyed rather than duplicated,
+       and ONLY while still pending: RINGING / Incoming / Placed are words only
+       a row-creator writes, so a row still carrying one has not been completed
+       by any callback yet. A completed row is left exactly as it is. */
+    if(monId){
+      const legacy = await findCallByUcid(popId);
+      if(legacy){
+        const st = String(legacy.Call_Status||"").trim().toUpperCase();
+        if(st==="RINGING" || st==="INCOMING" || st==="PLACED"){
+          try{
+            await apiUpdateReport(CONFIG.callLogReport, legacy.ID, { UCID: monId });
+            console.log("[Get-Rescue] ensureInboundCallRow: re-keyed Call_Log row "+legacy.ID+" from the pop's ucid "+popId+" to its monitorUcid "+monId+", the id Ozonetel's end-of-call push uses - so the callback completes this row instead of creating a second one.");
+            return Object.assign({}, legacy, { UCID: monId });
+          }catch(reKeyErr){
+            console.warn("[Get-Rescue] ensureInboundCallRow: could not re-key row "+legacy.ID+" to "+monId+" (non-blocking - the row is used as it is, which is exactly the previous behaviour)", reKeyErr);
+            return legacy;
+          }
+        }
+        console.log("[Get-Rescue] ensureInboundCallRow: row "+legacy.ID+" carries the pop's ucid "+popId+" but is already "+(legacy.Call_Status||"completed")+" - left exactly as it is.");
+        return legacy;
+      }
+    }
+    const data = { UCID: want, Call_Status: "Incoming" };
+    if(phone10) data.Phone_Number = phone10;
+    if(direction) data.Call_Direction = direction;
+    if(LOGIN_EMAIL) data.Placed_By = LOGIN_EMAIL;
+    const newId = await logCallAttempt("", data);
+    if(!newId){
+      console.warn("[Get-Rescue] ensureInboundCallRow: could not create a Call_Log row for UCID "+want+". The call cannot be linked until a row exists - getCallbackStatus will create one when the call ends, and the header Link Call button works from that point.");
+      return null;
+    }
+    console.log("[Get-Rescue] ensureInboundCallRow: created Call_Log row "+newId+" keyed by "+(monId?("monitorUcid "+monId+" (the pop's ucid was "+popId+")"):("UCID "+popId+" - no monitorUcid reached this page, so the end-of-call callback may not recognise it; declare monitorUcid as a page variable"))+(phone10?(", from "+phone10):", no caller number arrived")+", unlinked - the ticket is attached when the agent creates the case or saves the assignment.");
+    return await findCallByUcid(want);
+  }catch(e){
+    console.warn("[Get-Rescue] ensureInboundCallRow failed (non-blocking - the pop still opens and the Link Call button remains)", e);
+    return null;
+  }
+}
 /* Links one call to one ticket, by UCID. Used by the pop for both routes.
    Never re-points a call that already belongs to a ticket - that row is another
    ticket's record of work. Returns true only when a link was actually written. */
@@ -16651,19 +16757,59 @@ async function handleCallCenterHandoff(){
        undefined and none of this ever ran. They are kept as aliases so an
        Ozonetel config still sending them works the moment they are declared. */
   const openId  = String(p.ticketId||p.ccOpenTicket||"").trim();
-  const popUcid = String(p.ucid||p.ccUcid||"").trim();
+  /* The declared names this function has always read come FIRST and are
+     unchanged; the key list is only a fallback behind them, so a page that
+     works today cannot start resolving a different value. */
+  const popUcid = String(p.ucid||p.ccUcid||popPick(p, POP_UCID_KEYS)||"").trim();
   // Held for the Link Call button too, not just the create-then-link path.
   if(popUcid) POP_CALL_UCID = popUcid;
   const wantNew = String(p.ccNewTicket||"").trim();
-  let phone     = String(p.ccPhone||"").replace(/\D/g,"").slice(-10);
+  /* callerID is what Ozonetel actually sends (confirmed from a live pop URL),
+     and ccPhone has never been a declared variable - so this used to be blank
+     every time and the number was only ever recovered from the Call_Log row
+     further down. Reading it here also means the row we may be about to
+     create carries the caller number. */
+  let phone     = String(p.ccPhone||popPick(p, POP_PHONE_KEYS)||"").replace(/\D/g,"").slice(-10);
+  const popType = popPick(p, POP_TYPE_KEYS) || "Inbound";
+  /* The pop's second call id, the one Ozonetel's end-of-call push recognises -
+     see ensureInboundCallRow(). Only arrives if declared as a page variable on
+     the Dashboard page; absent, everything below behaves exactly as before. */
+  const popMonitorUcid = String(p.monitorUcid||p.monitorUCID||p.MonitorUcid||"").trim();
+  /* Which page variables actually reached this widget - getQueryParams() only
+     reports DECLARED ones, so this one line answers "is monitorUcid declared?"
+     without guessing. */
+  if(Object.keys(p).length) console.log("[Get-Rescue] call pop: page variables received -", Object.keys(p).join(", "));
   if(!openId && !popUcid && !wantNew) return;
+
+  /* THE ROW FIRST - 2026-10-21. Every branch below depends on a Call_Log row
+     existing for this UCID: the openId branch links to it, the new-ticket
+     branch reads the caller number off it, and the link attempt after the
+     Create step searches for it. Ozonetel's ClientSide-only ScreenPop means
+     nothing else has written one yet. Awaited rather than fired and forgotten,
+     because those branches run immediately after and need it in place.
+
+     Safe to await: ensureInboundCallRow swallows its own failures and returns
+     null, so a Call_Log problem cannot stop the pop from opening the ticket. */
+  /* callId is the id ACTUALLY ON THE ROW - the pop's monitorUcid when the row
+     was keyed or re-keyed by it, otherwise the pop's ucid exactly as before.
+     Everything below links and looks up by it, so the ticket link and the
+     end-of-call callback always land on the same Call_Log record. */
+  let callId = popUcid;
+  if(popUcid){
+    const callRow = await ensureInboundCallRow(popUcid, phone, popType, popMonitorUcid);
+    const onRow = String((callRow && callRow.UCID)||"").trim();
+    if(onRow && onRow!==popUcid){
+      callId = onRow;
+      POP_CALL_UCID = callId;   // the header Link Call button offers this same row
+    }
+  }
 
   /* OPTIONS 1 AND 2 - open the ticket, and link the call to it if one came
      with the pop. The link is awaited before opening so the ticket renders with
      its call history already correct. */
   if(openId){
-    console.log("[Get-Rescue] call pop: opening ticket", openId, popUcid?("and linking call "+popUcid):"(no call id sent)");
-    if(popUcid){ await linkCallByUcid(popUcid, openId, true); }
+    console.log("[Get-Rescue] call pop: opening ticket", openId, callId?("and linking call "+callId):"(no call id sent)");
+    if(callId){ await linkCallByUcid(callId, openId, true); }
     const rec = await apiGetById(openId);
     if(rec){ openTicketOrClosure(rec); }
     else { toast("Couldn't open that ticket from the call pop - it may have been deleted","err"); }
@@ -16675,10 +16821,10 @@ async function handleCallCenterHandoff(){
      parameter: recordRingingCall.deluge wrote it when the phone rang. */
   if(popUcid && !phone){
     try{
-      const row = await findCallByUcid(popUcid);
+      const row = await findCallByUcid(callId);
       const fromRow = String((row && row.Phone_Number)||"").replace(/\D/g,"").slice(-10);
       if(fromRow){ phone = fromRow; console.log("[Get-Rescue] call pop: caller number read from the call log:", phone); }
-      else console.warn("[Get-Rescue] call pop: no phone number on the call row for UCID "+popUcid+" - the new ticket opens with the number blank.");
+      else console.warn("[Get-Rescue] call pop: no phone number on the call row for UCID "+callId+" - the new ticket opens with the number blank.");
     }catch(e){ console.warn("[Get-Rescue] call pop: could not read the caller number from the call log (non-blocking)", e); }
   }
   console.log("[Get-Rescue] call pop: new ticket for caller", phone||"(no number)");
@@ -16686,8 +16832,8 @@ async function handleCallCenterHandoff(){
   if(popUcid){
     // Held until the ticket exists - there is no record id to link to until the
     // agent saves the Create step.
-    PENDING_CALL_UCID = popUcid;
-    console.log("[Get-Rescue] call pop: will link call UCID", popUcid, "once this ticket is created.");
+    PENDING_CALL_UCID = callId;
+    console.log("[Get-Rescue] call pop: will link call UCID", callId, "once this ticket is created.");
   }
   if(phone){
     // Both names written, the same pair every other create path in this file

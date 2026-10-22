@@ -18,7 +18,7 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 
 | Profile / Widget | Forms needing **Add** | Reports needing **View** | Reports needing **View + Edit** |
 |---|---|---|---|
-| **Agent** (`getRescueTicket`) | `Create_Case`, `Invites`, `Task_Edit_Log` | `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Vendors_Report`, `Technicians_Report`, `Client_Report`, `Rate_Master_Report`, `Invites_Report` (duplicate check before creating), `Task_Edit_Log_Report` | `Agent_Ticket_Report` |
+| **Agent** (`getRescueTicket`) | `Create_Case`, `Invites`, `Task_Edit_Log`, `Call_Log` | `Vehicle_Master_Report`, `Vehicle_Issue_Report`, `Vendors_Report`, `Technicians_Report`, `Client_Report`, `Rate_Master_Report`, `Invites_Report` (duplicate check before creating), `Task_Edit_Log_Report` | `Agent_Ticket_Report`, `Call_Log_Report` |
 | **Kanban / Ops board** (`ticketKanbanGetRescue`) | `Create_Case` (only if a ticket is somehow opened before it has an ID — see its own code comment) | same option reports as Agent | `Agent_Ticket_Report` |
 | **Vendor** (`vendorTicket`) | `Task_Rejections`, `Invites` (fleet hand-off only) | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (corrected 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report` (read for fleet hand-off list, but see note below), `Invites_Report` |
 | **Technician** (`technicianTicket`) | `Task_Rejections` | `Vehicle_Master_Report`, `Vehicle_Issue_Report` (added 2026-09-13 — see own section) | `Agent_Ticket_Report`, `Technicians_Report`, `Invites_Report` |
@@ -28,7 +28,8 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 | **Agent Performance** (`agentPerformance`) | — | `Agent_Ticket_Report` | — (read-only, aggregate stats only) |
 | **Toggle** (`toggleGetRescue` — superseded, see root `README.md`) | — | — | `Technicians_Report` (this widget was never updated for the `Vendors_Report` unification — see its own section below) |
 | **Operations Manager — Fleet Map** (`opsMap`) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report`, `Agent_Report` | — |
-| **Call Center** (`callCenter`) | `Call_Log` (⚠ not yet created — see its own section below) | — | `Call_Log_Report` (⚠ not yet created) |
+| **Call Center** (`callCenter`) — ⚠ **retired, not in use since 2026-10-14** | — | — | — (do not deploy; `Call_Log` access is now the Agent app's, above) |
+| **Inbound Call Pop** (`inboundCallPop`) | — | — | — (a public page — reads only through the `getInboundCallerInfo` Custom API, see its own section below) |
 
 ---
 
@@ -46,6 +47,9 @@ The back-office agent creates and drives a ticket through its entire lifecycle, 
 - **`Rate_Master_Report` — View.** Fee calculation rules (Quote step).
 - **`Invites` (form) — Add.** `syncInvites()` creates one `Invites_Report` record per invited vendor when the Assignment step is saved.
 - **`Invites_Report` — View.** Read before adding, so `syncInvites()` never creates a duplicate record for the same ticket/vendor pair on a re-save.
+- **`Call_Log` (form) — Add.** Created in Zoho 2026-09-14. `logCallAttempt()` writes one row per call placed from a ticket ("📲 Call via System"), including failed attempts. Best-effort: a refused write is logged and swallowed, never blocking the call itself.
+- **`Call_Log_Report` — View + Edit.** Read for the call-history panel on the Final Closure page, and **written** by `writeCallLink()` to set `Create_Case` when a call is attached to a ticket (the header "Link Call" button, and the automatic link after the Create step). ⚠ **Edit is what makes call linking work at all** — without it the update is refused and the call stays unattached. `Create_Case` must also be on this report's **layout**: a field missing from a layout reads back empty however it was written, which `writeCallLink()` detects and reports on screen.
+
 - **Custom APIs `getVoiceCallbackDetails`/`getCallbackStatus`** — added 2026-09-14. Same two Ozonetel-backed Custom APIs `callCenter` already uses (see that widget's own section below) — this widget now also calls them directly, for the Create step's "📲 Call via System" button. Not a Form/Report permission (Custom APIs aren't governed by this file's usual View/Add/Edit model) — noted here only for completeness/consistency, since this is a new dependency this widget didn't have before.
 
 - **`Task_Edit_Log` (form) — Add.** Added 2026-10-17, Task Details spec group 7 ("ONLY VIEW - LOGS OF ALL DATA EDITS FOR THE TASK"). `logTaskEdits()` writes one row per field that actually changed, after each save on the wizard and the Final Closure page. Best-effort: a refused write is swallowed and logged, so a missing permission degrades to an empty log rather than a failed save.
@@ -132,9 +136,17 @@ Standalone widget, added 2026-08-31, retired 2026-09-04 in favor of `getRescueTi
 
 New standalone widget, added 2026-09-10 — places/checks voice callback calls via two user-built Custom APIs (`getVoiceCallbackDetails`/`getCallbackStatus`, Ozonetel-backed), and logs a history of calls placed. Not embedded on any ticket — a free-standing page, phone number entered manually. See its own `README.md` for the full writeup and exact field list.
 
-- **`Call_Log` (form) — Add.** ⚠ **Does not exist yet** — needs creating in Zoho Studio before call history works at all (placing/checking calls itself doesn't depend on this, only the history list does — the widget degrades honestly with an on-screen banner if this is missing). Fields needed: `Phone_Number`, `Reference_ID`, `Callback_Message`, `UCID`, `Call_Status`, `Call_Duration`, `Call_Outcome`, `Placed_By` (all Single Line Text) — see `callCenter/README.md` for the full spec.
-- **`Call_Log_Report` — View + Edit.** ⚠ **Does not exist yet**, same as above — the report exposing `Call_Log`'s records, read for the history table and updated in place each time a call's status is re-checked (rather than adding a new row per check).
+- **`Call_Log` (form) — Add.** ✅ **Created in Zoho 2026-09-14** (this entry previously said it did not exist). Beyond the original `Phone_Number`, `Reference_ID`, `Callback_Message`, `UCID`, `Call_Status`, `Call_Duration`, `Call_Outcome`, `Placed_By`, it now also carries `Create_Case` (the ticket link), `Call_Direction`, `Agent_Name` and the call-detail fields `getCallbackStatus` writes. **This widget is retired — the access that matters is the Agent app's, listed in its own section above.**
+- **`Call_Log_Report` — View + Edit.** ✅ **Created in Zoho 2026-09-14**, same as above. Confirm `Create_Case` is on its layout — see the Agent section's own note on why.
 - Does **not** need access to `Create_Case`/`Agent_Ticket_Report` or any other existing form/report — deliberately standalone, no ticket lookups.
+
+## Inbound Call Pop (`inboundCallPop`)
+
+The screen-pop Ozonetel shows its agents when a call rings. Lives on a **public** Creator page (`InboundCall`) rather than a portal page, because Creator app/portal pages refuse to be framed by a third party and Ozonetel renders the pop inside its own iframe — confirmed live. A public page has no logged-in Zoho session, so it cannot read any report directly.
+
+- **No form or report access at all.** Every read goes through the `getInboundCallerInfo` Custom API, carrying its own PublicKey (a Custom API called with no logged-in user is rejected `{code: 9370}` without one).
+- **`getInboundCallerInfo` — the Custom API must have PublicKey authentication enabled**, and its key filled into `API_PUBLIC_KEYS` in the page source. Already set.
+- Writes nothing. `recordRingingCall` (server-side ScreenPop) creates the `Call_Log` row; this page deliberately does not, to avoid racing it and producing duplicates.
 
 ## Open questions this file doesn't resolve on its own
 

@@ -149,6 +149,39 @@ var API_PUBLIC_KEYS = {
    to go. */
 var CRM_PAGE_URL = "https://getrescued.zohocreatorportal.in/#Page:Dashboard_2";
 
+/* The call this pop is for. Module scope rather than a local in boot(),
+   because ticketHtml() and footHtml() both need it and both run after boot()
+   has resolved it. Empty whenever Ozonetel sent no usable call id. */
+var CALL_UCID = "";
+
+/* Builds a Dashboard deep link carrying the page variables the agent app
+   already declares and reads - ticketId and ucid, see handleCallCenterHandoff()
+   in getRescueTicket/app/widget.html. Creator routes a portal page's own query
+   string after the #hash, hence "?" appended to a URL that already ends in
+   #Page:Dashboard_2.
+
+   A parameter is appended ONLY when it has a real value, so a pop that
+   arrived without a UCID produces exactly the URL this page has always used
+   and nothing about today's behaviour changes. */
+function crmUrl(ticketId, ucid){
+  var qs = [];
+  if(ticketId) qs.push("ticketId=" + encodeURIComponent(ticketId));
+  if(ucid)     qs.push("ucid=" + encodeURIComponent(ucid));
+  return qs.length ? (CRM_PAGE_URL + "?" + qs.join("&")) : CRM_PAGE_URL;
+}
+
+/* The panel footer. The plain "Open Get-Rescue" link is left EXACTLY as it
+   was - no parameters - so an agent who already relies on it still gets the
+   dashboard. The new-ticket link is added BESIDE it, and only when a real
+   UCID arrived: a ucid with no ticketId is what tells the agent app to open a
+   fresh ticket for this call and link it once saved (Ozonetel spec point 4). */
+function footHtml(){
+  var plain = '<a href="' + esc(CRM_PAGE_URL) + '" target="_blank" rel="noopener">Open Get-Rescue &rarr;</a>';
+  if(!CALL_UCID) return plain;
+  return '<a href="' + esc(crmUrl("", CALL_UCID)) + '" target="_blank" rel="noopener">New ticket for this call &rarr;</a>' +
+         ' &middot; ' + plain;
+}
+
 /* A ticket still being worked, so the agent can tell "this caller has a live
    job" from "this caller has history". Mirrors callCenter's own popIsActive():
    anything closed, cancelled or rejected is finished; everything else is not. */
@@ -240,7 +273,11 @@ function ticketHtml(t){
   var bits = [];
   if(t.vehicle) bits.push(esc(t.vehicle));
   if(t.status)  bits.push(esc(t.status));
-  var href = CRM_PAGE_URL;
+  /* Was the bare dashboard URL, which meant clicking a caller's own ticket in
+     this panel did not open that ticket at all. ticketId opens it; the ucid
+     alongside makes the agent app link this call to it on arrival (Ozonetel
+     spec options 1 and 2, handleCallCenterHandoff's openId branch). */
+  var href = crmUrl(t.id, CALL_UCID);
   return '<a class="tk' + (live ? " live" : "") + '" href="' + esc(href) + '" target="_blank" rel="noopener">' +
     '<div class="r1">' +
       '<span class="cid">' + esc(t.caseId || ("#" + (t.id || ""))) + '</span>' +
@@ -260,7 +297,7 @@ function renderTickets(data, phone){
   if(!list.length){
     $("body").innerHTML =
       '<div class="state new"><b>New customer</b>No existing ticket carries this number. Create a ticket in the CRM.</div>';
-    $("foot").innerHTML = '<a href="' + esc(CRM_PAGE_URL) + '" target="_blank" rel="noopener">Open Get-Rescue &rarr;</a>';
+    $("foot").innerHTML = footHtml();
     return;
   }
   var liveCount = list.filter(isLive).length;
@@ -268,7 +305,7 @@ function renderTickets(data, phone){
     '<div class="count">' + list.length + ' ticket' + (list.length === 1 ? "" : "s") +
       (liveCount ? " &middot; " + liveCount + " open" : "") + '</div>' +
     '<div class="list">' + list.map(ticketHtml).join("") + '</div>';
-  $("foot").innerHTML = '<a href="' + esc(CRM_PAGE_URL) + '" target="_blank" rel="noopener">Open Get-Rescue &rarr;</a>';
+  $("foot").innerHTML = footHtml();
 }
 
 function renderError(msg){
@@ -293,6 +330,22 @@ async function boot(){
   var phone = last10(rawPhone);
   $("num").textContent = rawPhone;
   $("meta").textContent = type + (ucid ? (" · UCID " + ucid) : "");
+
+  /* Set AFTER the line above so the panel still shows the agent exactly what
+     arrived, placeholder or not - that display is the quickest way to tell
+     whether Ozonetel is sending a real call id at all.
+
+     Same guard recordRingingCall.deluge applies server-side: a ScreenPop URL
+     whose token was never substituted arrives as literal "$UCID$", and a link
+     built from that would hand the agent app a call id that can never match a
+     Call_Log row. Treated as no UCID, which falls back to today's behaviour. */
+  if(ucid.indexOf("$") >= 0){
+    console.warn("[GR-InboundPop] the UCID arrived as \"" + ucid + "\", which looks like an un-substituted placeholder - ignoring it. Ozonetel's ScreenPop URL needs its real UCID token for the call to link to a ticket.");
+    CALL_UCID = "";
+  } else {
+    CALL_UCID = ucid;
+    if(!ucid) console.warn("[GR-InboundPop] no UCID arrived with this pop, so links out carry no call id and the call cannot be linked to a ticket automatically. Add the UCID token to Ozonetel's ScreenPop URL. Parameters that did arrive are logged above.");
+  }
 
   /* Guard against an un-substituted token. Ozonetel's URL to Push was proven
      to pass $data$ / $UCID$ through as literal text, so the same can happen

@@ -1,4 +1,4 @@
-string createTicket(string customerName, string mobile, string email, string vehicle, string issue, string recordId, string callerID, string ucid)
+string createTicket(string customerName, string mobile, string email, string vehicle, string issue, string recordId, string callerID, string ucid, string monitorUcid)
 {
 	returnstring = "";
 	try
@@ -95,6 +95,18 @@ string createTicket(string customerName, string mobile, string email, string veh
 		{
 			hasUcid = true;
 		}
+		/* monitorUcid - 2026-10-22. The id Ozonetel's end-of-call push uses for this
+		   call (the pop shows it as "Monitor UCID", 2650...), as opposed to the
+		   ScreenPop's own ucid (1622...). OPTIONAL: every existing caller omits it
+		   and nothing below changes for them. Same placeholder guard as above. */
+		monitorUcidText = ifnull(monitorUcid,"").trim();
+		if(monitorUcidText.contains("$"))
+		{
+			monitorUcidText = "";
+		}
+		// The ticket this request created or updated - set in each branch below,
+		// read by the Call_Log link after them.
+		linkTicketId = 0;
 		/* The "at least one field must be supplied" gate on UPDATE was removed
 		   2026-09-29 (user request). An update that sends only a recordId now
 		   succeeds as a no-op instead of returning ERROR: the record is found,
@@ -278,6 +290,7 @@ string createTicket(string customerName, string mobile, string email, string veh
 				changedFields = changedFields + "UCID ";
 			}
 			result.put("code","SUCCESS");
+			linkTicketId = targetId;
 			result.put("mode","updated");
 			result.put("message","Service request updated");
 			result.put("recordId",targetId);
@@ -327,6 +340,7 @@ string createTicket(string customerName, string mobile, string email, string veh
 			caseId = "RSID" + newId.toString().subText(newId.toString().length() - 6);
 			updateRec = Create_Case[ID == newId];
 			updateRec.Case_ID=caseId;
+			linkTicketId = newId;
 			result.put("code","SUCCESS");
 			result.put("mode","created");
 			result.put("message","Service request created");
@@ -340,6 +354,160 @@ string createTicket(string customerName, string mobile, string email, string veh
 			if(unmatchedIssues != "")
 			{
 				result.put("unmatchedIssues",unmatchedIssues);
+			}
+			returnstring = result.toString();
+		}
+		/* CALL_LOG LINK - 2026-10-22. See this change's own note: the pop's "Link
+		   call" arrives here, and the end-of-call push completes whichever Call_Log
+		   row carries its id - so the row is keyed by monitorUcid and linked HERE,
+		   instead of the link living only on the ticket. Runs only when the request
+		   carried a call id; its own try/catch means it can never fail the ticket. */
+		callKey = monitorUcidText;
+		if(callKey == "")
+		{
+			callKey = ucidText;
+		}
+		doCallLink = false;
+		if(linkTicketId > 0)
+		{
+			if(callKey != "")
+			{
+				doCallLink = true;
+			}
+		}
+		if(doCallLink)
+		{
+			callLogNote = "";
+			try
+			{
+				// Last 10 digits, the shape every other Call_Log writer stores.
+				callPhone = callerIdText;
+				if(callPhone == "")
+				{
+					callPhone = ifnull(mobile,"").trim();
+				}
+				callPhone = callPhone.replaceAll("[^0-9]","");
+				if(callPhone.length() > 10)
+				{
+					callPhone = callPhone.subText(callPhone.length() - 10);
+				}
+				// 1. A row already under this id: the push got here first (linked after
+				//    hang-up), or getRescueTicket created it from the Dashboard pop.
+				callRowId = 0;
+				for each keyRow in Call_Log[UCID == callKey]
+				{
+					if(callRowId == 0)
+					{
+						callRowId = keyRow.ID.toString().toLong();
+					}
+				}
+				// 2. A row under the pop's plain ucid, written before rows were keyed by
+				//    monitorUcid. Linked either way; RE-KEYED only while still pending, so
+				//    the push can find it - a completed row keeps the id it has.
+				reKey = false;
+				tryLegacy = false;
+				if(callRowId == 0)
+				{
+					if(monitorUcidText != "")
+					{
+						if(ucidText != "")
+						{
+							if(ucidText != monitorUcidText)
+							{
+								tryLegacy = true;
+							}
+						}
+					}
+				}
+				if(tryLegacy)
+				{
+					pendingStatuses = "|RINGING|INCOMING|PLACED|";
+					for each legacyRow in Call_Log[UCID == ucidText]
+					{
+						if(callRowId == 0)
+						{
+							callRowId = legacyRow.ID.toString().toLong();
+							legacyStatusText = ifnull(legacyRow.Call_Status,"").toString();
+							legacyKey = "|" + legacyStatusText.trim().toUpperCase() + "|";
+							if(pendingStatuses.contains(legacyKey))
+							{
+								reKey = true;
+							}
+						}
+					}
+				}
+				if(callRowId > 0)
+				{
+					// Only Create_Case is set (plus the re-key and a blank phone). Status,
+					// duration and everything the push wrote are left exactly as they are.
+					// An existing link is replaced: the agent clicking Link call on this
+					// ticket is the most direct statement of which ticket the call is for.
+					logRec = Call_Log[ID == callRowId];
+					previousLink = "";
+					prevRef = logRec.Create_Case;
+					if(prevRef != null)
+					{
+						previousLink = prevRef.toString().trim();
+					}
+					logRec.Create_Case = linkTicketId;
+					if(reKey)
+					{
+						logRec.UCID = monitorUcidText;
+					}
+					existingPhone = ifnull(logRec.Phone_Number,"").toString().trim();
+					if(existingPhone == "")
+					{
+						if(callPhone != "")
+						{
+							logRec.Phone_Number = callPhone;
+						}
+					}
+					callLogNote = "LINKED_EXISTING";
+					result.put("callLogRowId",callRowId.toString());
+					if(previousLink != "")
+					{
+						if(previousLink != linkTicketId.toString())
+						{
+							result.put("callLogPreviousTicket",previousLink);
+						}
+					}
+					if(reKey)
+					{
+						result.put("callLogReKeyedFrom",ucidText);
+					}
+					reKeyNote = "";
+					if(reKey)
+					{
+						reKeyNote = " and re-keyed " + ucidText + " -> " + monitorUcidText;
+					}
+					info "createTicket: Call_Log " + callRowId + " linked to ticket " + linkTicketId + reKeyNote + ".";
+				}
+				else
+				{
+					// 3. No row yet - the call is still in progress. Created now, keyed by
+					//    the push's id, so the push completes this row at hang-up.
+					newLogId = insert into Call_Log
+					[
+						UCID=callKey
+						Phone_Number=callPhone
+						Call_Status="Incoming"
+						Create_Case=linkTicketId
+					];
+					callLogNote = "CREATED_LINKED";
+					result.put("callLogRowId",newLogId.toString());
+					info "createTicket: Call_Log " + newLogId + " created under " + callKey + ", linked to ticket " + linkTicketId + ".";
+				}
+			}
+			catch (callLogEx)
+			{
+				callLogNote = "FAILED - the ticket itself was saved. " + callLogEx.toString();
+				info "createTicket: Call_Log link failed (ticket unaffected): " + callLogEx.toString();
+			}
+			result.put("callLog",callLogNote);
+			result.put("callLogKey",callKey);
+			if(monitorUcidText == "")
+			{
+				result.put("callLogWarning","No monitorUcid was sent, so the row is keyed by the ScreenPop ucid. The end-of-call push may not recognise it and can create a second, unlinked row. Send monitorUcid.");
 			}
 			returnstring = result.toString();
 		}
