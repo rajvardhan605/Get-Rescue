@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get-Rescue · Vendor Payment Info</title>
+<script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800;900&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+:root{
+  --signal:#F15A22; --signal-soft:#FCE9DF;
+  --ink:#15171C; --paper:#FBFAF7; --card:#FFFFFF; --worktop:#EDEAE3;
+  --line:#E6E2DA; --line-strong:#C7C1B4; --muted:#6C665B; --muted-2:#8C8578; --text:#20222A;
+  --stop:#E23A2E; --stop-soft:#FBE4E2;
+  --f-disp:'Barlow Semi Condensed',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,monospace;
+  --r:14px; --sh-1:0 1px 2px rgba(20,22,28,.05),0 3px 12px rgba(20,22,28,.06);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;max-width:100%;overflow-x:hidden}
+body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1400px;margin:0 auto;padding:20px 18px 60px}
+.hdr{margin-bottom:16px}
+.hdr h1{font-family:var(--f-disp);font-size:26px;font-weight:800;color:var(--ink);text-wrap:balance}
+.hdr .sub{font-family:var(--f-mono);font-size:12px;color:var(--muted);margin-top:2px}
+
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r);box-shadow:var(--sh-1);padding:14px 16px;margin-bottom:16px}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld label{font-family:var(--f-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.fld input{font:inherit;padding:8px 10px;border:1.5px solid var(--line-strong);border-radius:10px;background:var(--card);color:var(--text);min-width:0}
+.fld input:focus{outline:2px solid var(--signal);outline-offset:1px}
+.btn{font-family:var(--f-disp);font-weight:800;font-size:14px;letter-spacing:.02em;padding:9px 18px;border-radius:10px;
+  border:none;background:var(--signal);color:#fff;cursor:pointer}
+.btn:hover{filter:brightness(1.05)}
+.btn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* (A) the two collapsible sections */
+.sec{border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--sh-1);margin-bottom:14px;overflow:hidden}
+.sec-head{display:flex;align-items:center;gap:10px;width:100%;padding:13px 16px;background:var(--worktop);border:none;
+  cursor:pointer;font:inherit;text-align:left;color:var(--text)}
+.sec-head b{font-family:var(--f-disp);font-size:17px;font-weight:800}
+.sec-head .meta{color:var(--muted);font-size:12.5px;font-family:var(--f-mono)}
+.sec-head .spacer{flex:1}
+.sec-body{display:none;padding:12px}
+.sec.on .sec-body{display:block}
+.tog{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;border:1.5px solid var(--line-strong);
+  background:var(--card);font-weight:800;font-size:16px;cursor:pointer;line-height:1;color:var(--text);flex:none}
+.tog:focus-visible,.sec-head:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+/* each wide table scrolls inside its own box, never the page */
+.gridwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.grid{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
+.grid th,.grid td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+.grid th{font-weight:700;background:var(--worktop);font-size:12px}
+.grid td.num,.grid th.num{text-align:right;font-variant-numeric:tabular-nums}
+.grid tr:last-child > td{border-bottom:none}
+.grid tr.txn td{vertical-align:middle}
+.grid tr.txn.open > td{background:var(--signal-soft)}
+.grid tr.detail > td{background:var(--worktop);padding:10px}
+.grid tr.total td{font-weight:800;border-top:2px solid var(--line-strong)}
+.sub2{font-size:11.5px;color:var(--muted)}
+
+.empty{color:var(--muted-2);font-size:13px;text-align:center;padding:30px 8px;font-family:var(--f-mono)}
+.note{font-size:12.5px;color:var(--muted);margin-top:6px}
+.center-state{text-align:center;padding:60px 16px;color:var(--muted)}
+.spin{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--signal-soft);border-top-color:var(--signal);
+  animation:spin .7s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){ .spin{animation:none} }
+.state-err{background:var(--stop-soft);color:var(--stop);border-radius:12px;padding:16px;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <h1>Vendor Payment Info</h1>
+    <div class="sub" id="vendorLine">Loading…</div>
+  </div>
+
+  <div class="filters">
+    <div class="fld"><label for="fromDate">Transaction date from</label><input type="date" id="fromDate"></div>
+    <div class="fld"><label for="toDate">To</label><input type="date" id="toDate"></div>
+    <button class="btn" id="searchBtn" type="button">Search</button>
+  </div>
+
+  <div id="results"><div class="center-state"><div class="spin"></div></div></div>
+</div>
+<script>
+/* =====================================================================
+   Get-Rescue — Vendor Payment Info widget (2026-10-22)
+
+   Runs in the LOGGED-IN VENDOR's own portal and shows only that vendor's own
+   recorded payments - the client's hand-drawn sketch, as a standalone widget
+   (explicitly not part of getRescueTicket). Two collapsible sections:
+
+     (B) PAYMENT VIEW - one row per fee transaction: Vendor ID / Transaction
+         Date / Transaction ID / Paid Amt, expanding (+) to the cases it paid:
+         1 RS ID, 2 Accept Date/Time, 3 Case Status, 4 Vehicle, 5 Service,
+         6 Base Fee, 7 km Fee, 8 Extra, 9 Net Fee, 10 TDS Rate, 11 TDS Amt,
+         12 Cash Collected, 13 Balance Amt, 14 Final Payable
+     (C) GST VIEW - one row per GST remittance, expanding to fields 1-9 plus
+         15 GST Applicable, 16 GST %, 17 GST Amt (and GST Paid, so the case
+         rows add up to the transaction).
+
+   ONE VENDOR, ENFORCED ON THE SERVER. Every case comes from the
+   getVendorPayments Custom API, which works out who is logged in itself
+   (zoho.loginuser -> Vendors.Email) and refuses a request for any other
+   vendor. The browser never receives another vendor's cases, and never reads
+   Agent_Ticket_Report directly - a Vendor portal profile is refused that report
+   anyway (see vendorPerformance), and a direct read would have downloaded every
+   vendor's cases into this browser to filter here.
+
+   READ-ONLY. No write of any kind - the API is read-only too.
+
+   FROZEN FIGURES. Every money column is the value stored on the case when
+   Accounts Payable recorded the payment. Three sketch fields are derived:
+     - Base Fee  = Vendor_Gross_Fee - Vendor_KM_Fee  (Gross = Base + km, plus
+                   wait/overtime fees, which are not yet configured anywhere)
+     - TDS Rate  = TDS_Amount / Vendor_Net_Fee - the rate actually applied
+     - GST %     = GST_Payable / Vendor_Net_Fee when GST was charged, else
+                   VENDOR_GST_RATE when applicable, else 0
+
+   GST GROUPING. GST paid together with the fee has no date/UTR of its own, so
+   it is listed under the fee's transaction and marked "paid with the fee". A
+   case whose GST went in two separate remittances keeps only its latest GST
+   date/UTR and a running GST_Paid total, so it appears once, under the latest.
+   ===================================================================== */
+const CONFIG = {
+  appName: "get-rescue",
+  workspace: "getrescued",
+  paymentsApi: "getVendorPayments",
+  vendorEmailField: "Email",
+  vendorNameField: "vendor_name",
+  defaultDays: 90
+};
+const VENDOR_GST_RATE = 18;   // same constant getRescueTicket's GST calculation uses
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+/* Same self-scoped report first, full report second, as vendorPerformance. */
+const VENDOR_SELF_REPORTS = ["My_Availability_Vendor", "Vendors_Report"];
+
+let LOGIN_EMAIL = "";
+let MY_VENDOR_ID = "";        // best local guess; the server makes the real decision
+let VENDOR = null;            // { id, name, fleetId, gstApplicable } as the server resolved it
+let CASES = [];
+let RANGE = null;
+const SEC_OPEN = new Set(["fee"]);   // Payment View starts open, GST View collapsed
+const TXN_OPEN = new Set();          // expanded transactions, kept across re-renders
+
+/* ------------------------------ basics ------------------------------ */
+const $ = (id) => document.getElementById(id);
+function esc(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function val(r, key){ const v = r ? r[key] : null; return v==null ? "" : String(v); }
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function startOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0); }
+function endOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999); }
+/* Zoho dates arrive as "22-Oct-2026", "22-Oct-2026 10:15:00" or with AM/PM. */
+function parseAnyDateTime(str){
+  if(!str) return null;
+  const s = String(str).trim();
+  const native = new Date(s);
+  if(!isNaN(native)) return native;
+  let m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i);
+  if(m){
+    const mi = MON.findIndex(function(x){ return x.toLowerCase()===m[2].toLowerCase(); });
+    if(mi<0) return null;
+    let h = Number(m[4])%12; if(/pm/i.test(m[7])) h+=12;
+    const d = new Date(Number(m[3]), mi, Number(m[1]), h, Number(m[5]), Number(m[6]));
+    return isNaN(d) ? null : d;
+  }
+  m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{1,2}):(\d{2}):(\d{2}))?$/);
+  if(m){
+    const mi = MON.findIndex(function(x){ return x.toLowerCase()===m[2].toLowerCase(); });
+    if(mi<0) return null;
+    const d = new Date(Number(m[3]), mi, Number(m[1]), Number(m[4]||0), Number(m[5]||0), Number(m[6]||0));
+    return isNaN(d) ? null : d;
+  }
+  return null;
+}
+
+/* ------------------------------ Zoho ------------------------------ */
+function resolve(method){
+  const C = window.ZOHO && ZOHO.CREATOR; if(!C) return null;
+  const spaces = [C.DATA, C.PUBLISH, C.META, C.UTIL, C.FILE, C.API];
+  for(let i=0;i<spaces.length;i++){ const ns=spaces[i]; if(ns && typeof ns[method]==="function") return ns[method].bind(ns); }
+  return null;
+}
+async function apiGetReport(report){
+  const fn = resolve("getRecords"); if(!fn) return [];
+  try{
+    const r = await fn({ app_name:CONFIG.appName, report_name:report, field_config:"all", max_records:1000 });
+    return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
+  }catch(e){ console.warn("[GR-VendorPayInfo] "+report+" read failed (expected on some portal profiles)", e); return []; }
+}
+/* The vendor's own record, the way vendorPerformance finds it. Only a HINT for
+   the API: getVendorPayments identifies the caller from the login on the
+   server, so a portal profile that can read neither report still works. */
+async function resolveMyVendorId(){
+  if(!LOGIN_EMAIL) return "";
+  const wanted = LOGIN_EMAIL.trim().toLowerCase();
+  for(const reportName of VENDOR_SELF_REPORTS){
+    const recs = await apiGetReport(reportName);
+    if(!recs.length) continue;
+    let mine = recs.find(function(r){ return String(r[CONFIG.vendorEmailField]||"").trim().toLowerCase()===wanted; });
+    if(!mine && recs.length===1 && reportName!=="Vendors_Report") mine = recs[0];   // self-scoped report, one row
+    if(mine) return String(mine.ID);
+  }
+  return "";
+}
+async function loadMyPayments(){
+  const fn = resolve("invokeCustomApi");
+  if(!fn) throw new Error("This page could not reach Zoho's Custom API service.");
+  const res = await fn({ api_name:CONFIG.paymentsApi, workspace_name:CONFIG.workspace, http_method:"POST",
+                         content_type:"application/json", payload:{ vendorId: MY_VENDOR_ID } });
+  let data = res;
+  if(data && typeof data.result==="string"){
+    try{ data = JSON.parse(data.result); }
+    catch(e){ throw new Error("The payments service replied with something unreadable. Check the "+CONFIG.paymentsApi+" execution log in Zoho."); }
+  }
+  if(!data || data.code!=="SUCCESS" || !Array.isArray(data.tickets)){
+    throw new Error((data && data.message) || ("The payments service did not return your payments. Check the "+CONFIG.paymentsApi+" execution log in Zoho."));
+  }
+  console.log("[GR-VendorPayInfo] "+data.tickets.length+" paid case(s) for vendor "+(data.vendor&&data.vendor.id)+" (identified by "+data.verifiedBy+").");
+  return data;
+}
+
+/* ------------------------------ figures ------------------------------ */
+function num(r, key){ const n = Number(val(r,key)); return isFinite(n) ? n : 0; }
+function has(r, key){ return val(r,key).trim() !== ""; }
+function money(n){ return "₹"+(Number(n)||0).toFixed(2); }
+function moneyField(r, key){ return has(r,key) ? money(num(r,key)) : "—"; }
+function isFeePaid(r){ return val(r,"Vendor_Payment_Status").trim().toUpperCase()==="PAID"; }
+function baseFeeText(r){
+  if(!has(r,"Vendor_Gross_Fee")) return "—";
+  return money(Math.round((num(r,"Vendor_Gross_Fee") - num(r,"Vendor_KM_Fee"))*100)/100);
+}
+/* Final_Payable is what was due; Vendor_Amount_Paid is the same figure written
+   beside it, standing in only on a case recorded before Final_Payable existed. */
+function finalPayable(r){ return has(r,"Final_Payable") ? num(r,"Final_Payable") : num(r,"Vendor_Amount_Paid"); }
+function caseLabel(r){ return val(r,"Case_ID") || ("#"+val(r,"ID")); }
+function acceptedAtText(r){
+  const svc = val(r,"Service_Type").toUpperCase();
+  const raw = (svc==="TOW" ? val(r,"Service_Acceptance_For_Tow") : val(r,"Service_Acceptance")) ||
+              val(r,"Service_Acceptance") || val(r,"Service_Acceptance_For_Tow");
+  if(!raw) return "—";
+  const d = parseAnyDateTime(raw);
+  return d ? d.toLocaleString() : raw;
+}
+function caseStatusText(r){
+  const cs = val(r,"Closure_Status").trim();
+  if(cs) return cs;
+  const st = val(r,"Status").trim();
+  return st ? st+" (not closed by agent yet)" : "—";
+}
+function serviceText(r){ return val(r,"Issue_Names").trim() || val(r,"Service_Type").trim() || "—"; }
+
+/* ------------------------------ grouping ------------------------------ */
+/* One vendor only, so a transaction is its date + bank reference. */
+function groupTransactions(kind){
+  const groups = new Map();
+  let undated = 0;
+  CASES.forEach(function(r){
+    let dateText, ref, amt, withFee = false;
+    if(kind==="fee"){
+      if(!isFeePaid(r)) return;
+      dateText = val(r,"Vendor_Payment_Date");
+      ref = val(r,"Vendor_UTR_No");
+      amt = num(r,"Vendor_Amount_Paid");
+    } else {
+      amt = num(r,"GST_Paid");
+      if(!(amt>0)) return;
+      const gstRef = val(r,"GST_UTR_No").trim();
+      if(gstRef){ dateText = val(r,"GST_Paid_Date"); ref = gstRef; }
+      else { dateText = val(r,"Vendor_Payment_Date"); ref = val(r,"Vendor_UTR_No"); withFee = true; }
+    }
+    const d = parseAnyDateTime(dateText);
+    if(!d){ undated++; return; }
+    if(d.getTime() < RANGE.fromD.getTime() || d.getTime() > RANGE.toD.getTime()) return;
+    const utr = String(ref||"").trim();
+    const key = kind+"|"+ymd(d)+"|"+utr;
+    let g = groups.get(key);
+    if(!g){ g = { key:key, date:d, dateText:String(dateText||""), utr:utr, total:0, cases:[], withFee:false }; groups.set(key, g); }
+    g.total += amt;
+    g.cases.push(r);
+    if(withFee) g.withFee = true;
+  });
+  const list = Array.from(groups.values());
+  list.forEach(function(g){ g.total = Math.round(g.total*100)/100; });
+  list.sort(function(a,b){ return (b.date.getTime()-a.date.getTime()) || a.utr.localeCompare(b.utr); });
+  return { list:list, undated:undated };
+}
+
+/* ------------------------------ rendering ------------------------------ */
+const INFO_HEAD = '<th>RS ID</th><th>Accept Date/Time</th><th>Case Status</th><th>Vehicle</th><th>Service</th>';
+const FEE_HEAD = '<th class="num">Base Fee</th><th class="num">km Fee</th><th class="num">Extra</th><th class="num">Net Fee</th>';
+/* fields 1-9, shared by both views */
+function caseCells(r){
+  return `<td><b>${esc(caseLabel(r))}</b></td><td>${esc(acceptedAtText(r))}</td><td>${esc(caseStatusText(r))}</td>` +
+         `<td>${esc(val(r,"Vehicle_Name").trim()||"—")}</td><td>${esc(serviceText(r))}</td>` +
+         `<td class="num">${baseFeeText(r)}</td><td class="num">${moneyField(r,"Vendor_KM_Fee")}</td>` +
+         `<td class="num">${money(num(r,"Extras"))}</td><td class="num">${moneyField(r,"Vendor_Net_Fee")}</td>`;
+}
+function feeDetailHtml(g){
+  const t = { net:0, tds:0, cash:0, bal:0, fin:0 };
+  const rows = g.cases.map(function(r){
+    const net = num(r,"Vendor_Net_Fee"), tds = num(r,"TDS_Amount"), fin = finalPayable(r);
+    const rate = (net>0 && has(r,"TDS_Amount")) ? ((tds/net*100).toFixed(2)+"%") : "—";
+    t.net += net; t.tds += tds; t.cash += num(r,"Cash_Collected"); t.bal += num(r,"Vendor_Balance_Before_TDS"); t.fin += fin;
+    return `<tr>${caseCells(r)}<td class="num">${rate}</td><td class="num">${moneyField(r,"TDS_Amount")}</td>` +
+      `<td class="num">${moneyField(r,"Cash_Collected")}</td><td class="num">${moneyField(r,"Vendor_Balance_Before_TDS")}</td>` +
+      `<td class="num"><b>${money(fin)}</b></td></tr>`;
+  }).join("");
+  const n = g.cases.length;
+  return `<div class="gridwrap"><table class="grid"><thead><tr>${INFO_HEAD}${FEE_HEAD}` +
+    `<th class="num">TDS Rate</th><th class="num">TDS Amt</th><th class="num">Cash Collected</th><th class="num">Balance Amt</th><th class="num">Final Payable</th>` +
+    `</tr></thead><tbody>${rows}<tr class="total"><td colspan="8">Total — ${n} case${n===1?"":"s"}</td>` +
+    `<td class="num">${money(t.net)}</td><td></td><td class="num">${money(t.tds)}</td><td class="num">${money(t.cash)}</td>` +
+    `<td class="num">${money(t.bal)}</td><td class="num">${money(t.fin)}</td></tr></tbody></table></div>`;
+}
+function gstDetailHtml(g){
+  const t = { net:0, gst:0, paid:0 };
+  const vendorHasGst = !!(VENDOR && String(VENDOR.gstApplicable)==="true");
+  const rows = g.cases.map(function(r){
+    const net = num(r,"Vendor_Net_Fee"), gstAmt = num(r,"GST_Payable"), paid = num(r,"GST_Paid");
+    /* Applicable if GST was actually charged on this case, else what the vendor
+       record says today; the % from the stored figures when it can be. */
+    const applicable = gstAmt>0 || vendorHasGst;
+    const pct = (gstAmt>0 && net>0) ? (gstAmt/net*100) : (applicable ? VENDOR_GST_RATE : 0);
+    t.net += net; t.gst += gstAmt; t.paid += paid;
+    return `<tr>${caseCells(r)}<td>${applicable?"Yes":"No"}</td><td class="num">${pct.toFixed(2)}%</td>` +
+      `<td class="num">${moneyField(r,"GST_Payable")}</td><td class="num"><b>${money(paid)}</b></td></tr>`;
+  }).join("");
+  const n = g.cases.length;
+  return `<div class="gridwrap"><table class="grid"><thead><tr>${INFO_HEAD}${FEE_HEAD}` +
+    `<th>GST Applicable</th><th class="num">GST %</th><th class="num">GST Amt</th><th class="num">GST Paid</th>` +
+    `</tr></thead><tbody>${rows}<tr class="total"><td colspan="8">Total — ${n} case${n===1?"":"s"}</td>` +
+    `<td class="num">${money(t.net)}</td><td></td><td></td><td class="num">${money(t.gst)}</td><td class="num">${money(t.paid)}</td>` +
+    `</tr></tbody></table></div>`;
+}
+function sectionHtml(kind, title, res){
+  const open = SEC_OPEN.has(kind);
+  const grand = Math.round(res.list.reduce(function(a,g){ return a+g.total; }, 0)*100)/100;
+  const fleetId = (VENDOR && VENDOR.fleetId) || "—";
+  let body;
+  if(!res.list.length){
+    body = `<div class="empty">No ${kind==="fee"?"payments":"GST remittances"} recorded in this date range</div>`;
+  } else {
+    body = `<div class="gridwrap"><table class="grid"><thead><tr>` +
+      `<th>Vendor ID</th><th>${kind==="fee"?"Transaction Date":"GST Transaction Date"}</th>` +
+      `<th>${kind==="fee"?"Transaction ID":"GST Transaction ID"}</th><th class="num">Paid Amt</th><th class="num">Cases</th><th></th>` +
+      `</tr></thead><tbody>` + res.list.map(function(g){
+        const isOpen = TXN_OPEN.has(g.key);
+        const main = `<tr class="txn${isOpen?" open":""}">` +
+          `<td><b>${esc(fleetId)}</b></td><td>${esc(g.dateText)}</td>` +
+          `<td>${g.utr?esc(g.utr):"—"}${g.withFee?'<div class="sub2">paid with the fee</div>':""}</td>` +
+          `<td class="num"><b>${money(g.total)}</b></td><td class="num">${g.cases.length}</td>` +
+          `<td><button type="button" class="tog" data-txn="${esc(g.key)}" aria-expanded="${isOpen}" ` +
+          `title="${isOpen?"Hide":"Show"} the cases in this transaction">${isOpen?"−":"+"}</button></td></tr>`;
+        const detail = isOpen ? `<tr class="detail"><td colspan="6">${kind==="fee"?feeDetailHtml(g):gstDetailHtml(g)}</td></tr>` : "";
+        return main + detail;
+      }).join("") + `</tbody></table></div>`;
+  }
+  return `<div class="sec${open?" on":""}">` +
+    `<button type="button" class="sec-head" data-sec="${kind}" aria-expanded="${open}">` +
+    `<b>${title}</b><span class="meta">${res.list.length} transaction${res.list.length===1?"":"s"} · ${money(grand)}</span>` +
+    `<span class="spacer"></span><span class="tog" aria-hidden="true">${open?"−":"+"}</span></button>` +
+    `<div class="sec-body">${body}</div></div>`;
+}
+function render(){
+  if(!RANGE) return;
+  const fee = groupTransactions("fee"), gst = groupTransactions("gst");
+  const undated = fee.undated + gst.undated;
+  $("results").innerHTML =
+    sectionHtml("fee", "Payment View", fee) +
+    sectionHtml("gst", "GST View", gst) +
+    (undated ? `<div class="note">${undated} paid case${undated===1?" has":"s have"} no readable payment date and ${undated===1?"is":"are"} not listed. Please contact Get-Rescue accounts about ${undated===1?"it":"them"}.</div>` : "") +
+    `<div class="note">Base Fee, TDS Rate and GST % are worked out from the amounts recorded when you were paid, so they show what was actually applied.</div>`;
+}
+function onResultsClick(e){
+  const sec = e.target.closest("[data-sec]");
+  if(sec){
+    const k = sec.getAttribute("data-sec");
+    if(SEC_OPEN.has(k)) SEC_OPEN.delete(k); else SEC_OPEN.add(k);
+    render(); return;
+  }
+  const txn = e.target.closest("[data-txn]");
+  if(txn){
+    const k = txn.getAttribute("data-txn");
+    if(TXN_OPEN.has(k)) TXN_OPEN.delete(k); else TXN_OPEN.add(k);
+    render();
+  }
+}
+function showError(msg){ $("results").innerHTML = '<div class="state-err">'+esc(msg)+'</div>'; }
+
+/* ------------------------------ search ------------------------------ */
+/* Asks the server fresh every time, so a payment recorded while this page is
+   open appears without reloading. */
+async function search(){
+  const fromV = $("fromDate").value, toV = $("toDate").value;
+  if(!fromV || !toV){ showError("Pick both dates."); return; }
+  const fromD = startOfDay(new Date(fromV)), toD = endOfDay(new Date(toV));
+  if(fromD.getTime() > toD.getTime()){ showError("The From date is after the To date."); return; }
+  $("results").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
+  try{
+    const data = await loadMyPayments();
+    VENDOR = data.vendor || null;
+    CASES = data.tickets;
+    if(VENDOR){
+      $("vendorLine").textContent = (VENDOR.name||"Your account") + (VENDOR.fleetId ? (" · Fleet ID "+VENDOR.fleetId) : "");
+    }
+    RANGE = { fromD:fromD, toD:toD };
+    render();
+  }catch(e){
+    console.warn("[GR-VendorPayInfo] could not load payments", e);
+    showError((e && e.message) || "Your payments could not be loaded.");
+  }
+}
+
+/* ------------------------------ boot ------------------------------ */
+async function boot(){
+  let tries = 0;
+  while(!resolve("invokeCustomApi") && tries<40){ await new Promise(function(r){ setTimeout(r,200); }); tries++; }
+  if(!resolve("invokeCustomApi")){ showError("Couldn't connect to Zoho — please reopen this page."); return; }
+  try{
+    const getInit = resolve("getInitParams");
+    if(getInit){ const p = await getInit(); LOGIN_EMAIL = (p && p.loginUser) || ""; }
+  }catch(e){ console.warn("[GR-VendorPayInfo] getInitParams failed", e); }
+  $("vendorLine").textContent = LOGIN_EMAIL || "Your account";
+  MY_VENDOR_ID = await resolveMyVendorId();
+  const today = new Date();
+  $("fromDate").value = ymd(new Date(today.getTime() - CONFIG.defaultDays*86400000));
+  $("toDate").value = ymd(today);
+  $("searchBtn").onclick = search;
+  $("results").onclick = onResultsClick;
+  await search();
+}
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,319 @@
+string getVendorPayments(string vendorId)
+{
+	/* getVendorPayments - 2026-10-22, for the vendorPaymentInfo widget: the
+	   logged-in vendor's OWN recorded payments, and nothing else.
+
+	   WHY A NEW API RATHER THAN getVendorTickets. That API serves
+	   vendorPerformance and is left untouched. It also returns only four of the
+	   payment fields, and it trusts whatever vendorId the browser sends - so any
+	   logged-in vendor could ask for another vendor's cases. For a payment
+	   statement that is not acceptable, so this API decides WHO is asking itself.
+
+	   IDENTITY, decided on the server:
+	     1. zoho.loginuser is matched to a Vendors record by Email.
+	     2. When it matches, that vendor's own id is used - and a request naming a
+	        DIFFERENT vendor is refused outright, with no data.
+	     3. When the login matches no vendor (an internal user testing the page,
+	        or a portal setup where loginuser does not carry the portal user), the
+	        requested vendorId is used - the same trust getVendorTickets gives
+	        today, so the page still works. REQUIRE_LOGIN_MATCH = true closes that
+	        route entirely once the reply's "verifiedBy" has been seen to read
+	        "login" for real vendors.
+
+	   ONLY PAID CASES. The query asks Zoho for cases whose fee is Paid or that
+	   carry GST_Paid, and keeps only this vendor's. Nothing about unpaid work, or
+	   any other vendor's work, ever leaves the server.
+
+	   READ-ONLY. No insert, update or delete anywhere in this function.
+
+	   Forms are queried directly (Create_Case, Vendors, vehicle_master,
+	   Vehicle_Issue - the same direct form access createTicket and
+	   getInboundCallerInfo already use), so no OAuth refresh token is needed and
+	   none is copied into yet another file.
+
+	   Deluge shapes match ones already used live in this repo: no &&, no ternary,
+	   a lookup null-checked before .toString(), at most two methods off ifnull(),
+	   and the reply built as a Map so every value is escaped correctly. */
+	REQUIRE_LOGIN_MATCH = false;
+	result = Map();
+	emptyList = List();
+	try
+	{
+		requested = ifnull(vendorId,"").trim();
+		/* ---------- 1. who is calling ---------- */
+		callerEmail = ifnull(zoho.loginuser,"").trim();
+		callerEmail = callerEmail.toLowerCase();
+		verifiedId = "";
+		if(callerEmail != "")
+		{
+			for each vRec in vendors[ID != 0]
+			{
+				if(verifiedId == "")
+				{
+					vEmail = ifnull(vRec.Email,"").trim();
+					if(vEmail.toLowerCase() == callerEmail)
+					{
+						verifiedId = vRec.ID.toString();
+					}
+				}
+			}
+		}
+		wanted = "";
+		verifiedBy = "";
+		if(verifiedId != "")
+		{
+			if(requested != "")
+			{
+				if(requested != verifiedId)
+				{
+					info "getVendorPayments - REFUSED: login " + callerEmail + " is vendor " + verifiedId + " but asked for vendor " + requested;
+					result.put("code","ERROR");
+					result.put("message","This login belongs to a different vendor than the one requested, so nothing was returned.");
+					result.put("tickets",emptyList);
+					return result.toString();
+				}
+			}
+			wanted = verifiedId;
+			verifiedBy = "login";
+		}
+		else
+		{
+			if(REQUIRE_LOGIN_MATCH)
+			{
+				result.put("code","ERROR");
+				result.put("message","This login is not linked to any vendor record, so no payments can be shown.");
+				result.put("tickets",emptyList);
+				return result.toString();
+			}
+			wanted = requested;
+			verifiedBy = "request";
+		}
+		if(wanted == "")
+		{
+			result.put("code","ERROR");
+			result.put("message","No vendor could be identified for this login, and no vendorId was sent.");
+			result.put("tickets",emptyList);
+			return result.toString();
+		}
+		info "getVendorPayments - vendor " + wanted + " (identified by " + verifiedBy + ", login " + callerEmail + ")";
+		/* ---------- 2. the vendor's own record ---------- */
+		wantedLong = 0;
+		try
+		{
+			wantedLong = wanted.toLong();
+		}
+		catch (idEx)
+		{
+			wantedLong = 0;
+		}
+		vendorFound = false;
+		vendorEmail = "";
+		vendorName = "";
+		fleetId = "";
+		gstNo = "";
+		for each meRec in vendors[ID == wantedLong]
+		{
+			vendorFound = true;
+			vendorEmail = ifnull(meRec.Email,"").trim();
+			vendorEmail = vendorEmail.toLowerCase();
+			vendorName = ifnull(meRec.vendor_name,"").trim();
+			fleetId = ifnull(meRec.Fleet_ID,"").trim();
+			gstNo = ifnull(meRec.Vendor_GST_Number,"").trim();
+		}
+		if(vendorFound == false)
+		{
+			result.put("code","ERROR");
+			result.put("message","No vendor record exists with id " + wanted + ".");
+			result.put("tickets",emptyList);
+			return result.toString();
+		}
+		/* ---------- 3. this vendor's paid cases ---------- */
+		vehicleNames = Map();
+		issueNames = Map();
+		tickets = List();
+		for each caseRec in Create_Case[Vendor_Payment_Status == "Paid" || GST_Paid > 0]
+		{
+			/* Assigned_Vendor first; the ticket's vendor email only when that is
+			   blank - the same order Accounts Payable uses, which is what keeps
+			   cases accepted during the old vendor-identity bug visible. */
+			mine = false;
+			assignedText = "";
+			assignedRef = caseRec.Assigned_Vendor;
+			if(assignedRef != null)
+			{
+				assignedText = assignedRef.toString().trim();
+			}
+			if(assignedText == wanted)
+			{
+				mine = true;
+			}
+			if(assignedText == "")
+			{
+				if(vendorEmail != "")
+				{
+					e1 = ifnull(caseRec.Vendor_Email,"").trim();
+					e2 = ifnull(caseRec.Vendor_Email1,"").trim();
+					e3 = ifnull(caseRec.Vendor_Email2,"").trim();
+					if(e1.toLowerCase() == vendorEmail)
+					{
+						mine = true;
+					}
+					if(e2.toLowerCase() == vendorEmail)
+					{
+						mine = true;
+					}
+					if(e3.toLowerCase() == vendorEmail)
+					{
+						mine = true;
+					}
+				}
+			}
+			if(mine)
+			{
+				/* vehicle name - looked up once per id */
+				vehicleText = "";
+				vehRef = caseRec.Vehicle;
+				if(vehRef != null)
+				{
+					vehId = vehRef.toString().trim();
+					if(vehId != "")
+					{
+						if(vehicleNames.containKey(vehId))
+						{
+							vehicleText = vehicleNames.get(vehId);
+						}
+						else
+						{
+							vehLong = 0;
+							try
+							{
+								vehLong = vehId.toLong();
+							}
+							catch (vehEx)
+							{
+								vehLong = 0;
+							}
+							if(vehLong > 0)
+							{
+								for each vehRec in vehicle_master[ID == vehLong]
+								{
+									vehicleText = ifnull(vehRec.Name,"").toString().trim();
+								}
+							}
+							vehicleNames.put(vehId,vehicleText);
+						}
+					}
+				}
+				/* issue names - a multi-lookup, read as text and split, the same
+				   list handling createTicket uses for its own issue input */
+				issueText = "";
+				issueRef = caseRec.Vehicle_Issue;
+				if(issueRef != null)
+				{
+					// Keep digits and commas only - drops the brackets and spaces a
+					// list prints with, without needing any escaped regex characters.
+					issueRaw = issueRef.toString().replaceAll("[^0-9,]","");
+					if(issueRaw != "")
+					{
+						issuePieces = issueRaw.toList(",");
+						for each issuePiece in issuePieces
+						{
+							if(issuePiece != "")
+							{
+								oneName = "";
+								if(issueNames.containKey(issuePiece))
+								{
+									oneName = issueNames.get(issuePiece);
+								}
+								else
+								{
+									issueLong = 0;
+									try
+									{
+										issueLong = issuePiece.toLong();
+									}
+									catch (issueEx)
+									{
+										issueLong = 0;
+									}
+									if(issueLong > 0)
+									{
+										for each issueRec in Vehicle_Issue[ID == issueLong]
+										{
+											oneName = ifnull(issueRec.Issue_Name,"").toString().trim();
+										}
+									}
+									issueNames.put(issuePiece,oneName);
+								}
+								if(oneName != "")
+								{
+									if(issueText == "")
+									{
+										issueText = oneName;
+									}
+									else
+									{
+										issueText = issueText + ", " + oneName;
+									}
+								}
+							}
+						}
+					}
+				}
+				row = Map();
+				row.put("ID",caseRec.ID.toString());
+				row.put("Case_ID",ifnull(caseRec.Case_ID,"").toString());
+				row.put("Service_Type",ifnull(caseRec.Service_Type,"").toString());
+				row.put("Status",ifnull(caseRec.Status,"").toString());
+				row.put("Closure_Status",ifnull(caseRec.Closure_Status,"").toString());
+				row.put("Service_Acceptance",ifnull(caseRec.Service_Acceptance,"").toString());
+				row.put("Service_Acceptance_For_Tow",ifnull(caseRec.Service_Acceptance_For_Tow,"").toString());
+				row.put("Vehicle_Name",vehicleText);
+				row.put("Issue_Names",issueText);
+				row.put("Vendor_Payment_Status",ifnull(caseRec.Vendor_Payment_Status,"").toString());
+				row.put("Vendor_Payment_Date",ifnull(caseRec.Vendor_Payment_Date,"").toString());
+				row.put("Vendor_UTR_No",ifnull(caseRec.Vendor_UTR_No,"").toString());
+				row.put("Vendor_Amount_Paid",ifnull(caseRec.Vendor_Amount_Paid,"").toString());
+				row.put("Vendor_Gross_Fee",ifnull(caseRec.Vendor_Gross_Fee,"").toString());
+				row.put("Vendor_KM_Fee",ifnull(caseRec.Vendor_KM_Fee,"").toString());
+				row.put("Extras",ifnull(caseRec.Extras,"").toString());
+				row.put("Vendor_Net_Fee",ifnull(caseRec.Vendor_Net_Fee,"").toString());
+				row.put("TDS_Amount",ifnull(caseRec.TDS_Amount,"").toString());
+				row.put("Cash_Collected",ifnull(caseRec.Cash_Collected,"").toString());
+				row.put("Vendor_Balance_Before_TDS",ifnull(caseRec.Vendor_Balance_Before_TDS,"").toString());
+				row.put("Final_Payable",ifnull(caseRec.Final_Payable,"").toString());
+				row.put("GST_Payable",ifnull(caseRec.GST_Payable,"").toString());
+				row.put("GST_Paid",ifnull(caseRec.GST_Paid,"").toString());
+				row.put("GST_Paid_Date",ifnull(caseRec.GST_Paid_Date,"").toString());
+				row.put("GST_UTR_No",ifnull(caseRec.GST_UTR_No,"").toString());
+				tickets.add(row);
+			}
+		}
+		vendorMap = Map();
+		vendorMap.put("id",wanted);
+		vendorMap.put("name",vendorName);
+		vendorMap.put("fleetId",fleetId);
+		gstApplicable = "false";
+		if(gstNo != "")
+		{
+			gstApplicable = "true";
+		}
+		vendorMap.put("gstApplicable",gstApplicable);
+		info "getVendorPayments - returning " + tickets.size() + " paid case(s) for vendor " + wanted;
+		result.put("code","SUCCESS");
+		result.put("verifiedBy",verifiedBy);
+		result.put("vendor",vendorMap);
+		result.put("count",tickets.size());
+		result.put("tickets",tickets);
+	}
+	catch (e)
+	{
+		info "getVendorPayments threw: " + e.toString();
+		errMap = Map();
+		errMap.put("code","ERROR");
+		errMap.put("message","getVendorPayments threw an exception: " + e.toString());
+		errMap.put("tickets",emptyList);
+		return errMap.toString();
+	}
+	return result.toString();
+}

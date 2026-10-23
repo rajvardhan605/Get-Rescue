@@ -2219,7 +2219,10 @@ async function rejectService(){
       // briefly tried wrapping both as {"ID":...} objects, but that broke
       // saving (see getRescueTicket's idsFor() comment) — reverted.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
-        RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        /* RSID on Task_Rejections is a single-line TEXT field (2026-10-22), so it
+           stores what is sent: the Case_ID ("RSID079004") reads as a ticket; the
+           record id read as a bare number. Record id only if no Case_ID exists. */
+        RSID:(readVal(r,CONFIG.caseIdField)||r.ID), RSP_Name:$("techName").textContent, Reason:reason,
         Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:issueNamesFor(r)
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }

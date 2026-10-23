@@ -1340,6 +1340,14 @@ const OPTIONS = { vehicles:[], issues:[], vendors:[], technicians:[], clients:[]
    own `statuses:` array a few lines away — kept as a duplicate, not a
    shared reference, so a future edit to one is a visible diff against the
    other instead of a silent, hard-to-notice divergence. */
+/* At least one vendor really selected on the Assign step - 2026-10-23. Unset
+   lookups arrive as "", null, [], {} or an all-empty object, so each entry is
+   unwrapped and checked for an actual value. */
+function assignmentHasVendor(r){
+  const v = r && r.Vendors1;
+  const arr = Array.isArray(v) ? v : (v ? [v] : []);
+  return arr.some(function(x){ const id = unwrapLookup(x); return String(id==null ? "" : id).trim() !== ""; });
+}
 function statusStillEarly(r, stageStatuses){
   const cur=String(r.Status||"").trim().toUpperCase();
   if(!cur) return true;
@@ -1543,7 +1551,11 @@ const STAGES = [
       // ASSIGNMENT via a different path — see its own matching addition;
       // `!r.Confirmation_Time` guarantees whichever path fires first wins,
       // never overwritten after.
-      ...((r.ID && EARLY_STATUSES.indexOf(String(r.Status||"").trim().toUpperCase())>=0 && (!(Number(r.Booking_Fee)>0) || r.Payment_Status==="PAID") && locationReady(r) && !r.Confirmation_Time) ? { Confirmation_Time: fmtDateTime(new Date()) } : {})
+      ...((r.ID && EARLY_STATUSES.indexOf(String(r.Status||"").trim().toUpperCase())>=0 && (!(Number(r.Booking_Fee)>0) || r.Payment_Status==="PAID") && locationReady(r) && !r.Confirmation_Time) ? { Confirmation_Time: fmtDateTime(new Date()) } : {}),
+      /* ON DEMAND clears the client tracking id in Zoho - 2026-10-22. Sent as an
+         explicit "" because buildPayload() leaves a blank field out of the save,
+         which would keep the old value. Not sent for any other client. */
+      ...(isOnDemandClient(r) ? { Client_Tracking_Id: "" } : {})
     }),
     // 4-column layout (2026-08-06, per the client's own hand-drawn wireframe)
     // — reordered/regrouped into three 4-across rows via the shared `row:`
@@ -1585,8 +1597,12 @@ const STAGES = [
     // function-support (see its own comment) — same field, doesn't apply to
     // an ON DEMAND walk-in, so there's nothing meaningful to type, but the
     // row stays visually consistent instead of collapsing to 3 columns.
+    /* isOnDemandClient() - 2026-10-22. Client holds the Client_Report id
+       (useId), so the raw "ON DEMAND" test only caught the old plain-string
+       shape. Also blanked for ON DEMAND: on screen in renderWizard(), and in
+       Zoho through the Create step's extra(). */
     { n:"Client_Tracking_Id", l:"Client Tracking ID", t:"text", row:"vc",
-      readonly:(s)=>String(s.Client||"").trim().toUpperCase()==="ON DEMAND" },
+      readonly:(s)=>isOnDemandClient(s) },
     // useId:true added 2026-08-04, user-confirmed: Vehicle_Issue is a real
     // multiselect Lookup -> Vehicle_Issue_Report, not plain text (reverses the
     // earlier "confirmed plain text" note — see idsFor()'s own header
@@ -1812,8 +1828,12 @@ const STAGES = [
        entering a real Client_Charge value then also subtracts it, same
        formula as just above. Only ON DEMAND still forces both fields to
        null outright (no client to split a charge against at all). */
+    /* isOnDemandClient(), not a raw string test - 2026-10-22. Client holds the
+       Client_Report id (useId), so the raw test never matched and the field
+       stayed editable on ON DEMAND tickets. Locked and set to 0: see the
+       Rescue_Charge note in renderWizard(). */
     { n:"Client_Charge", l:"Client Charge", t:"number", recompute:true, row:"rate3b",
-      readonly:(s)=>String(s.Client||"").trim().toUpperCase()==="ON DEMAND" },
+      readonly:(s)=>isOnDemandClient(s) },
     { n:"Rescue_Charge", l:"Rescue Charge", t:"decimal", readonly:true, row:"rate3b" },
     /* Exactly one button here, never two. Booking_Fee>0 -> a single button
        that sends the payment link AND requests the location together in one
@@ -2519,7 +2539,11 @@ const STAGES = [
     // vendor's response," undoing everything that had genuinely happened
     // since. Converted to a function with the same guard every other
     // vulnerable stage now has.
-    status:(r)=> statusStillEarly(r, ["READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","RSP REJECT","SCHEDULED"]) ? "RSP IRA (INVITE RESPONSE AWAITED)" : r.Status,
+    /* RSP IRA only with a vendor actually selected - 2026-10-23. Cancel / X saves
+       this step with validation off (cancelWizard), so backing out with no
+       vendor used to mark the ticket invited. Assign & Continue always has one
+       (Vendors is required), so that path is unchanged. */
+    status:(r)=> (statusStillEarly(r, ["READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","RSP REJECT","SCHEDULED"]) && assignmentHasVendor(r)) ? "RSP IRA (INVITE RESPONSE AWAITED)" : r.Status,
     // Assignment_Time — added 2026-09-03 (new Agent Performance widget,
     // "Avg Time Creation to Assignment" metric) — stamped once, the FIRST
     // time this stage is ever successfully saved (Vendors1 is req:true, so a
@@ -6559,6 +6583,17 @@ async function sendToAirtable(record){
 function isOnDemandClient(r){
   return String(clientDisplayName(r)||"").trim().toUpperCase()==="ON DEMAND";
 }
+/* The Rescue Charge an ON DEMAND ticket is invoiced on - 2026-10-22, client:
+   "rescue charge you can consider for invoicing for all case". What was
+   actually collected (computeClosureTSF(): paid Booking Fee + paid Remaining
+   Fee - Refund). saveClosure() writes it to Rescue_Charge so the ticket shows
+   what was invoiced. Client Charge is not subtracted: it is always 0 for ON
+   DEMAND, and a leftover value on an old ticket must not reduce the bill.
+   Extra Payable is NOT added - 2026-10-22, client: "extras is only applicable
+   to vendor payment; nothing to do with the customer fees". */
+function onDemandRescueChargeAtClosure(r, finalTsf){
+  return (Number(finalTsf)||0);
+}
 function onDemandInvoiceEligibility(r, finalTsf){
   const status = String(r.Closure_Status||"").trim();
   const isOnDemand = isOnDemandClient(r);
@@ -6590,8 +6625,13 @@ function onDemandInvoiceEligibility(r, finalTsf){
   // ON DEMAND only — the B2B branch is deliberately untouched (user decision
   // 2026-09-14, "No — ON DEMAND only"), so a contracted client's
   // Rescue_Charge invoicing basis is exactly as it was.
-  const extraPayable = isOnDemand ? (Number(r.Extra_Payable)||0) : 0;
-  const amount = isOnDemand ? ((Number(finalTsf)||0) + extraPayable) : (Number(r.Rescue_Charge)||0);
+  /* Always 0 - 2026-10-22: extras are vendor-only, never added to a customer
+     invoice. Kept in the result so the existing log lines that print it work. */
+  const extraPayable = 0;
+  /* Invoiced on Rescue Charge in every case - 2026-10-22. Contracted: the
+     ticket's own Rescue_Charge. ON DEMAND: its closure Rescue Charge (above),
+     which equals the collected-plus-extras figure this always used. */
+  const amount = isOnDemand ? onDemandRescueChargeAtClosure(r, finalTsf) : (Number(r.Rescue_Charge)||0);
   if(!(amount>0)) return null;
   return { isOnDemand, amount, extraPayable };
 }
@@ -9225,7 +9265,15 @@ async function loadRejectionHistory(recordId){
       // correctly as a plain string, and the API already returns these in
       // creation order (= chronological, since rejectService() only ever adds
       // one at the moment it happens).
-      state.rejectionHistory = r.data.filter(function(rj){ return String(unwrapLookup(rj.RSID)||"")===String(recordId); });
+      /* RSID is a single-line TEXT field on Task_Rejections. Rows written before
+         2026-10-22 hold the ticket's record id; rows after hold its Case_ID
+         ("RSID079004"). Both are matched, so no rejection drops out of view. */
+      const rejCaseId = (state.record && String(state.record.ID)===String(recordId))
+        ? String(readVal(state.record, CONFIG.caseIdField)||"").trim() : "";
+      state.rejectionHistory = r.data.filter(function(rj){
+        const rsid = String(unwrapLookup(rj.RSID)||"").trim();
+        return rsid===String(recordId) || (rejCaseId!=="" && rsid===rejCaseId);
+      });
     } else {
       state.rejectionHistory=[];
       console.warn("[Get-Rescue] loadRejectionHistory: unexpected response for report", CONFIG.taskRejectionsReport, "— code:", r&&r.code, "| full response:", r, "— if code isn't 3000, the guessed report name is likely wrong (see CONFIG.taskRejectionsReport's own comment).");
@@ -11927,6 +11975,72 @@ async function autoPromoteScheduledTickets(recs){
     }catch(e){ console.warn("[Get-Rescue] autoPromoteScheduledTickets: failed to promote", r.ID, e); }
   }
 }
+/* PAID + LOCATION -> READY & INVITED, AUTOMATICALLY - 2026-10-23, user request
+   (RSID275646 sat in New & Open with the booking fee paid and the location in).
+   Only an agent saving the Location step used to move a ticket on; a customer
+   sharing their location moves nothing, and a gateway payment only reaches
+   LOCATION PENDING.
+
+   Writes EXACTLY what saving the Quote and Location steps would: the target
+   comes from their own status() rules (READY FOR ASSIGNMENT, or SCHEDULED when
+   the service time is over 2 hours away - autoPromoteScheduledTickets() then
+   moves it on when due), and the timestamps from their own extra() functions.
+   The confirmation WhatsApp goes through the same sendStatusMilestoneMessages()
+   the agent's save uses; AUTO_READY_SEND_CONFIRMATION=false turns it off, in
+   which case none is sent later either (option 2).
+
+   Only the ticket's OWNER acts, so two agents' dashboards never both move one
+   ticket and send the customer the message twice. Re-read just before writing,
+   every condition re-checked on the fresh copy, one attempt per ticket per page
+   session. */
+const AUTO_READY_SEND_CONFIRMATION = true;   // true = option 1 (send), false = option 2 (silent)
+const AUTO_READY_FROM = ["SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQUEST","LOCATION PENDING"];
+const AUTO_READY_TRIED = new Set();
+function autoReadyEligible(r){
+  if(!r || !LOGIN_EMAIL) return false;
+  const st = String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase();
+  if(AUTO_READY_FROM.indexOf(st)<0) return false;
+  const owner = String(readVal(r,"Created_By_Agent_Email")||"").trim().toLowerCase();
+  if(!owner || owner!==String(LOGIN_EMAIL).trim().toLowerCase()) return false;
+  const feeSettled = !(Number(r.Booking_Fee)>0) || r.Payment_Status==="PAID";
+  return feeSettled && locationReady(r);
+}
+async function autoPromoteReadyTickets(recs){
+  const quoteStep = STAGES.find(function(x){ return x.key==="quote"; });
+  const locStep = STAGES.find(function(x){ return x.key==="locations"; });
+  if(!quoteStep || !locStep || !LOGIN_EMAIL) return;
+  const due = (recs||[]).filter(function(r){ return !AUTO_READY_TRIED.has(String(r.ID)) && autoReadyEligible(r); });
+  for(const listed of due){
+    AUTO_READY_TRIED.add(String(listed.ID));
+    try{
+      const fresh = await apiGetById(listed.ID);
+      if(!fresh || !autoReadyEligible(fresh)){
+        console.log("[Get-Rescue] autoPromoteReadyTickets: ticket", listed.ID, "no longer qualifies on a fresh read - left alone.");
+        continue;
+      }
+      const prevStatus = String(readVal(fresh,CONFIG.stageField)||"").trim();
+      const afterQuote = Object.assign({}, fresh, { [CONFIG.stageField]: computeStatus(quoteStep, fresh) });
+      const target = computeStatus(locStep, afterQuote);
+      if(target!=="READY FOR ASSIGNMENT" && target!=="SCHEDULED"){
+        console.log("[Get-Rescue] autoPromoteReadyTickets: ticket", listed.ID, "would become", target, "- not a ready state, left alone.");
+        continue;
+      }
+      const payload = Object.assign({},
+        (typeof quoteStep.extra==="function" ? quoteStep.extra(fresh) : {}),
+        (typeof locStep.extra==="function" ? locStep.extra(afterQuote) : {}),
+        { [CONFIG.stageField]: target });
+      await updateTicket(listed.ID, payload);
+      Object.assign(listed, payload);   // the list about to render shows it in Ready & Invited
+      console.log("[Get-Rescue] autoPromoteReadyTickets: ticket", listed.ID, prevStatus, "->", target, "(paid + location in) | fields:", Object.keys(payload).join(", "), "| confirmation WhatsApp:", AUTO_READY_SEND_CONFIRMATION ? "sending" : "off (option 2)");
+      if(AUTO_READY_SEND_CONFIRMATION){
+        try{ await sendStatusMilestoneMessages(prevStatus, target, Object.assign({}, fresh, payload)); }
+        catch(msgErr){ console.warn("[Get-Rescue] autoPromoteReadyTickets: moved", listed.ID, "but the confirmation WhatsApp failed", msgErr); }
+      }
+    }catch(e){
+      console.warn("[Get-Rescue] autoPromoteReadyTickets: could not move ticket", listed.ID, "- it stays where it is and an agent can still save the Location step.", e);
+    }
+  }
+}
 /* sortTicketsNewestFirst() — 2026-09-23, user request: "display the tickets in
    descending order based on their Added Time, so that the latest/most recently
    added ticket appears at the top... applied consistently whenever the ticket
@@ -12009,6 +12123,9 @@ async function loadDashboard(){
   showView("dashboard");
   $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
   let recs = await getTickets(null);
+  // Paid + location in -> Ready & Invited (2026-10-23). Before the SCHEDULED
+  // promotion, so a ticket this makes SCHEDULED is picked up when it is due.
+  try{ await autoPromoteReadyTickets(recs); }catch(e){ console.warn("[Get-Rescue] autoPromoteReadyTickets failed (non-blocking)", e); }
   await autoPromoteScheduledTickets(recs);
   // Before renderReportLists(), which is what calls rowHtml().
   await loadInviteStateForDashboard();
@@ -12841,6 +12958,12 @@ function renderWizard(){
   if(step.key==="acceptance" || step.key==="acceptanceTow"){
     seedAcceptanceVendorFields(state.record);
   }
+  /* ON DEMAND has no client tracking id - 2026-10-22. Blanked before the Create
+     step draws; Client is in RERENDER, so picking ON DEMAND clears it at once.
+     The save clears it in Zoho too (the Create step's extra()). */
+  if(step.key==="create" && isOnDemandClient(state.record)){
+    state.record.Client_Tracking_Id="";
+  }
   if(step.key==="quote"){
     const q=calcQuote();
     state.record.Suggested_Rate=q.total; // readonly/computed — always kept in sync
@@ -12904,12 +13027,25 @@ function renderWizard(){
     // Rescue_Charge = Total_Service_Fee − Booking_Fee (i.e. Client_Charge
     // treated as 0); once Client_Charge has a value, it's
     // Total_Service_Fee − Client_Charge − Booking_Fee same as before.
-    if(String(state.record.Client||"").trim().toUpperCase()==="ON DEMAND"){
-      state.record.Client_Charge=null;
-      state.record.Rescue_Charge=null;
-    } else {
-      state.record.Rescue_Charge=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Client_Charge)||0)-(Number(state.record.Booking_Fee)||0);
-    }
+    /* Rescue Charge = Remaining Fee - Client Charge, for every client -
+       2026-10-22 spec. Remaining_Fee was just set to Total - Booking above,
+       so this is the same figure Total - Client - Booking always gave, and
+       saveClosure()'s Client + Rescue + Booking = Total check still holds.
+       ON DEMAND: Client Charge is locked (readonly via isOnDemandClient()) AND
+       set to 0 - including a value typed while a contracted client was
+       selected, then the client changed (user-reported 2026-10-22). 0, not
+       blank: a blank field is left out of the save and would leave the old
+       value in Zoho, while 0 is saved, so screen and Zoho agree. The closure
+       check only runs when Client Charge > 0, so 0 behaves exactly as blank. */
+    /* Rescue Charge = Total Service Fee - Client Charge, for EVERY ticket -
+       2026-10-22 user decision (contracted first, then ON DEMAND too). It no
+       longer nets out the Booking Fee. ON DEMAND has Client Charge 0, so its
+       Rescue Charge = Total Service Fee; nothing reads Rescue_Charge for ON
+       DEMAND (invoicing bills Total_Service_Fee for it). saveClosure() accepts
+       both this and the older Total - Booking - Client figure, so tickets
+       saved before the change still close. */
+    if(isOnDemandClient(state.record)) state.record.Client_Charge=0;
+    state.record.Rescue_Charge=(Number(state.record.Total_Service_Fee)||0)-(Number(state.record.Client_Charge)||0);
   }
   /* Auto-send of the breakdown location link REMOVED 2026-09-25 (user request:
      "don't share automatically location link in this"). Reaching the Locations
@@ -13818,6 +13954,9 @@ async function pollDashboardForMechanicUpdates(){
     // promotion also correctly surfaces through the existing mechanic-update
     // notification (SCHEDULED -> READY FOR ASSIGNMENT is exactly the kind of
     // change that notification is for) — no separate handling needed.
+    // Paid + location in -> Ready & Invited (2026-10-23) - same poll, so a
+    // ticket moves within 30s of its last piece arriving.
+    try{ await autoPromoteReadyTickets(recs); }catch(e){ console.warn("[Get-Rescue] autoPromoteReadyTickets failed (non-blocking)", e); }
     await autoPromoteScheduledTickets(recs);
     // SEND 9, five minutes after SEND 8 - 2026-10-10. Same poll, same shape as
     // the promotion above. Non-blocking: a messaging failure must never stop
@@ -15818,10 +15957,16 @@ async function saveClosure(){
     return;
   }
   const finalTSF = closureCountsAsFeeBearing(r.Closure_Status) ? computeClosureTSF(r) : (Number(r.Total_Service_Fee)||0);
+  /* Either identity passes - 2026-10-22. Rescue Charge is Total - Client from
+     today (Client + Rescue = Total); tickets saved earlier carry
+     Total - Booking - Client (Client + Rescue + Booking = Total) until their
+     Quote step is reopened. A refund that leaves the figures out of line still
+     fails both. */
   if(Number(r.Client_Charge)>0){
-    const sum=(Number(r.Client_Charge)||0)+(Number(r.Rescue_Charge)||0)+(Number(r.Booking_Fee)||0);
-    if(Math.abs(sum-finalTSF)>0.01){
-      toast("Client Charge + Rescue Charge + Booking Fee ("+sum.toFixed(2)+") doesn't match the Total Service Fee ("+finalTSF.toFixed(2)+") — check Client Charge or the Refund Amount before closing","err");
+    const sum=(Number(r.Client_Charge)||0)+(Number(r.Rescue_Charge)||0);
+    const sumWithBooking=sum+(Number(r.Booking_Fee)||0);
+    if(Math.abs(sum-finalTSF)>0.01 && Math.abs(sumWithBooking-finalTSF)>0.01){
+      toast("Client Charge + Rescue Charge ("+sum.toFixed(2)+") doesn't match the Total Service Fee ("+finalTSF.toFixed(2)+") — reopen the Quote step to recalculate Rescue Charge, or check Client Charge or the Refund Amount before closing","err");
       return;
     }
   }
@@ -15862,6 +16007,16 @@ async function saveClosure(){
       [CONFIG.stageField]:"CLOSED"
     };
     if(closureCountsAsFeeBearing(r.Closure_Status)) payload.Total_Service_Fee=finalTSF;
+    /* ON DEMAND: Rescue Charge brought up to what is invoiced - 2026-10-22.
+       Set on the Quote step it held the quoted Total; at closure it becomes
+       what was collected, so a cancellation or refund is reflected and the
+       invoice (which reads the same figure) matches it. Extras are vendor-only.
+       Placed after the Client + Rescue check above, which is untouched.
+       Contracted clients keep the Quote-step Rescue Charge. */
+    if(isOnDemandClient(r) && closureCountsAsFeeBearing(r.Closure_Status)){
+      r.Rescue_Charge = onDemandRescueChargeAtClosure(r, finalTSF);
+      payload.Rescue_Charge = r.Rescue_Charge;
+    }
     /* Only when there is a real figure - 2026-10-14. Sent conditionally rather
        than joining the payload above, because a field that is on the form but
        missing from the report LAYOUT reads back as undefined while every write

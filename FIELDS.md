@@ -188,7 +188,7 @@ Best-effort rejection log, written by Technician/Driver/Vendor whenever they tap
 
 | API Name | Label | Zoho Field Type | Notes |
 |---|---|---|---|
-| `RSID` | RSID | Lookup → `Create_Case` | **Renamed 2026-08-03 from `Case_ID`**, to match `Invites`' own naming for the same "Lookup back to the ticket" concept. Sent as a bare record ID |
+| `RSID` | RSID | **Single Line** (user-confirmed 2026-10-22 — designed as a Lookup → `Create_Case`, but never converted after the schema import) | **Renamed 2026-08-03 from `Case_ID`**. **Since 2026-10-22 the three field apps write the ticket's `Case_ID` (e.g. `RSID079004`)**, falling back to the record ID only for a ticket with no `Case_ID`. Rows written before that date hold the bare record ID; `getRescueTicket`'s Rejection History matches either. If this field is ever converted to a real Lookup, change the three writers back to `r.ID` |
 | `RSP_Name` | RSP Name | Single Line | The technician/driver/vendor's own display name |
 | `Reason` | Reason | Single Line | Recommend Single Line, **not** a Dropdown, even though the app always sends one of the 5 `REJECT_REASONS` values — avoids a repeat of this session's "Invalid column value" class of bug on a field nothing lets a human mistype anyway |
 | `Rejected_At` | Rejected At | Date-Time | |

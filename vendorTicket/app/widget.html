@@ -2275,10 +2275,17 @@ function renderVendorDiag(){
   if(currentVendorRecord && inviteCount===0 && (state.tickets||[]).length){
     msgs.push("None of your cases could be linked to an invite record. Accepting or rejecting will still move the case, but the office will not see your response on their Accept/Reject screen, and the 2-minute timer cannot run.");
   }
-  host.innerHTML = msgs.length
-    ? ('<div style="margin:8px 0 12px;padding:12px 14px;border:1px solid var(--stop,#c0392b);border-radius:12px;background:rgba(192,57,43,.08);font-size:13px;line-height:1.5">'+msgs.join("<br><br>")+'</div>')
-    : "";
+  /* Console only - 2026-10-23, user request: the red box is no longer shown
+     to the vendor. Same checks, same wording, logged once per change (this
+     runs on every dashboard load and poll). The box stays empty. */
+  host.innerHTML = "";
+  const plain = msgs.map(function(m){ return String(m).replace(/<[^>]*>/g,""); }).join(" | ");
+  if(plain !== LAST_VENDOR_DIAG){
+    LAST_VENDOR_DIAG = plain;
+    if(plain) console.warn("[GR-Vendor] vendor diagnostic (not shown on screen):", plain, "| login:", LOGIN_EMAIL||"(not known)", "| vendor record:", currentVendorRecord ? currentVendorRecord.id : "(none)");
+  }
 }
+let LAST_VENDOR_DIAG = "";
 async function loadDashboard(){
   $("ticketList").innerHTML='<div class="spin"></div>';
   state.tickets = await fetchMyTickets();
@@ -2971,7 +2978,10 @@ async function rejectService(){
       // 2026-08-03 Case_ID -> RSID rename).
       // Reverted the {"ID":...} object-wrapping attempt — broke saving.
       if(fn) await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
-        RSID:r.ID, RSP_Name:$("techName").textContent, Reason:reason,
+        /* RSID on Task_Rejections is a single-line TEXT field (2026-10-22), so it
+           stores what is sent: the Case_ID ("RSID079004") reads as a ticket; the
+           record id read as a bare number. Record id only if no Case_ID exists. */
+        RSID:(readVal(r,CONFIG.caseIdField)||r.ID), RSP_Name:$("techName").textContent, Reason:reason,
         Rejected_At:fmtDateTime(new Date()), Vehicle:r[CONFIG.vehicleField], Vehicle_Issue:issueNamesFor(r)
       } } });
     }catch(e){ console.warn("Task_Rejections log failed (non-blocking)", e); }
@@ -3748,12 +3758,28 @@ async function reachedDrop(){
     const pos=await requireLocation();
     const dLat = pos ? pos.lat : parseCoord(r.DropLocationLat), dLon = pos ? pos.lon : parseCoord(r.DropLocationLong);
     const legs=await calc4PointRoundtrip(bLat,bLon,dLat,dLon,travelModeFor(r));
+    /* Breakdown -> Drop is Reach -> the CUSTOMER's Drop pin - 2026-10-22. The
+       round-trip legs above end at the vendor's live position, so their
+       breakdown->drop leg is Reach -> wherever they stopped. Measured here,
+       distance only; reused with no extra call when the round trip already
+       ended at the pin. Straight-line if Google fails; today's figure if the
+       ticket has no pin. Never blocks this step. */
+    let reachToCustomerDropKm = legs.breakdownToDrop;
+    try{
+      const pinLat=parseCoord(r.DropLocationLat), pinLon=parseCoord(r.DropLocationLong);
+      if(pinLat!=null && pinLon!=null && !(dLat===pinLat && dLon===pinLon)){
+        const pinRows=await googleDistanceMatrix([{lat:bLat,lon:bLon}],[{lat:pinLat,lon:pinLon}], travelModeFor(r), false);
+        const pinEl=pinRows && pinRows[0] && pinRows[0].elements && pinRows[0].elements[0];
+        const pinKm=(pinEl && pinEl.status==="OK") ? pinEl.distance.value/1000 : haversineKm(bLat,bLon,pinLat,pinLon);
+        reachToCustomerDropKm=Math.round(pinKm*10)/10;
+      }
+    }catch(pinErr){ console.warn("[GR] Reach -> customer drop pin could not be measured; keeping the round-trip leg", pinErr); }
     const odo=$("odoDrop").value;
     const payload={
       Status:"UNLOADING",
       Office_To_Mechanic: legs.officeToMechanic,
       Mechanic_To_Breakdown: legs.mechanicToBreakdown,
-      Breakdown_To_Drop_Distance: legs.breakdownToDrop,
+      Breakdown_To_Drop_Distance: reachToCustomerDropKm,
       Drop_To_Office_Distance: legs.dropToOffice,
       Roundtrip_Distance: legs.total,
       // See driverTicket's own comment — "drop location arrival time" +

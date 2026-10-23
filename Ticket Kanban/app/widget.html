@@ -584,7 +584,7 @@ const STAGES = [
     fields:[
     { n:"Preferred_Vendor", l:"Preferred Vendor?", t:"radio", o:["Yes","No"] },
     // Real Zoho field API name is "Vendors1" (confirmed 2026-07-31 by the user).
-    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendors", full:true, useId:true }, // real Lookup, confirmed 2026-07-31
+    { n:"Vendors1", l:"Vendors", t:"multiselect", o:"@vendors", full:true, useId:true, req:true }, // real Lookup, confirmed 2026-07-31. req:true 2026-10-23: without it this step saved RSP IRA with no vendor chosen - same rule as getRescueTicket
     { n:"Vendor_Email", l:"Vendor Email", t:"text" },
     // "Assignment_Sent" dropped from the schema 2026-08-03 (forms rebuilt
     // from scratch) — nothing ever wrote it, same fix already made in

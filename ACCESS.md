@@ -30,6 +30,7 @@ This file lists, **per profile/widget**, exactly which Zoho Creator **Forms** an
 | **Operations Manager — Fleet Map** (`opsMap`) | — | `Agent_Ticket_Report`, `Vendors_Report`, `Technicians_Report`, `Agent_Report` | — |
 | **Call Center** (`callCenter`) — ⚠ **retired, not in use since 2026-10-14** | — | — | — (do not deploy; `Call_Log` access is now the Agent app's, above) |
 | **Inbound Call Pop** (`inboundCallPop`) | — | — | — (a public page — reads only through the `getInboundCallerInfo` Custom API, see its own section below) |
+| **Vendor Payment Info** (`vendorPaymentInfo`) — vendor portal | — | `My_Availability_Vendor` (or `Vendors_Report`) | — (all case data comes through the `getVendorPayments` Custom API — see its own section below) |
 
 ---
 
@@ -147,6 +148,17 @@ The screen-pop Ozonetel shows its agents when a call rings. Lives on a **public*
 - **No form or report access at all.** Every read goes through the `getInboundCallerInfo` Custom API, carrying its own PublicKey (a Custom API called with no logged-in user is rejected `{code: 9370}` without one).
 - **`getInboundCallerInfo` — the Custom API must have PublicKey authentication enabled**, and its key filled into `API_PUBLIC_KEYS` in the page source. Already set.
 - Writes nothing. `recordRingingCall` (server-side ScreenPop) creates the `Call_Log` row; this page deliberately does not, to avoid racing it and producing duplicates.
+
+## Vendor Payment Info (`vendorPaymentInfo`)
+
+Standalone widget, added 2026-10-22 from the client's hand-drawn sketch — deliberately **not** part of `getRescueTicket`. Runs in the **Vendor portal** and shows the **logged-in vendor's own** recorded payments only, grouped by transaction: **Payment View** (one row per fee transaction, expanding to its cases) and **GST View** (one row per GST remittance). Read-only: no write call of any kind, in the widget or in its API.
+
+- **Custom API `getVendorPayments` — must be created in Zoho and invocable by the Vendor portal profile**, the same way `getVendorTickets` already is for Vendor Performance. Source: `getRescueTicket/custom-apis/getVendorPayments.deluge`. One parameter, `vendorId` (string). Use the same authentication as `getVendorTickets` (logged-in user, **not** a public key) — the API identifies the caller from `zoho.loginuser`, which a public-key call does not carry.
+  - It decides **who is asking on the server**: `zoho.loginuser` is matched to a `Vendors` record by `Email`, and a request naming any other vendor is refused with no data. Only that vendor's paid cases (`Vendor_Payment_Status` Paid, or `GST_Paid` > 0) ever leave the server — never another vendor's, never unpaid work.
+  - If the login matches no vendor record (an internal user testing the page, or a portal setup where `zoho.loginuser` does not carry the portal user), it falls back to the `vendorId` sent — the same trust `getVendorTickets` gives today, so the page keeps working. Its reply includes `"verifiedBy"`: once that reads `"login"` for real vendors, set `REQUIRE_LOGIN_MATCH = true` at the top of the function to close the fallback.
+  - Reads `Create_Case`, `Vendors`, `vehicle_master` and `Vehicle_Issue` directly inside Deluge, so the portal profile needs **no** access to `Agent_Ticket_Report`, `Vehicle_Master_Report` or `Vehicle_Issue_Report` for this page, and no OAuth token is involved.
+- **`My_Availability_Vendor` — View** (or `Vendors_Report` — View). Only used to look up the vendor's own id as a hint for the API, exactly as Vendor Performance does. If the portal profile can read neither, the page still works — the API identifies the vendor from the login itself.
+- The money fields it shows must exist on `Create_Case` (they do — see FIELDS.md): `Vendor_Payment_Date`, `Vendor_UTR_No`, `Vendor_Amount_Paid`, `Vendor_Gross_Fee`, `Vendor_KM_Fee`, `Extras`, `Vendor_Net_Fee`, `TDS_Amount`, `Cash_Collected`, `Vendor_Balance_Before_TDS`, `Final_Payable`, `GST_Payable`, `GST_Paid`, `GST_Paid_Date`, `GST_UTR_No`. A wrong name would stop the Deluge from saving, so Zoho reports it at save time.
 
 ## Open questions this file doesn't resolve on its own
 
