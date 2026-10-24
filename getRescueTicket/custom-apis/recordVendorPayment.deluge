@@ -506,6 +506,11 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			errMap.put("message","Bill ID is missing from the response.");
 			return errMap.toString();
 		}
+		// Diagnostic only - 2026-10-24. The TDS Books actually applied to the Bill comes
+		// from the vendor's TDS tax in Books, and when it differs from Creator's
+		// TDS_Percentage the payment below is refused as "more than the balance due".
+		// This line shows Books' own total, TDS and balance for the bill.
+		info "recordVendorPayment - Bill " + bill_id + " as created by Books: total=" + billRec.get("total") + " tds_amount=" + billRec.get("tds_amount") + " balance=" + billRec.get("balance") + " | Creator expects TDS " + preflightTds + " (" + tdsPercentAmt + "%)";
 
 		// Step 3: TDS. Computed here from the vendor TDS percent rather
 		// than trusted from the caller, so it always matches billTotal
@@ -565,6 +570,11 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 				}
 			}
 			creditMap.put("vendor_credit_number",creditNumber);
+			// THE CREDIT NAMES ITS BILL - 2026-10-24, live error "Select the associated
+			// bill number or bill type." Books (India/GST) now refuses a Vendor Credit
+			// that is not tied to a bill. bill_id is the Bill created just above - the
+			// same one this credit is applied to below - so nothing else changes.
+			creditMap.put("bill_id",bill_id);
 			if(billDate != "")
 			{
 				creditMap.put("date",billDate);
@@ -767,6 +777,16 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 				// Deliberately swallowed: the PAYMENT error is the one worth reporting,
 				// and losing it to a cleanup failure would leave nothing to act on.
 				info "recordVendorPayment - could not roll back bill " + bill_id + " (it will need removing by hand in Zoho Books): " + delEx.toString();
+			}
+			// WHAT "MORE THAN THE BALANCE DUE" MEANS HERE - 2026-10-24. Books works out the
+			// bill balance with the TDS tax set on the vendor in Books; the payment amount
+			// uses TDS_Percentage from Creator. When Books withholds more, the balance is
+			// lower than our payment and Books refuses it. Message text only.
+			bookErrText = ifnull(bookErr,"").toString();
+			bookErrLower = bookErrText.toLowerCase();
+			if(bookErrLower.contains("balance due"))
+			{
+				bookErr = bookErrText + " This usually means the vendor's TDS in Zoho Books is not " + tdsPercentAmt + "% (the TDS_Percentage in Creator), so Books withheld a different amount and the bill balance is lower than the Final Payable of " + finalPayable + ". Make the two match - the TDS field on the vendor in Zoho Books (Purchases -> Vendors -> Edit) or TDS_Percentage on the Creator vendor record - then retry.";
 			}
 			if(billCleaned == "yes")
 			{

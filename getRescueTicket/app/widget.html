@@ -5533,6 +5533,7 @@ async function routesComputeLeg(o, d, travelMode, trafficAware){
   let timer = null;
   const timeout = new Promise(function(_, rej){ timer = setTimeout(function(){ rej(new Error("Routes API timed out")); }, ROUTES_TIMEOUT_MS); });
   try{
+    // google route api call with fetch
     const resp = await Promise.race([
       fetch(ROUTES_API_URL, { method:"POST",
         headers:{ "Content-Type":"application/json",
@@ -12119,6 +12120,73 @@ function staleInviteChip(r){
   if(s.expired && !s.rejected) return s.expired===1 ? "Invite timed out" : "All "+s.expired+" invites timed out";
   return "No vendor responded";
 }
+/* INVITE TIMED OUT -> BACK TO READY FOR ASSIGNMENT - 2026-10-23, client
+   decision (a): when the 2 minutes run out with nobody accepting, the ticket
+   must not keep sitting at RSP IRA. Until now the timeout was only a label
+   here and a removal in the vendor app; the status never changed.
+
+   Moves a ticket ONLY when all of these hold:
+     - status is RSP IRA (INVITE RESPONSE AWAITED)
+     - it has vendor invites, none accepted, none still inside its 2 minutes,
+       and at least one timed out (all-rejected is left to the existing
+       RSP REJECT handling)
+     - re-checked on a FRESH Invites read and a FRESH ticket read just before
+       writing, and the ticket still has no Assigned_Vendor.
+   An invite with no readable time counts as still awaiting (inviteStatusFor),
+   so nothing is ever released on a guess. Only Status is written - Vendors1,
+   the invites and their history are untouched, so Re-invite still works and
+   puts the ticket back to RSP IRA (reinviteVendor). No message is sent, so
+   any agent's dashboard may do it; a failed write waits 5 minutes. */
+const INVITE_RELEASE_TO = "READY FOR ASSIGNMENT";
+const INVITE_RELEASE_RETRY_MS = 5*60000;
+const INVITE_RELEASE_FAILED_AT = {};
+function inviteReleaseDue(slot){
+  return !!(slot && slot.total>0 && slot.accepted===0 && slot.live===0 && slot.expired>0);
+}
+async function releaseTimedOutInvites(recs){
+  const due = (recs||[]).filter(function(r){
+    const st = String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase();
+    if(st!=="RSP IRA (INVITE RESPONSE AWAITED)") return false;
+    const failedAt = INVITE_RELEASE_FAILED_AT[String(r.ID)];
+    if(failedAt && (Date.now()-failedAt)<INVITE_RELEASE_RETRY_MS) return false;
+    return inviteReleaseDue(INVITE_STATE_BY_TICKET[String(r.ID)]);
+  });
+  if(!due.length) return;
+  const allInvites = await apiGetReport(CONFIG.invitesReport, null, 1000);
+  for(const listed of due){
+    const id = String(listed.ID);
+    try{
+      const slot = { total:0, accepted:0, rejected:0, expired:0, live:0 };
+      (allInvites||[]).forEach(function(inv){
+        if(inv.Vendor==null || inv.Vendor==="") return;   // vendor invites only, as loadInviteStateForDashboard()
+        if(!inviteBelongsToTicket(inv, id)) return;
+        slot.total++;
+        const label = inviteStatusFor(inv).label;
+        if(label==="Accepted") slot.accepted++;
+        else if(label==="Rejected") slot.rejected++;
+        else if(label==="Timed Out") slot.expired++;
+        else slot.live++;
+      });
+      if(!inviteReleaseDue(slot)){
+        console.log("[Get-Rescue] releaseTimedOutInvites: ticket", id, "no longer all timed out on a fresh read - left at RSP IRA.", JSON.stringify(slot));
+        continue;
+      }
+      const fresh = await apiGetById(id);
+      const freshSt = String(readVal(fresh,CONFIG.stageField)||"").trim().toUpperCase();
+      const assigned = fresh ? unwrapLookup(fresh.Assigned_Vendor) : null;
+      if(!fresh || freshSt!=="RSP IRA (INVITE RESPONSE AWAITED)" || String(assigned==null?"":assigned).trim()!==""){
+        console.log("[Get-Rescue] releaseTimedOutInvites: ticket", id, "changed since the list loaded (status", freshSt||"?", ", assigned", JSON.stringify(assigned), ") - left alone.");
+        continue;
+      }
+      await updateTicket(id, { [CONFIG.stageField]: INVITE_RELEASE_TO });
+      listed[CONFIG.stageField] = INVITE_RELEASE_TO;   // the list about to render shows it moved
+      console.log("[Get-Rescue] releaseTimedOutInvites: ticket", id, "RSP IRA ->", INVITE_RELEASE_TO, "(every vendor invite timed out with no accept)", JSON.stringify(slot));
+    }catch(e){
+      INVITE_RELEASE_FAILED_AT[id] = Date.now();
+      console.warn("[Get-Rescue] releaseTimedOutInvites: could not move ticket", id, "- it stays at RSP IRA; retried in 5 minutes.", e);
+    }
+  }
+}
 async function loadDashboard(){
   showView("dashboard");
   $("columns").innerHTML = '<div class="center-state"><div class="spin"></div></div>';
@@ -12129,6 +12197,9 @@ async function loadDashboard(){
   await autoPromoteScheduledTickets(recs);
   // Before renderReportLists(), which is what calls rowHtml().
   await loadInviteStateForDashboard();
+  // Invite timed out -> READY FOR ASSIGNMENT (2026-10-23). Needs the invite
+  // state just built, and runs before the lists render.
+  try{ await releaseTimedOutInvites(recs); }catch(e){ console.warn("[Get-Rescue] releaseTimedOutInvites failed (non-blocking)", e); }
   sortTicketsNewestFirst(recs);
   renderReportLists(recs);
   // Real-time-ish mechanic-update notifications (2026-08-07) — silently
@@ -13963,6 +14034,13 @@ async function pollDashboardForMechanicUpdates(){
     // the dashboard refreshing.
     try{ await sendDueSend9Messages(recs); }
     catch(e){ console.warn("[Get-Rescue] sendDueSend9Messages failed (non-blocking)", e); }
+    // Invite timed out -> READY FOR ASSIGNMENT (2026-10-23), within 30s of the
+    // 2 minutes running out. The invite state is re-read here only while some
+    // ticket is at RSP IRA, so an idle dashboard costs nothing extra.
+    if(recs.some(function(r){ return String(readVal(r,CONFIG.stageField)||"").trim().toUpperCase()==="RSP IRA (INVITE RESPONSE AWAITED)"; })){
+      try{ await loadInviteStateForDashboard(); await releaseTimedOutInvites(recs); }
+      catch(e){ console.warn("[Get-Rescue] releaseTimedOutInvites failed (non-blocking)", e); }
+    }
     const changed=[];
     // Real bug fixed 2026-09-01 (user-reported live, two tabs open on the
     // same dashboard: a brand-new ticket created in one tab never appeared
@@ -16674,6 +16752,17 @@ async function reinviteVendor(inviteId, btn){
   if(btn){ btn.disabled=true; btn.textContent="Sending…"; }
   try{
     await apiUpdateReport(CONFIG.invitesReport, inviteId, { Invited_At: fmtDateTime(new Date()) });
+    /* Back to RSP IRA if the timeout released the ticket - 2026-10-23. The
+       vendor app only lists RSP IRA invites, so without this a re-sent invite
+       on a READY FOR ASSIGNMENT ticket would never reach the vendor. Read
+       fresh: another agent's dashboard may have released it meanwhile. */
+    const freshTicket = state.recordId ? await apiGetById(state.recordId) : null;
+    const freshTicketSt = String(readVal(freshTicket,CONFIG.stageField)||"").trim().toUpperCase();
+    if(freshTicket && freshTicketSt===INVITE_RELEASE_TO){
+      await updateTicket(state.recordId, { [CONFIG.stageField]: "RSP IRA (INVITE RESPONSE AWAITED)" });
+      if(state.record) state.record[CONFIG.stageField] = "RSP IRA (INVITE RESPONSE AWAITED)";
+      console.log("[Get-Rescue] reinviteVendor: ticket", state.recordId, "READY FOR ASSIGNMENT -> RSP IRA (invite re-sent)");
+    }
     // Re-read rather than patching the cached row, so the panel shows what
     // Zoho actually stored rather than what we hoped it stored.
     await loadInviteStatuses(state.recordId);

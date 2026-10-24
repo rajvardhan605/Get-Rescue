@@ -5503,7 +5503,7 @@ async function pingCurrentLocation(announce){
          working perfectly in the phone browser. Said out loud because there is
          no console inside the app to find it in. */
       console.warn("[GR-Vendor] pingCurrentLocation: no position fix. In the Zoho Creator portal app this usually means the app itself lacks location permission — check the OS app settings, not just the browser prompt.");
-      say("Location unavailable — jobs will be measured from your registered address. Check location permission for this app.","err");
+      // Toast hidden 2026-10-23 (user request) - the console.warn above is the only report now.
       return false;
     }
     const fn=resolve("updateRecordById");

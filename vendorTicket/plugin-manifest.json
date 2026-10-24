@@ -3,6 +3,7 @@
   "cspDomains": {
     "connect-src": [
       "https://maps.googleapis.com",
+      "https://routes.googleapis.com",
       "https://a.tile.openstreetmap.org",
       "https://b.tile.openstreetmap.org",
       "https://c.tile.openstreetmap.org"
