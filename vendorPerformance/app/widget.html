@@ -47,6 +47,17 @@ select#filterRange{font-family:var(--f-disp);font-weight:700;font-size:13.5px;pa
   animation:spin .7s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .state-err{background:var(--stop-soft);color:var(--stop);border-radius:12px;padding:16px;font-weight:700;text-align:center}
+/* Rejected / Timed Out list - 2026-10-27 */
+.out-wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh-1);margin-top:12px}
+.out-table{border-collapse:collapse;width:100%;font-size:13px;min-width:640px}
+.out-table th{font-family:var(--f-mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);text-align:left;padding:10px 12px;background:var(--worktop);white-space:nowrap}
+.out-table td{padding:10px 12px;border-top:1px solid var(--line);vertical-align:top}
+.out-table td.case{font-family:var(--f-mono);font-weight:600;white-space:nowrap}
+.out-table td.when{white-space:nowrap;font-variant-numeric:tabular-nums}
+.out-pill{display:inline-block;font-family:var(--f-mono);font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
+.out-pill.rej{background:var(--stop-soft);color:var(--stop)}
+.out-pill.to{background:var(--wait-soft);color:var(--wait)}
+.out-empty{font-size:12.5px;opacity:.7;margin-top:10px}
 </style>
 </head>
 <body>
@@ -80,6 +91,12 @@ select#filterRange{font-family:var(--f-disp);font-weight:700;font-size:13.5px;pa
    Completed, Cancelled) and a "% PERCENTAGE" column (Reached Inside ETA,
    Issues Fixed, Customer Feedback >= 9), both filterable by
    Today/Yesterday/This Month/Last Month.
+
+   ONE CASE LIST, BY CLIENT REQUEST (2026-10-27): "reject/timed out report
+   needs to be shown to the vendor (only cases of that particular vendor)".
+   This deliberately narrows the "no case history" rule above for this one
+   list only: the vendor's own Rejected / Timed Out invites, with case-level
+   facts and no customer details. Everything else here stays aggregate.
    ===================================================================== */
 const CONFIG = {
   appName: "get-rescue",
@@ -188,6 +205,101 @@ async function loadVendorTicketsViaCustomApi(vendorId){
     console.warn("[GR-VendorPerf] loadVendorTicketsViaCustomApi failed — no tickets.", e);
     return [];
   }
+}
+/* ---------- Rejected / Timed Out list - 2026-10-27, client request ----------
+   Data: the getMyInviteOutcomes Custom API, which decides on the SERVER which
+   vendor is asking (login email) and returns only that vendor's invites and
+   rejection-log rows plus case-level facts - never another vendor's, never a
+   customer's name, phone or address.
+
+   null from the loader means "not available" (API not created yet, refused,
+   or failed). The page then behaves exactly as it did before this list existed:
+   the count card keeps its Task_Rejections figure and the list says why it is
+   missing. */
+async function loadInviteOutcomesViaCustomApi(vendorId){
+  const fn=resolve("invokeCustomApi");
+  if(!fn){ console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: invokeCustomApi unavailable - list not shown."); return null; }
+  try{
+    const res=await fn({ api_name:"getMyInviteOutcomes", workspace_name:"getrescued", http_method:"POST", content_type:"application/json", payload:{ vendorId:String(vendorId||"") } });
+    let data=res;
+    if(data && typeof data.result==="string"){
+      try{ data=JSON.parse(data.result); }
+      catch(e){ console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: response.result wasn't valid JSON", e, res); return null; }
+    }
+    if(!data || data.code!=="SUCCESS" || !Array.isArray(data.rows)){
+      console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: Custom API did not return rows -", (data&&data.message)||"(no message)", res);
+      return null;
+    }
+    console.log("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: "+data.rows.length+" case(s) for vendor "+data.vendorId+" (identified by "+data.verifiedBy+").");
+    return data.rows;
+  }catch(e){
+    console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi failed - list not shown, count falls back to the rejection log.", e);
+    return null;
+  }
+}
+/* Same 2 minutes as the vendor app's own INVITE_TIMEOUT_MS and the agent app's
+   "Timed Out" label - if the SLA changes, change all three. */
+const OUTCOME_TIMEOUT_MS = 2*60*1000;
+/* One row per case, or nothing:
+     - Assigned to THIS vendor, or the invite was accepted  -> not listed.
+     - Rejected: a rejection-log entry, or an invite that really was rejected
+       (Status says REJECT and a reason or response time backs it up - the
+       Invites form defaults Status to "RSP REJECT", so Status alone proves
+       nothing; same test as the agent app's inviteWasRejected()).
+     - Timed Out: no response, more than 2 minutes since the invite, and no
+       other vendor took the case inside those 2 minutes. If another vendor has
+       it and the accept time cannot be read, it is NOT counted against this
+       vendor - the list only ever says what can be shown to be true.
+     - Anything else (still inside its 2 minutes) -> not listed. */
+function classifyInviteOutcome(row, myVendorId, nowMs){
+  const mine = String(row.Assigned_Vendor||"").trim();
+  if(mine && mine===String(myVendorId)) return null;
+  const inv = row.invite || null, rej = row.rejection || null;
+  if(inv && String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="YES") return null;
+  const invitedAt = inv ? (parseAnyDateTime(inv.Invited_At) || parseAnyDateTime(inv.Added_Time)) : null;
+  const invRejected = !!(inv && String(inv.Status||"").toUpperCase().indexOf("REJECT")>=0 && (String(inv.Reject_Reason||"").trim()!=="" || String(inv.Responded_At||"").trim()!==""));
+  if(rej || invRejected){
+    const when = (rej && parseAnyDateTime(rej.Rejected_At)) || (inv && parseAnyDateTime(inv.Responded_At)) || invitedAt;
+    const reason = String((rej && rej.Reason) || (inv && inv.Reject_Reason) || "").trim();
+    return { result:"Rejected", when:when, reason:reason };
+  }
+  if(!inv || !invitedAt) return null;
+  if((nowMs - invitedAt.getTime()) < OUTCOME_TIMEOUT_MS) return null;
+  if(mine){
+    const isTow = String(row.Service_Type||"").toUpperCase()==="TOW";
+    const acceptAt = parseAnyDateTime(isTow ? row.Service_Acceptance_For_Tow : row.Service_Acceptance);
+    if(!acceptAt) return null;
+    if((acceptAt.getTime() - invitedAt.getTime()) < OUTCOME_TIMEOUT_MS) return null;
+  }
+  return { result:"Timed Out", when:invitedAt, reason:"" };
+}
+function buildInviteOutcomes(rows, myVendorId){
+  const now = Date.now();
+  const out = [];
+  (rows||[]).forEach(function(row){
+    const o = classifyInviteOutcome(row, myVendorId, now);
+    if(!o) return;
+    out.push({ caseId: String(row.Case_ID||"").trim() || ("#"+row.ticketId), service: String(row.Service_Type||""), vehicle: String(row.Vehicle_Name||""), issue: String(row.Issue_Names||""), result:o.result, when:o.when, reason:o.reason });
+  });
+  out.sort(function(a,b){ return (b.when ? b.when.getTime() : 0) - (a.when ? a.when.getTime() : 0); });
+  return out;
+}
+function outcomeWhenText(d){
+  if(!d) return "\u2014";
+  let h=d.getHours(); const ap=h>=12?"PM":"AM"; h=h%12||12;
+  const p=function(n){ return (n<10?"0":"")+n; };
+  return p(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+p(h)+":"+p(d.getMinutes())+" "+ap;
+}
+function inviteOutcomesHtml(list, range){
+  const title = '<div class="section-title">Rejected / Timed Out cases</div>';
+  if(list==null) return title + '<div class="out-empty">The case list is not available right now. The count above is from your rejections only.</div>';
+  const shown = list.filter(function(o){ return o.when && o.when.getTime()>=range.from.getTime() && o.when.getTime()<=range.to.getTime(); });
+  if(!shown.length) return title + '<div class="out-empty">No rejected or timed-out cases in this period.</div>';
+  const body = shown.map(function(o){
+    const pill = o.result==="Rejected" ? '<span class="out-pill rej">Rejected</span>' : '<span class="out-pill to">Timed Out</span>';
+    return "<tr><td class=\"case\">"+esc(o.caseId)+"</td><td class=\"when\">"+esc(outcomeWhenText(o.when))+"</td><td>"+esc(o.service||"\u2014")+"</td><td>"+esc(o.vehicle||"\u2014")+"</td><td>"+esc(o.issue||"\u2014")+"</td><td>"+pill+"</td><td>"+esc(o.reason||"\u2014")+"</td></tr>";
+  }).join("");
+  return title + '<div class="out-wrap"><table class="out-table"><thead><tr><th>Case ID</th><th>Date &amp; Time</th><th>Service</th><th>Vehicle</th><th>Issue</th><th>Result</th><th>Reason</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 async function loadTaskRejectionsViaCustomApi(){
   const fn=resolve("invokeCustomApi");
@@ -438,7 +550,7 @@ const ICON_PCT='<svg viewBox="0 0 24 24" fill="none"><path d="M5 19 19 5M7 9a2 2
 
 function pctText(v){ return v==null ? "—" : v+"%"; }
 
-function render(stats, settlement){
+function render(stats, settlement, outcomesHtml){
   // settlement is optional — render() keeps working with a single argument
   // exactly as before if it is ever called without one.
   const s = settlement || { awaitingAmount:0, awaitingCount:0, paidAmount:0, paidCount:0, tdsAmount:0, cashCollected:0, anyData:false };
@@ -459,6 +571,7 @@ function render(stats, settlement){
       <div class="card"><div class="ic">${ICON_OK}</div><div class="num">${esc(stats.completed)}</div><div class="lbl">Completed</div></div>
       <div class="card wait"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.cancelled)}</div><div class="lbl">Cancelled</div></div>
     </div>
+    ${outcomesHtml || ""}
     <div class="section-title">% Percentage</div>
     <div class="grid">
       <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.etaMetPct))}</div><div class="lbl">Reached Inside ETA</div></div>
@@ -470,6 +583,7 @@ function render(stats, settlement){
 function renderError(msg){ $("content").innerHTML = '<div class="state-err">'+esc(msg)+'</div>'; }
 
 let ALL_TICKETS=[], ALL_REJECTIONS=[];
+let ALL_OUTCOMES=null;   // Rejected / Timed Out list (2026-10-27); null = not available
 async function refresh(){
   const range = rangeFor($("filterRange").value);
   // Diagnostic (2026-09-04) — the boot log already proves Assigned_Vendor
@@ -483,7 +597,14 @@ async function refresh(){
   // computeSettlement()'s own header for why money owed must not be hidden by
   // a date filter. The performance stats below it stay range-filtered exactly
   // as before; nothing about that call has changed.
-  render(computeStats(ALL_TICKETS, ALL_REJECTIONS, range), computeSettlement(ALL_TICKETS));
+  const stats = computeStats(ALL_TICKETS, ALL_REJECTIONS, range);
+  // With the list available, the card counts exactly the rows listed below it -
+  // rejections AND timeouts, this vendor only (2026-10-27). Without it, the
+  // card keeps its previous rejection-log figure.
+  if(ALL_OUTCOMES){
+    stats.rejectedCount = ALL_OUTCOMES.filter(function(o){ return o.when && o.when.getTime()>=range.from.getTime() && o.when.getTime()<=range.to.getTime(); }).length;
+  }
+  render(stats, computeSettlement(ALL_TICKETS), inviteOutcomesHtml(ALL_OUTCOMES, range));
 }
 $("filterRange").onchange = refresh;
 
@@ -523,10 +644,12 @@ async function boot(){
        resolveVendorRecord() above still uses apiGetReport for
        My_Availability_Vendor — that one is self-scoped and readable by the
        portal profile, so it needs no Custom API. */
-    const [allTicketRecs, rejectionRecs] = await Promise.all([
+    const [allTicketRecs, rejectionRecs, outcomeRows] = await Promise.all([
       loadVendorTicketsViaCustomApi(vid),
-      loadTaskRejectionsViaCustomApi()
+      loadTaskRejectionsViaCustomApi(),
+      loadInviteOutcomesViaCustomApi(vid)   // 2026-10-27 - resolves null on any failure, never rejects
     ]);
+    ALL_OUTCOMES = outcomeRows ? buildInviteOutcomes(outcomeRows, vid) : null;
     // The client-side Assigned_Vendor filter is KEPT even though
     // getVendorTickets already filters server-side. It is one cheap pass over an
     // already-small list, and it means this line stays correct if the Custom API

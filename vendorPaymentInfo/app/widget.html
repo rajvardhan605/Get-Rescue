@@ -55,6 +55,7 @@ body{font-family:var(--f-body);background:var(--paper);color:var(--text);font-si
 .grid th,.grid td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
 .grid th{font-weight:700;background:var(--worktop);font-size:12px}
 .grid td.num,.grid th.num{text-align:right;font-variant-numeric:tabular-nums}
+.grid td.cmt{white-space:normal;min-width:180px;max-width:320px}   /* Comments - 2026-10-27 */
 .grid tr:last-child > td{border-bottom:none}
 .grid tr.txn td{vertical-align:middle}
 .grid tr.txn.open > td{background:var(--signal-soft)}
@@ -301,6 +302,12 @@ function caseCells(r){
          `<td class="num">${baseFeeText(r)}</td><td class="num">${moneyField(r,"Vendor_KM_Fee")}</td>` +
          `<td class="num">${money(num(r,"Extras"))}</td><td class="num">${moneyField(r,"Vendor_Net_Fee")}</td>`;
 }
+/* Comments - 2026-10-27, client decision: the vendor sees the Comments entered in
+   Operations Approval / Accounts Payable for each case. Blank shows a dash. */
+function commentCell(r){
+  const c = val(r,"Ops_Approval_Comments").trim();
+  return '<td class="cmt">' + (c ? esc(c) : "—") + "</td>";
+}
 function feeDetailHtml(g){
   const t = { net:0, tds:0, cash:0, bal:0, fin:0 };
   const rows = g.cases.map(function(r){
@@ -309,14 +316,14 @@ function feeDetailHtml(g){
     t.net += net; t.tds += tds; t.cash += num(r,"Cash_Collected"); t.bal += num(r,"Vendor_Balance_Before_TDS"); t.fin += fin;
     return `<tr>${caseCells(r)}<td class="num">${rate}</td><td class="num">${moneyField(r,"TDS_Amount")}</td>` +
       `<td class="num">${moneyField(r,"Cash_Collected")}</td><td class="num">${moneyField(r,"Vendor_Balance_Before_TDS")}</td>` +
-      `<td class="num"><b>${money(fin)}</b></td></tr>`;
+      `<td class="num"><b>${money(fin)}</b></td>${commentCell(r)}</tr>`;
   }).join("");
   const n = g.cases.length;
   return `<div class="gridwrap"><table class="grid"><thead><tr>${INFO_HEAD}${FEE_HEAD}` +
-    `<th class="num">TDS Rate</th><th class="num">TDS Amt</th><th class="num">Cash Collected</th><th class="num">Balance Amt</th><th class="num">Final Payable</th>` +
+    `<th class="num">TDS Rate</th><th class="num">TDS Amt</th><th class="num">Cash Collected</th><th class="num">Balance Amt</th><th class="num">Final Payable</th><th>Comments</th>` +
     `</tr></thead><tbody>${rows}<tr class="total"><td colspan="8">Total — ${n} case${n===1?"":"s"}</td>` +
     `<td class="num">${money(t.net)}</td><td></td><td class="num">${money(t.tds)}</td><td class="num">${money(t.cash)}</td>` +
-    `<td class="num">${money(t.bal)}</td><td class="num">${money(t.fin)}</td></tr></tbody></table></div>`;
+    `<td class="num">${money(t.bal)}</td><td class="num">${money(t.fin)}</td><td></td></tr></tbody></table></div>`;
 }
 function gstDetailHtml(g){
   const t = { net:0, gst:0, paid:0 };
@@ -329,13 +336,13 @@ function gstDetailHtml(g){
     const pct = (gstAmt>0 && net>0) ? (gstAmt/net*100) : (applicable ? VENDOR_GST_RATE : 0);
     t.net += net; t.gst += gstAmt; t.paid += paid;
     return `<tr>${caseCells(r)}<td>${applicable?"Yes":"No"}</td><td class="num">${pct.toFixed(2)}%</td>` +
-      `<td class="num">${moneyField(r,"GST_Payable")}</td><td class="num"><b>${money(paid)}</b></td></tr>`;
+      `<td class="num">${moneyField(r,"GST_Payable")}</td><td class="num"><b>${money(paid)}</b></td>${commentCell(r)}</tr>`;
   }).join("");
   const n = g.cases.length;
   return `<div class="gridwrap"><table class="grid"><thead><tr>${INFO_HEAD}${FEE_HEAD}` +
-    `<th>GST Applicable</th><th class="num">GST %</th><th class="num">GST Amt</th><th class="num">GST Paid</th>` +
+    `<th>GST Applicable</th><th class="num">GST %</th><th class="num">GST Amt</th><th class="num">GST Paid</th><th>Comments</th>` +
     `</tr></thead><tbody>${rows}<tr class="total"><td colspan="8">Total — ${n} case${n===1?"":"s"}</td>` +
-    `<td class="num">${money(t.net)}</td><td></td><td></td><td class="num">${money(t.gst)}</td><td class="num">${money(t.paid)}</td>` +
+    `<td class="num">${money(t.net)}</td><td></td><td></td><td class="num">${money(t.gst)}</td><td class="num">${money(t.paid)}</td><td></td>` +
     `</tr></tbody></table></div>`;
 }
 function sectionHtml(kind, title, res){

@@ -117,6 +117,7 @@ Standalone widget, added 2026-09-03, for a logged-in vendor's own performance st
 - **`Vendors_Report` — View.** Resolves the logged-in vendor's own identity (matched by login email), same pattern `vendorTicket` already uses.
 - **`Agent_Ticket_Report` — View.** This vendor's own tickets (`Assigned_Vendor` match) for Completed/Cancelled counts and the ETA/Issue/Feedback percentages.
 - **`Task_Rejections` — View.** This vendor's own rejected/timed-out count (matched by name, same as `vendorTicket`'s own reject-log write).
+- **Custom API `getMyInviteOutcomes` (added 2026-10-27) — must be created in Zoho and invocable by the Vendor portal profile**, the same way `getVendorTickets` / `getVendorPayments` are. Source: `getRescueTicket/custom-apis/getMyInviteOutcomes.deluge`. One parameter, `vendorId` (string). Logged-in user authentication, **not** a public key — it identifies the caller from `zoho.loginuser` and returns only that vendor's own invites and rejection-log rows. Feeds the **Rejected / Timed Out cases** list (client request 2026-10-27, a deliberate exception to the no-case-history rule above for this one list: Case ID, date, service, vehicle, issue, result, reason — no customer details). Read-only; reads the `Invites`, `Task_Rejections`, `Create_Case`, `vendors`, `vehicle_master` and `Vehicle_Issue` forms server-side, so no extra report permission is needed. Until it exists the page behaves exactly as before (count from the rejection log, list marked unavailable).
 
 ## Agent Performance (`agentPerformance`)
 

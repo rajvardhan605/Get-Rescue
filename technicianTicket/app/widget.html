@@ -3794,7 +3794,7 @@ async function pingCurrentLocation(announce){
          working perfectly in the phone browser. Said out loud because there is
          no console inside the app to find it in. */
       console.warn("[Get-Rescue] pingCurrentLocation: no position fix. In the Zoho Creator portal app this usually means the app itself lacks location permission — check the OS app settings, not just the browser prompt.");
-      say("Location unavailable — you may not show correctly on the dispatch map. Check location permission for this app.","err");
+      // say("Location unavailable — you may not show correctly on the dispatch map. Check location permission for this app.","err");
       return false;
     }
     const fn=resolve("updateRecordById");
@@ -3816,7 +3816,7 @@ async function pingCurrentLocation(announce){
     return true;
   }catch(e){
     console.warn("[Get-Rescue] pingCurrentLocation failed (non-fatal, retries next tick):", e);
-    say("Couldn't save your location — check your connection","err");
+    // say("Couldn't save your location — check your connection","err");
     return false;
   }
 }

@@ -1,0 +1,442 @@
+string getMyInviteOutcomes(string vendorId)
+{
+	/* getMyInviteOutcomes - 2026-10-27, client request: "reject/timed out report
+	   needs to be shown to the vendor (only cases of that particular vendor)".
+	   Feeds the Rejected / Timed Out list on the vendorPerformance page.
+
+	   RETURNS RAW FACTS, NOT VERDICTS. Per ticket this vendor was invited to or
+	   rejected: the invite's own times and response fields, any Task_Rejections
+	   entry, and a few case fields (Case ID, service, vehicle, issue, status, who
+	   it was assigned to and when it was accepted). The widget turns these into
+	   Rejected / Timed Out with the same 2-minute rule the agent app uses, so the
+	   two screens can never disagree about an invite.
+
+	   ONLY THIS VENDOR, decided here - the same identity check as
+	   getVendorPayments: zoho.loginuser is matched to a Vendors record by Email; a
+	   request naming a different vendor is refused with no data; with no login
+	   match the requested vendorId is used, as getVendorTickets already does.
+	   REQUIRE_LOGIN_MATCH = true closes that route once "verifiedBy" is seen to
+	   read "login" for real vendors.
+
+	   TWO SOURCES, merged per ticket:
+	     - Invites, matched on the Vendor lookup id (exact, survives renames).
+	     - Task_Rejections, matched on RSP_Name (the vendor name the vendor app
+	       writes) - kept so a reject still counts when the app could not update
+	       its invite row, and so rejects from before invites existed still show.
+
+	   NO CUSTOMER DATA: no name, phone, email, address or location leaves here.
+	   READ-ONLY: no insert, update or delete. Forms are read directly, as
+	   getVendorPayments does, so report layouts and portal report permissions do
+	   not matter and no OAuth token is involved.
+
+	   Deluge shapes as elsewhere in this repo: no &&, no ternary, lookups and
+	   date-times null-checked before .toString(), containKey (not containsKey),
+	   and the reply built as a Map. */
+	REQUIRE_LOGIN_MATCH = false;
+	result = Map();
+	emptyList = List();
+	try
+	{
+		requested = ifnull(vendorId,"").trim();
+		/* ---------- 1. who is calling ---------- */
+		callerEmail = ifnull(zoho.loginuser,"").trim();
+		callerEmail = callerEmail.toLowerCase();
+		verifiedId = "";
+		if(callerEmail != "")
+		{
+			for each vRec in vendors[ID != 0]
+			{
+				if(verifiedId == "")
+				{
+					vEmail = ifnull(vRec.Email,"").trim();
+					if(vEmail.toLowerCase() == callerEmail)
+					{
+						verifiedId = vRec.ID.toString();
+					}
+				}
+			}
+		}
+		wanted = "";
+		verifiedBy = "";
+		if(verifiedId != "")
+		{
+			if(requested != "")
+			{
+				if(requested != verifiedId)
+				{
+					info "getMyInviteOutcomes - REFUSED: login " + callerEmail + " is vendor " + verifiedId + " but asked for vendor " + requested;
+					result.put("code","ERROR");
+					result.put("message","This login belongs to a different vendor than the one requested, so nothing was returned.");
+					result.put("rows",emptyList);
+					return result.toString();
+				}
+			}
+			wanted = verifiedId;
+			verifiedBy = "login";
+		}
+		else
+		{
+			if(REQUIRE_LOGIN_MATCH)
+			{
+				result.put("code","ERROR");
+				result.put("message","This login is not linked to any vendor record, so nothing can be shown.");
+				result.put("rows",emptyList);
+				return result.toString();
+			}
+			wanted = requested;
+			verifiedBy = "request";
+		}
+		if(wanted == "")
+		{
+			result.put("code","ERROR");
+			result.put("message","No vendor could be identified for this login, and no vendorId was sent.");
+			result.put("rows",emptyList);
+			return result.toString();
+		}
+		wantedLong = 0;
+		try
+		{
+			wantedLong = wanted.toLong();
+		}
+		catch (idEx)
+		{
+			wantedLong = 0;
+		}
+		vendorFound = false;
+		vendorName = "";
+		for each meRec in vendors[ID == wantedLong]
+		{
+			vendorFound = true;
+			vendorName = ifnull(meRec.vendor_name,"").trim();
+		}
+		if(vendorFound == false)
+		{
+			result.put("code","ERROR");
+			result.put("message","No vendor record exists with id " + wanted + ".");
+			result.put("rows",emptyList);
+			return result.toString();
+		}
+		vendorNameLower = vendorName.toLowerCase();
+		info "getMyInviteOutcomes - vendor " + wanted + " (" + vendorName + ", identified by " + verifiedBy + ", login " + callerEmail + ")";
+		/* ---------- 2. this vendor's invites, by ticket id ---------- */
+		inviteByTicket = Map();
+		for each inv in Invites[ID != 0]
+		{
+			invVendor = "";
+			if(inv.Vendor != null)
+			{
+				invVendor = inv.Vendor.toString().trim();
+			}
+			if(invVendor == wanted)
+			{
+				ticketKey = "";
+				if(inv.RSID != null)
+				{
+					ticketKey = inv.RSID.toString().trim();
+				}
+				if(ticketKey != "")
+				{
+					invMap = Map();
+					invitedAtText = "";
+					if(inv.Invited_At != null)
+					{
+						invitedAtText = inv.Invited_At.toString();
+					}
+					addedText = "";
+					if(inv.Added_Time != null)
+					{
+						addedText = inv.Added_Time.toString();
+					}
+					respondedText = "";
+					if(inv.Responded_At != null)
+					{
+						respondedText = inv.Responded_At.toString();
+					}
+					invMap.put("Invited_At",invitedAtText);
+					invMap.put("Added_Time",addedText);
+					invMap.put("Responded_At",respondedText);
+					invMap.put("Status",ifnull(inv.Status,"").toString());
+					invMap.put("Reject_Reason",ifnull(inv.Reject_Reason,"").toString());
+					invMap.put("Service_Acceptance_Next",ifnull(inv.Service_Acceptance_Next,"").toString());
+					// One row per vendor per ticket is the rule; if a duplicate exists,
+					// the later record (higher id) wins - it carries the latest round.
+					inviteByTicket.put(ticketKey,invMap);
+				}
+			}
+		}
+		/* ---------- 3. this vendor's Task_Rejections, by ticket label ---------- */
+		rejectByLabel = Map();
+		if(vendorNameLower != "")
+		{
+			for each tr in Task_Rejections[ID != 0]
+			{
+				trName = ifnull(tr.RSP_Name,"").trim();
+				if(trName.toLowerCase() == vendorNameLower)
+				{
+					trLabel = ifnull(tr.RSID,"").toString().trim();
+					if(trLabel != "")
+					{
+						trMap = Map();
+						trAt = "";
+						if(tr.Rejected_At != null)
+						{
+							trAt = tr.Rejected_At.toString();
+						}
+						trMap.put("Rejected_At",trAt);
+						trMap.put("Reason",ifnull(tr.Reason,"").toString());
+						rejectByLabel.put(trLabel,trMap);
+					}
+				}
+			}
+		}
+		/* ---------- 4. the cases behind them ---------- */
+		rows = List();
+		seenTickets = List:String();
+		vehicleNames = Map();
+		issueNames = Map();
+		// Every ticket to look at: invited ones by id, then rejection-only ones by
+		// their label (a Case_ID, or a bare record id on older rows).
+		lookups = List:String();
+		inviteKeys = inviteByTicket.keys();
+		for each invKey in inviteKeys
+		{
+			lookups.add("id:" + invKey);
+		}
+		rejectKeys = rejectByLabel.keys();
+		for each trKey in rejectKeys
+		{
+			lookups.add("label:" + trKey);
+		}
+		for each lk in lookups
+		{
+			// Ticket ids as text, not records: Deluge cannot read a field off an item
+			// taken back out of a plain List ("Function applied over invalid
+			// expression"), so each id is re-queried from Create_Case below.
+			caseIdTexts = List:String();
+			if(lk.startsWith("id:"))
+			{
+				idPart = lk.subText(3);
+				idLong = 0;
+				try
+				{
+					idLong = idPart.toLong();
+				}
+				catch (lkEx)
+				{
+					idLong = 0;
+				}
+				if(idLong > 0)
+				{
+					for each c1 in Create_Case[ID == idLong]
+					{
+						caseIdTexts.add(c1.ID.toString());
+					}
+				}
+			}
+			else
+			{
+				labelPart = lk.subText(6);
+				// Guarded: if Case_ID cannot be used as a criteria here, the bare-id
+				// route below still runs instead of the whole call failing.
+				try
+				{
+					for each c2 in Create_Case[Case_ID == labelPart]
+					{
+						caseIdTexts.add(c2.ID.toString());
+					}
+				}
+				catch (cidEx)
+				{
+					info "getMyInviteOutcomes - Case_ID lookup for " + labelPart + " failed: " + cidEx.toString();
+				}
+				if(caseIdTexts.size() == 0)
+				{
+					labelLong = 0;
+					try
+					{
+						labelLong = labelPart.toLong();
+					}
+					catch (lbEx)
+					{
+						labelLong = 0;
+					}
+					if(labelLong > 0)
+					{
+						for each c3 in Create_Case[ID == labelLong]
+						{
+							caseIdTexts.add(c3.ID.toString());
+						}
+					}
+				}
+			}
+			for each caseIdText in caseIdTexts
+			{
+				caseIdLong = 0;
+				try
+				{
+					caseIdLong = caseIdText.toLong();
+				}
+				catch (cidLongEx)
+				{
+					caseIdLong = 0;
+				}
+				for each caseRec in Create_Case[ID == caseIdLong]
+				{
+					tid = caseRec.ID.toString();
+					if(seenTickets.contains(tid) == false)
+					{
+						seenTickets.add(tid);
+						caseLabel = ifnull(caseRec.Case_ID,"").toString().trim();
+						/* vehicle name - looked up once per id (as getVendorPayments) */
+						vehicleText = "";
+						vehRef = caseRec.Vehicle;
+						if(vehRef != null)
+						{
+							vehId = vehRef.toString().trim();
+							if(vehId != "")
+							{
+								if(vehicleNames.containKey(vehId))
+								{
+									vehicleText = vehicleNames.get(vehId);
+								}
+								else
+								{
+									vehLong = 0;
+									try
+									{
+										vehLong = vehId.toLong();
+									}
+									catch (vehEx)
+									{
+										vehLong = 0;
+									}
+									if(vehLong > 0)
+									{
+										for each vehRec in vehicle_master[ID == vehLong]
+										{
+											vehicleText = ifnull(vehRec.Name,"").toString().trim();
+										}
+									}
+									vehicleNames.put(vehId,vehicleText);
+								}
+							}
+						}
+						/* issue names (as getVendorPayments) */
+						issueText = "";
+						issueRef = caseRec.Vehicle_Issue;
+						if(issueRef != null)
+						{
+							issueRaw = issueRef.toString().replaceAll("[^0-9,]","");
+							if(issueRaw != "")
+							{
+								issuePieces = issueRaw.toList(",");
+								for each issuePiece in issuePieces
+								{
+									if(issuePiece != "")
+									{
+										oneName = "";
+										if(issueNames.containKey(issuePiece))
+										{
+											oneName = issueNames.get(issuePiece);
+										}
+										else
+										{
+											issueLong = 0;
+											try
+											{
+												issueLong = issuePiece.toLong();
+											}
+											catch (issueEx)
+											{
+												issueLong = 0;
+											}
+											if(issueLong > 0)
+											{
+												for each issueRec in Vehicle_Issue[ID == issueLong]
+												{
+													oneName = ifnull(issueRec.Issue_Name,"").toString().trim();
+												}
+											}
+											issueNames.put(issuePiece,oneName);
+										}
+										if(oneName != "")
+										{
+											if(issueText == "")
+											{
+												issueText = oneName;
+											}
+											else
+											{
+												issueText = issueText + ", " + oneName;
+											}
+										}
+									}
+								}
+							}
+						}
+						assignedText = "";
+						if(caseRec.Assigned_Vendor != null)
+						{
+							assignedText = caseRec.Assigned_Vendor.toString().trim();
+						}
+						acceptRsr = "";
+						if(caseRec.Service_Acceptance != null)
+						{
+							acceptRsr = caseRec.Service_Acceptance.toString();
+						}
+						acceptTow = "";
+						if(caseRec.Service_Acceptance_For_Tow != null)
+						{
+							acceptTow = caseRec.Service_Acceptance_For_Tow.toString();
+						}
+						row = Map();
+						row.put("ticketId",tid);
+						row.put("Case_ID",caseLabel);
+						row.put("Service_Type",ifnull(caseRec.Service_Type,"").toString());
+						row.put("Status",ifnull(caseRec.Status,"").toString());
+						row.put("Vehicle_Name",vehicleText);
+						row.put("Issue_Names",issueText);
+						row.put("Assigned_Vendor",assignedText);
+						row.put("Service_Acceptance",acceptRsr);
+						row.put("Service_Acceptance_For_Tow",acceptTow);
+						if(inviteByTicket.containKey(tid))
+						{
+							row.put("invite",inviteByTicket.get(tid));
+						}
+						if(caseLabel != "")
+						{
+							if(rejectByLabel.containKey(caseLabel))
+							{
+								row.put("rejection",rejectByLabel.get(caseLabel));
+							}
+						}
+						if(row.containKey("rejection") == false)
+						{
+							if(rejectByLabel.containKey(tid))
+							{
+								row.put("rejection",rejectByLabel.get(tid));
+							}
+						}
+						rows.add(row);
+					}
+				}
+			}
+		}
+		info "getMyInviteOutcomes - " + inviteByTicket.size() + " invite(s), " + rejectByLabel.size() + " rejection log row(s), " + rows.size() + " case(s) returned for vendor " + wanted;
+		result.put("code","SUCCESS");
+		result.put("verifiedBy",verifiedBy);
+		result.put("vendorId",wanted);
+		result.put("count",rows.size());
+		result.put("rows",rows);
+	}
+	catch (e)
+	{
+		info "getMyInviteOutcomes threw: " + e.toString();
+		errMap = Map();
+		errMap.put("code","ERROR");
+		errMap.put("message","getMyInviteOutcomes threw an exception: " + e.toString());
+		errMap.put("rows",emptyList);
+		return errMap.toString();
+	}
+	return result.toString();
+}

@@ -499,6 +499,161 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			connection:"zoho_books_connection"
 		];
 		billRespCode = createBillResp.get("code");
+		// LEFTOVER BILL FROM AN EARLIER ATTEMPT - 2026-10-27, client-reported. The bill
+		// number is built from the first case and the UTR, so a retry of the same
+		// payment asks for the SAME number - and if an earlier attempt left its bill in
+		// Books (its rollback could not delete it, or an earlier test created it), Books
+		// refuses with "A bill with this number has already been created for this
+		// vendor". Instead of stopping there, the existing bill is looked up:
+		//   - it has a payment (or reads paid / partially paid): this case was already
+		//     paid - stop, record nothing again, and say so plainly;
+		//   - it is unpaid with no payments: it is a leftover - delete it (the same
+		//     DELETE the rollbacks below already use) and create the bill again ONCE with
+		//     today's figures. Recreated rather than reused so the amounts are always
+		//     the ones being paid now, never what the failed attempt had;
+		//   - void, not found, or the lookup fails: stop with a message naming the bill.
+		// Every other bill-creation error is untouched and reported exactly as before.
+		if(billRespCode != 0)
+		{
+			dupErrText = ifnull(createBillResp.get("message"),"").toString();
+			dupErrLower = dupErrText.toLowerCase();
+			if(dupErrLower.contains("already been created"))
+			{
+				info "recordVendorPayment - bill number " + billNumber + " already exists for vendor " + vendor_id + "; looking it up before deciding.";
+				existingBillId = "";
+				existingStatus = "";
+				existingPaymentCount = 0;
+				lookupOk = "no";
+				try
+				{
+					dupSearchResp = invokeurl
+					[
+						url :books_base_url + "/bills?organization_id=" + organization_id + "&vendor_id=" + vendor_id + "&bill_number=" + billNumber.replaceAll(" ","%20")
+						type :GET
+						connection:"zoho_books_connection"
+					];
+					info "recordVendorPayment - existing-bill search, raw response: " + dupSearchResp.toString();
+					dupBills = List();
+					if(dupSearchResp.get("bills") != null)
+					{
+						dupBills = dupSearchResp.get("bills").toList();
+					}
+					for each dupBill in dupBills
+					{
+						if(existingBillId == "")
+						{
+							dupNum = ifnull(dupBill.get("bill_number"),"").toString();
+							if(dupNum.equalsIgnoreCase(billNumber))
+							{
+								existingBillId = ifnull(dupBill.get("bill_id"),"").toString();
+								existingStatus = ifnull(dupBill.get("status"),"").toString();
+							}
+						}
+					}
+					if(existingBillId != "")
+					{
+						dupDetailResp = invokeurl
+						[
+							url :books_base_url + "/bills/" + existingBillId + "?organization_id=" + organization_id
+							type :GET
+							connection:"zoho_books_connection"
+						];
+						dupDetail = dupDetailResp.get("bill");
+						if(dupDetail != null)
+						{
+							if(dupDetail.get("status") != null)
+							{
+								existingStatus = dupDetail.get("status").toString();
+							}
+							if(dupDetail.get("payments") != null)
+							{
+								dupPayments = dupDetail.get("payments").toList();
+								existingPaymentCount = dupPayments.size();
+							}
+							lookupOk = "yes";
+						}
+					}
+				}
+				catch (dupEx)
+				{
+					info "recordVendorPayment - could not look up the existing bill " + billNumber + ": " + dupEx.toString();
+				}
+				statusLower = existingStatus.toLowerCase();
+				info "recordVendorPayment - existing bill " + billNumber + ": id=" + existingBillId + " status=" + existingStatus + " payments=" + existingPaymentCount + " detailRead=" + lookupOk;
+				if(existingBillId == "")
+				{
+					errMap.put("message","A bill numbered " + billNumber + " already exists for this vendor in Zoho Books, but it could not be looked up automatically, so nothing was recorded. Open Zoho Books -> Purchases -> Bills and search " + billNumber + ": if it is unpaid, delete it and retry; if it is paid, this case has already been paid.");
+					return errMap.toString();
+				}
+				alreadyPaid = false;
+				if(existingPaymentCount > 0)
+				{
+					alreadyPaid = true;
+				}
+				if(statusLower == "paid")
+				{
+					alreadyPaid = true;
+				}
+				if(statusLower == "partially_paid")
+				{
+					alreadyPaid = true;
+				}
+				if(alreadyPaid)
+				{
+					errMap.put("already_paid","yes");
+					errMap.put("bill_id",existingBillId);
+					errMap.put("message","This case was already paid in Zoho Books (bill " + billNumber + ", status " + existingStatus + "). Nothing was recorded again. If this screen still shows it as unpaid, the earlier payment reached Books but not the case - correct the case in Creator rather than paying it twice.");
+					return errMap.toString();
+				}
+				// A void bill, or a detail read that failed: not safe to delete on a guess.
+				if(statusLower == "void")
+				{
+					errMap.put("message","A VOID bill numbered " + billNumber + " already exists for this vendor in Zoho Books, and Books will not reuse its number, so nothing was recorded. Delete that void bill in Zoho Books (Purchases -> Bills), then retry.");
+					return errMap.toString();
+				}
+				if(lookupOk != "yes")
+				{
+					errMap.put("message","A bill numbered " + billNumber + " already exists for this vendor in Zoho Books, and whether it has been paid could not be confirmed, so nothing was recorded. Check it in Zoho Books -> Purchases -> Bills: if it is unpaid, delete it and retry; if it is paid, this case has already been paid.");
+					return errMap.toString();
+				}
+				// Unpaid, no payments: a leftover from a failed attempt. Remove it, then
+				// create the bill once more with the figures being paid now.
+				leftoverDeleted = "no";
+				try
+				{
+					leftoverDelResp = invokeurl
+					[
+						url :books_base_url + "/bills/" + existingBillId + "?organization_id=" + organization_id
+						type :DELETE
+						connection:"zoho_books_connection"
+					];
+					info "recordVendorPayment - delete of leftover bill " + existingBillId + ", raw response: " + leftoverDelResp.toString();
+					if(leftoverDelResp.get("code") == 0)
+					{
+						leftoverDeleted = "yes";
+					}
+				}
+				catch (leftoverDelEx)
+				{
+					info "recordVendorPayment - could not delete leftover bill " + existingBillId + ": " + leftoverDelEx.toString();
+				}
+				if(leftoverDeleted != "yes")
+				{
+					errMap.put("message","An unpaid bill numbered " + billNumber + " was left in Zoho Books by an earlier attempt, and it could not be removed automatically, so nothing was recorded. Delete it in Zoho Books (Purchases -> Bills), then retry.");
+					return errMap.toString();
+				}
+				info "recordVendorPayment - leftover bill " + billNumber + " removed; creating it again with the current figures.";
+				createBillResp = invokeurl
+				[
+					url :books_base_url + "/bills?organization_id=" + organization_id
+					type :POST
+					parameters:jsonPayload
+					headers:{"Content-Type":"application/json"}
+					connection:"zoho_books_connection"
+				];
+				billRespCode = createBillResp.get("code");
+			}
+		}
 		if(billRespCode != 0)
 		{
 			bookErr = createBillResp.get("message");

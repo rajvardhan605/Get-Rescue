@@ -131,6 +131,27 @@ string getVendorPayments(string vendorId)
 		vehicleNames = Map();
 		issueNames = Map();
 		tickets = List();
+		/* Every vendor id, and email -> vendor id - 2026-10-27. Lets each case be
+		   given to a vendor by the SAME rule Accounts Payable pays it under (see
+		   below), so whatever Accounts pay shows on that vendor's page and on no
+		   other. Email is the only email field on the Vendors form (FIELDS.md); the
+		   first vendor holding an address keeps it. */
+		allVendorIds = List:String();
+		vendorIdByEmail = Map();
+		for each avRec in vendors[ID != 0]
+		{
+			avId = avRec.ID.toString();
+			allVendorIds.add(avId);
+			avEmail = ifnull(avRec.Email,"").trim();
+			avEmail = avEmail.toLowerCase();
+			if(avEmail != "")
+			{
+				if(vendorIdByEmail.containKey(avEmail) == false)
+				{
+					vendorIdByEmail.put(avEmail,avId);
+				}
+			}
+		}
 		for each caseRec in Create_Case[Vendor_Payment_Status == "Paid" || GST_Paid > 0]
 		{
 			/* Assigned_Vendor first; the ticket's vendor email only when that is
@@ -143,26 +164,64 @@ string getVendorPayments(string vendorId)
 			{
 				assignedText = assignedRef.toString().trim();
 			}
-			if(assignedText == wanted)
+			/* SAME RULE AS ACCOUNTS PAYABLE - 2026-10-27 (its vendorOptForTicket()).
+			   1. Assigned_Vendor, when it names a real vendor, decides the case.
+			   2. Otherwise - blank, or an id that is no vendor - the FIRST filled email
+			      field (Vendor_Email, then Vendor_Email1, then Vendor_Email2) that belongs
+			      to a vendor decides it.
+			   Before this, a stale Assigned_Vendor hid a case Accounts had paid, and a
+			   case could show to any vendor named in ANY of the three email fields. */
+			ownerResolved = false;
+			if(assignedText != "")
 			{
-				mine = true;
-			}
-			if(assignedText == "")
-			{
-				if(vendorEmail != "")
+				if(allVendorIds.contains(assignedText))
 				{
-					e1 = ifnull(caseRec.Vendor_Email,"").trim();
-					e2 = ifnull(caseRec.Vendor_Email1,"").trim();
-					e3 = ifnull(caseRec.Vendor_Email2,"").trim();
-					if(e1.toLowerCase() == vendorEmail)
+					ownerResolved = true;
+					if(assignedText == wanted)
 					{
 						mine = true;
 					}
-					if(e2.toLowerCase() == vendorEmail)
+				}
+			}
+			if(ownerResolved == false)
+			{
+				emailOwner = "";
+				e1 = ifnull(caseRec.Vendor_Email,"").trim();
+				e2 = ifnull(caseRec.Vendor_Email1,"").trim();
+				e3 = ifnull(caseRec.Vendor_Email2,"").trim();
+				e1 = e1.toLowerCase();
+				e2 = e2.toLowerCase();
+				e3 = e3.toLowerCase();
+				if(e1 != "")
+				{
+					if(vendorIdByEmail.containKey(e1))
 					{
-						mine = true;
+						emailOwner = vendorIdByEmail.get(e1);
 					}
-					if(e3.toLowerCase() == vendorEmail)
+				}
+				if(emailOwner == "")
+				{
+					if(e2 != "")
+					{
+						if(vendorIdByEmail.containKey(e2))
+						{
+							emailOwner = vendorIdByEmail.get(e2);
+						}
+					}
+				}
+				if(emailOwner == "")
+				{
+					if(e3 != "")
+					{
+						if(vendorIdByEmail.containKey(e3))
+						{
+							emailOwner = vendorIdByEmail.get(e3);
+						}
+					}
+				}
+				if(emailOwner != "")
+				{
+					if(emailOwner == wanted)
 					{
 						mine = true;
 					}
@@ -286,6 +345,9 @@ string getVendorPayments(string vendorId)
 				row.put("GST_Paid",ifnull(caseRec.GST_Paid,"").toString());
 				row.put("GST_Paid_Date",ifnull(caseRec.GST_Paid_Date,"").toString());
 				row.put("GST_UTR_No",ifnull(caseRec.GST_UTR_No,"").toString());
+				// Comments from Operations Approval / Accounts Payable - shown to the vendor
+				// by client decision 2026-10-27.
+				row.put("Ops_Approval_Comments",ifnull(caseRec.Ops_Approval_Comments,"").toString());
 				tickets.add(row);
 			}
 		}

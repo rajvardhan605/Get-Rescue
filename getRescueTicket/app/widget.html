@@ -631,7 +631,7 @@ img,svg{max-width:100%}
   <div class="accountspayable" id="accountsPayableView">
     <div class="sec-head"><h2>Accounts Payable</h2><span class="sub">pay one vendor's approved cases over a date range</span><span class="spacer"></span>
       <button class="btn ghost sm" id="accountsPayableBack" type="button">Back to Dashboard</button></div>
-    <div class="hint" style="margin:0 0 10px">Pick a vendor and date range to see their Operations-approved cases not yet paid. Select the ones being paid in this transaction, enter the payment date/UTR once, and record — this creates a real Zoho Books Bill + Vendor Payment.</div>
+    <div class="hint" style="margin:0 0 10px">Pick a vendor and date range to see their Operations-approved cases not yet paid. Select the ones being paid in this transaction, enter the payment date/UTR once, and record<span id="apBooksNote"> — this creates a real Zoho Books Bill + Vendor Payment</span>.</div>
     <div id="apBody"></div>
   </div>
 
@@ -1348,6 +1348,11 @@ function assignmentHasVendor(r){
   const arr = Array.isArray(v) ? v : (v ? [v] : []);
   return arr.some(function(x){ const id = unwrapLookup(x); return String(id==null ? "" : id).trim() !== ""; });
 }
+/* The Lead_Source a Create-step save should send - see that step's extra(). */
+function leadSourceForSave(r){
+  const existing = String(readVal(r, "Lead_Source") || "").trim();
+  return existing || "Call";
+}
 function statusStillEarly(r, stageStatuses){
   const cur=String(r.Status||"").trim().toUpperCase();
   if(!cur) return true;
@@ -1525,7 +1530,13 @@ const STAGES = [
        a later resave of the same ticket), so reopening/editing an existing
        ticket under a different agent's login never reattributes it. NEW
        field, needs creating in Zoho before this can actually save. */
-    extra:(r)=>({ Phone_Number:r.Phone_Number1||"", Computed_Service_Time:computeServiceTime(r), Lead_Source:"Call",
+    /* Lead_Source keeps what the ticket already has - 2026-10-27, client-reported:
+       a WhatsApp ticket (createTicket.deluge writes "Whatsapp") and a website one
+       (CreateServiceTicket writes "Website") both turned into "Call" the moment an
+       agent saved this step, because "Call" was written unconditionally. "Call" is
+       now only the default for a ticket that has no source yet - one the agent is
+       creating here from a phone call - so that case is unchanged. */
+    extra:(r)=>({ Phone_Number:r.Phone_Number1||"", Computed_Service_Time:computeServiceTime(r), Lead_Source:leadSourceForSave(r),
       /* Service_Type goes with the save - 2026-10-14. For almost every ticket
          this writes back the value it already had; it exists for the ones that
          arrived without one and had it derived at open (see openTicket). The
@@ -1582,7 +1593,7 @@ const STAGES = [
     // one this app used before its removal, not re-confirmed live since.
     // Reordered 2026-08-06 (wireframe: Name/Mobile/Alt/Email) — was full-width
     // on its own row before this.
-    { n:"Alternate_Phone_Number", l:"Alternate Phone Number", t:"tel", row:"contact" },
+    { n:"Alternate_Phone_Number", l:"Alternate Phone Number", t:"tel", row:"contact", ozonetelCall:true },
     { n:"Email", l:"Email", t:"email", row:"contact" },
     // Regrouped 2026-08-06 (wireframe: Vehicle/Reg/Client/Client ID all in
     // one row) — Vehicle+Reg and Client+Client ID used to be two separate
@@ -8200,6 +8211,16 @@ function startOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate()
 function endOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999); }
 function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 let AP_CASES=[], AP_SELECTED=new Set();
+/* ZOHO BOOKS FROM ACCOUNTS PAYABLE - switched OFF 2026-10-27, client request
+   ("hide the zoho book functionality from here"). With this false, Record
+   Payment does NOT call the recordVendorPayment Custom API - no vendor, bill,
+   credit or payment is created in Zoho Books - but still writes every "Paid"
+   detail onto the selected cases exactly as before (status, date, UTR, amounts,
+   TDS, GST, Extras, comments), so Vendor Payment Info, Vendor Performance and
+   this screen all keep working and a paid case cannot be selected again.
+   Accounts enter the bill and payment in Zoho Books themselves. true restores
+   the Books integration exactly as it was; nothing else needs changing. */
+const AP_BOOKS_SYNC = false;
 /* ---------- Accounts Payable: Export to Excel - 2026-10-26, user request ----------
    Exports the results table EXACTLY as it is on screen: every row of the last
    search (this table has no paging, so that is every matching case), every
@@ -8352,6 +8373,8 @@ async function loadAccountsPayable(){
   $("apFrom").value=ymd(monthStart); $("apTo").value=ymd(today);
   $("apFleetInput").oninput=apResolveVendorFromInput;
   $("apSearchBtn").onclick=searchAccountsPayable;
+  // Intro wording follows AP_BOOKS_SYNC (2026-10-27).
+  if($("apBooksNote")) $("apBooksNote").textContent = AP_BOOKS_SYNC ? " — this creates a real Zoho Books Bill + Vendor Payment" : " — the cases are marked as paid here; enter the bill and payment in Zoho Books directly";
   $("apExportBtn").onclick=exportAccountsPayableCsv;
 }
 /* Resolves whatever was typed into the fleet-id box to a real Vendors_Report
@@ -8534,7 +8557,7 @@ function renderAccountsPayableList(){
       </table>
     </div>
     ${anyLocked?'<div class="va-hint" style="margin-top:8px">Dimmed rows cannot be selected for payment \u2014 either they are already <b>Paid</b> (their Payment Date and UTR No. show what was recorded), or they have not reached the '+esc(SETTLEMENT_STATUS_PAYABLE)+' state yet. They are listed because the Payment Status filter asked for them.</div>':""}
-    <div class="va-hint" style="margin-top:6px"><b>Extras</b> and <b>Comments</b> are editable here. Changing Extras recalculates Net Fee, Balance, TDS and Final Payable for that case, and the revised figures are saved onto the case when you record the payment — so Creator and Zoho Books stay in agreement. Base Fee, Kms Fee, Gross Fee and Cash Collected come from the rate card and the case itself and are read-only: correct those in Operations Approval, before approval.</div>
+    <div class="va-hint" style="margin-top:6px"><b>Extras</b> and <b>Comments</b> are editable here. Changing Extras recalculates Net Fee, Balance, TDS and Final Payable for that case, and the revised figures are saved onto the case when you record the payment${AP_BOOKS_SYNC ? " — so Creator and Zoho Books stay in agreement" : ""}. Base Fee, Kms Fee, Gross Fee and Cash Collected come from the rate card and the case itself and are read-only: correct those in Operations Approval, before approval.</div>
     <div class="va-fee-box" id="apTotals" style="margin-top:14px"></div>
     <div class="va-hint" id="apMixedHint" style="color:var(--stop)"></div>
     <div class="fld"><label>Transaction Date</label><input type="date" id="apPaymentDate"></div>
@@ -8945,7 +8968,8 @@ function cacheBooksVendorId(vendorId, vendorRaw, booksVendorId){
 }
 async function recordVendorPayment(){
   const fn=resolve("invokeCustomApi");
-  if(!fn){ toast("Can't record payment — invokeCustomApi unavailable","err"); return; }
+  // Only needed when Zoho Books is updated from here - see AP_BOOKS_SYNC.
+  if(AP_BOOKS_SYNC && !fn){ toast("Can't record payment — invokeCustomApi unavailable","err"); return; }
   const vendorId=$("apVendor").value;
   const vopt = OPTIONS.vendors.find(function(o){ return String(o.id)===String(vendorId); });
   const vendorRaw = vopt && vopt.raw;
@@ -8986,7 +9010,14 @@ async function recordVendorPayment(){
     }
   };
   try{
-    const res=await fn(config);
+    /* AP_BOOKS_SYNC off (2026-10-27): no Zoho Books call. A local success reply
+       with no bill and no Books vendor id, so everything below runs unchanged:
+       the cases are written as paid, Zoho_Books_Bill_ID stays blank and no
+       vendor id is cached. */
+    const res = AP_BOOKS_SYNC
+      ? await fn(config)
+      : { result: JSON.stringify({ code:"SUCCESS", message:"Recorded in Creator only (Zoho Books not updated)", bill_id:"", books_vendor_id:"" }) };
+    if(!AP_BOOKS_SYNC) console.log("[Get-Rescue] recordVendorPayment: AP_BOOKS_SYNC is off - Zoho Books not called; marking "+selected.length+" case(s) paid in Creator only.");
     let data=res;
     if(data && typeof data.result==="string"){ try{ data=JSON.parse(data.result); }catch(e){ console.warn("[Get-Rescue] recordVendorPayment: response.result wasn't valid JSON",e); } }
     if(!data || data.code!=="SUCCESS"){
@@ -9074,7 +9105,9 @@ async function recordVendorPayment(){
         Zoho_Books_Bill_ID: data.bill_id||""
       });
     }
-    toast("Payment recorded — Bill "+(data.bill_id||"")+" created in Zoho Books","ok");
+    toast(AP_BOOKS_SYNC
+      ? "Payment recorded — Bill "+(data.bill_id||"")+" created in Zoho Books"
+      : ("Payment recorded on "+selected.length+" case"+(selected.length===1?"":"s")+" — enter the bill and payment in Zoho Books directly"), "ok");
     searchAccountsPayable();
   }catch(e){
     toast((e&&e.message)||"Could not record payment","err");
