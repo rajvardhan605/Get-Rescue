@@ -193,6 +193,18 @@ string recordVendorPayment(string booksVendorId, string vendorName, string vendo
 			}
 			vendor_id = newContact.get("contact_id");
 		}
+		// THE VENDOR ID TRAVELS WITH ERRORS TOO - 2026-10-26. From here on the Books
+		// vendor exists, and every later failure (bill, TDS, credit, payment) returns
+		// errMap. Carrying the id on it lets the caller save it to Zoho_Books_Vendor_ID
+		// even when the payment itself fails, so a retry skips the find-or-create.
+		// The success replies already carry it under the same key.
+		if(vendor_id != null)
+		{
+			if(vendor_id.toString() != "")
+			{
+				errMap.put("books_vendor_id",vendor_id.toString());
+			}
+		}
 
 		// Step 2: create the Bill. One line item per case, at that case's
 		// own Net Fee. This is the gross amount, before TDS or cash

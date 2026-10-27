@@ -1,0 +1,105 @@
+string backfillInvoiceNumbers()
+{
+	// ONE-TIME BACKFILL OF Invoice_number - 2026-10-26.
+	//
+	// New tickets get Invoice_number automatically: the agent app saves Zoho
+	// Books' own invoice_number the moment an invoice is generated. Tickets
+	// invoiced BEFORE that carry only Zoho_Books_Invoice_ID. This reads each of
+	// those invoices from Zoho Books and copies its number onto the ticket.
+	//
+	// READ-ONLY towards Zoho Books: one GET per invoice, nothing created, sent,
+	// emailed or changed in Books. On the ticket it writes Invoice_number and
+	// nothing else, and only where Invoice_number is still empty - so it is safe
+	// to run more than once. A run stops after MAX_PER_RUN invoices to stay
+	// inside Deluge's per-execution limits; run it again until "remaining" is 0.
+	//
+	// HOW TO RUN: Creator -> this app -> Workflow -> Functions -> New Function
+	// (namespace e.g. "backfill", return type string, no arguments), paste this,
+	// Save, then Execute. Uses the same Books connection and organization as
+	// onDemandInvoicing.deluge.
+	organization_id = "60078911104";
+	books_base_url = "https://www.zohoapis.in/books/v3";
+	MAX_PER_RUN = 100;
+	filled = 0;
+	failed = 0;
+	alreadyHad = 0;
+	remaining = 0;
+	attempted = 0;
+	failures = List();
+	tickets = Create_Case[ID != 0];
+	for each rec in tickets
+	{
+		// .toString() first, as getCustomerTicketInfo.deluge does - this field
+		// reads back as DECIMAL in Deluge, and comparing it straight to "" fails.
+		invIdText = "";
+		if(rec.Zoho_Books_Invoice_ID != null)
+		{
+			invIdText = rec.Zoho_Books_Invoice_ID.toString().trim();
+		}
+		if(invIdText != "")
+		{
+			numText = "";
+			if(rec.Invoice_number != null)
+			{
+				numText = rec.Invoice_number.toString().trim();
+			}
+			if(numText != "")
+			{
+				alreadyHad = alreadyHad + 1;
+			}
+			else
+			{
+				if(attempted >= MAX_PER_RUN)
+				{
+					remaining = remaining + 1;
+				}
+				else
+				{
+					attempted = attempted + 1;
+					try
+					{
+						invResp = invokeurl
+						[
+							url :books_base_url + "/invoices/" + invIdText + "?organization_id=" + organization_id
+							type :GET
+							connection:"zoho_books_connection"
+						];
+						invNumber = "";
+						invRec = invResp.get("invoice");
+						if(invRec != null)
+						{
+							if(invRec.get("invoice_number") != null)
+							{
+								invNumber = invRec.get("invoice_number").toString().trim();
+							}
+						}
+						if(invNumber != "")
+						{
+							rec.Invoice_number = invNumber;
+							filled = filled + 1;
+							info "backfillInvoiceNumbers - ticket " + rec.ID + " invoice " + invIdText + " -> " + invNumber;
+						}
+						else
+						{
+							failed = failed + 1;
+							failures.add(rec.ID.toString() + ": Books returned no invoice_number for invoice " + invIdText + " - " + ifnull(invResp.get("message"),""));
+						}
+					}
+					catch (bfEx)
+					{
+						failed = failed + 1;
+						failures.add(rec.ID.toString() + ": " + bfEx.toString());
+					}
+				}
+			}
+		}
+	}
+	result = Map();
+	result.put("filled",filled);
+	result.put("failed",failed);
+	result.put("already_had_number",alreadyHad);
+	result.put("remaining_for_next_run",remaining);
+	result.put("failures",failures);
+	info "backfillInvoiceNumbers - " + result.toString();
+	return result.toString();
+}

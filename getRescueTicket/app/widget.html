@@ -4281,6 +4281,7 @@ const CLOSURE_FIELDS=[
             apiGetById(state.recordId).then(function(fresh){
               if(fresh && fresh.Zoho_Books_Invoice_ID) state.record.Zoho_Books_Invoice_ID = fresh.Zoho_Books_Invoice_ID;
               if(fresh && fresh.Zoho_Books_Invoice_URL) state.record.Zoho_Books_Invoice_URL = fresh.Zoho_Books_Invoice_URL;
+              if(fresh && fresh[INVOICE_NUMBER_FIELD]) state.record[INVOICE_NUMBER_FIELD] = fresh[INVOICE_NUMBER_FIELD];   // 2026-10-26
               /* Invoice_PDF was missing from this list — 2026-10-05. The Custom API
                  attaches the PDF to the record directly, so the widget only learns
                  about it by re-reading the record. Without this the Download Invoice
@@ -4306,6 +4307,14 @@ const CLOSURE_FIELDS=[
     when:(s)=>isOnDemandClient(s),
     compute:(r)=>r.Zoho_Books_Invoice_ID||"",
     emptyHint:"Not generated yet — click \"Generate Invoice\" above." },
+  /* Invoice Number - 2026-10-26, user request. Shows the ticket's Invoice_number
+     field, filled by onDemandInvoicing() from the generated Zoho Books invoice.
+     Display-only (computed), so saving the Closure step never writes it. Shown
+     wherever invoicing applies, and on any ticket that already carries a number. */
+  { n:"__InvoiceNumberDisplay", l:"Invoice Number", t:"computed", full:true,
+    when:(s)=>isOnDemandClient(s) || !!String((s && s[INVOICE_NUMBER_FIELD]) || "").trim(),
+    compute:(r)=>String((r && r[INVOICE_NUMBER_FIELD]) || "").trim(),
+    emptyHint:"Not generated yet — filled automatically when the invoice is generated." },
   // Invoice Link (2026-09-11, Task Tracker PDF item 27 — "DISPLAY at end of
   // page") — placed last in CLOSURE_FIELDS, matching that instruction
   // literally. Same t:"navlink" pattern already proven for the Booking
@@ -8191,6 +8200,102 @@ function startOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate()
 function endOfDay(d){ return new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999); }
 function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 let AP_CASES=[], AP_SELECTED=new Set();
+/* ---------- Accounts Payable: Export to Excel - 2026-10-26, user request ----------
+   Exports the results table EXACTLY as it is on screen: every row of the last
+   search (this table has no paging, so that is every matching case), every
+   column except the selection checkbox, and the current value of the editable
+   Extras / Comments boxes - including any figure an Extras edit has just
+   recalculated. Reading the rendered table rather than re-deriving the figures
+   means the file can never disagree with what the user was looking at.
+
+   CSV with a UTF-8 BOM, which Excel opens directly - the same format, cell
+   quoting (gstCsvCell) and download-or-copy fallback as the GST export.
+   Nothing is written anywhere; search, selection and payment are untouched. */
+let AP_EXPORT_META = null;
+function apSetExportEnabled(on){
+  const b = $("apExportBtn");
+  if(!b) return;
+  b.disabled = !on;
+  b.title = on ? "Download the table below as a CSV file that opens in Excel" : "Search first - there is nothing to export yet";
+}
+/* One cell as text. Rupee sign dropped so Excel reads the money as numbers; a
+   long all-digit value (a UTR) kept as text so Excel does not show it as 1.2E+11;
+   typed text that starts like a formula (= + - @) neutralised with a quote mark. */
+function apExportCellText(td){
+  const inp = td.querySelector("input");
+  let t = inp ? inp.value : td.textContent;
+  t = String(t==null ? "" : t).replace(/\s+/g," ").trim();
+  if(t.charAt(0)==="\u20b9") t = t.slice(1);
+  if(/^\d{12,}$/.test(t)) return "=" + String.fromCharCode(34) + t + String.fromCharCode(34);
+  if(/^[=+\-@]/.test(t) && isNaN(Number(t))) return "'" + t;
+  return t;
+}
+function buildAccountsPayableCsv(table){
+  const keep = [], head = [];
+  table.querySelectorAll("thead th").forEach(function(th, i){
+    if(th.querySelector("input")) return;   // the select-all checkbox column
+    keep.push(i); head.push(String(th.textContent||"").replace(/\s+/g," ").trim());
+  });
+  const lines = [head.map(gstCsvCell).join(",")];
+  let count = 0;
+  table.querySelectorAll("tbody tr").forEach(function(tr){
+    const tds = tr.querySelectorAll("td");
+    lines.push(keep.map(function(i){ return gstCsvCell(tds[i] ? apExportCellText(tds[i]) : ""); }).join(","));
+    count++;
+  });
+  return { csv: lines.join("\r\n"), count: count };
+}
+function apExportFileName(){
+  const m = AP_EXPORT_META || {};
+  const safe = function(v){ return String(v||"").replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,""); };
+  return "GetRescue_AccountsPayable_" + (safe(m.vendor)||"vendor") + "_" + (safe(m.from)||"from") + "_to_" + (safe(m.to)||"to") + ".csv";
+}
+function exportAccountsPayableCsv(){
+  const table = document.querySelector("#apResults table.va-grid");
+  const rowCount = table ? table.querySelectorAll("tbody tr").length : 0;
+  if(!rowCount){
+    apSetExportEnabled(false);
+    toast("Nothing to export - search for a vendor's cases first","err");
+    return;
+  }
+  const built = buildAccountsPayableCsv(table);
+  const name = apExportFileName();
+  console.log("[Get-Rescue] Accounts Payable export:", built.count, "row(s) ->", name);
+  let downloadTried = false;
+  try{
+    const blob = new Blob(["\uFEFF"+built.csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.style.display = "none";
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 4000);
+    downloadTried = true;
+  }catch(e){ console.warn("[Get-Rescue] Accounts Payable export: download failed, showing the copy box", e); }
+  apShowCsvBox(built.csv, built.count, name, downloadTried);
+}
+/* The same fallback the GST export has: the widget sandbox can block downloads. */
+function apShowCsvBox(csv, count, name, downloadTried){
+  const box = $("apExportBox");
+  if(!box) return;
+  box.hidden = false;
+  const note = downloadTried
+    ? " \u00b7 the download should have started; if nothing happened, copy the text below and paste it into Excel."
+    : " \u00b7 the browser blocked the download, so copy the text below and paste it into Excel.";
+  box.innerHTML =
+    '<div class="sec-head" style="margin-top:0"><h2>Export to Excel</h2><span class="spacer"></span>' +
+    '<button type="button" id="apCopyBtn" class="btn ghost sm">Copy CSV</button>' +
+    '<button type="button" id="apCloseBtn" class="btn ghost sm">Close</button></div>' +
+    '<div class="hint" style="margin-bottom:8px">' + count + " row(s) \u00b7 " + esc(name) + note + '</div>' +
+    '<textarea id="apCsvText" readonly style="width:100%;height:180px;font-family:var(--f-mono);font-size:11px;border:1.5px solid var(--line-strong);border-radius:10px;padding:10px;white-space:pre"></textarea>';
+  $("apCsvText").value = csv;
+  $("apCopyBtn").onclick = function(){
+    const ta = $("apCsvText"); ta.select(); ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try{ ok = document.execCommand("copy"); }catch(e){ ok = false; }
+    toast(ok ? "CSV copied" : "Press Ctrl+C to copy the selected text", ok ? "ok" : "err");
+  };
+  $("apCloseBtn").onclick = function(){ box.hidden = true; box.innerHTML = ""; };
+}
 async function loadAccountsPayable(){
   showView("accountspayable");
   AP_CASES=[]; AP_SELECTED=new Set();
@@ -8237,12 +8342,17 @@ async function loadAccountsPayable(){
       <span class="hint">Ctrl/Cmd-click to select more than one. Only <b>${esc(SETTLEMENT_STATUS_PAYABLE)}</b> cases can be paid — rows in any other state are shown for reference with their checkbox disabled.</span>
     </div>
     <button class="btn primary" id="apSearchBtn" type="button">Search</button>
+    <!-- Export to Excel, 2026-10-26: exports the table as currently shown. Disabled
+         until a search returns rows - see apSetExportEnabled(). -->
+    <button class="btn ghost" id="apExportBtn" type="button" disabled title="Search first - there is nothing to export yet">Export to Excel</button>
+    <div id="apExportBox" class="card" hidden style="margin:14px 0"></div>
     <div id="apResults" style="margin-top:16px"></div>
   `;
   const today=new Date(), monthStart=new Date(today.getFullYear(),today.getMonth(),1);
   $("apFrom").value=ymd(monthStart); $("apTo").value=ymd(today);
   $("apFleetInput").oninput=apResolveVendorFromInput;
   $("apSearchBtn").onclick=searchAccountsPayable;
+  $("apExportBtn").onclick=exportAccountsPayableCsv;
 }
 /* Resolves whatever was typed into the fleet-id box to a real Vendors_Report
    record, and echoes its name back (PDF item 2). Matches on fleet id first,
@@ -8276,6 +8386,12 @@ async function searchAccountsPayable(){
   if(!vendorId){ toast("Pick a vendor first","err"); return; }
   const fromD=startOfDay(new Date($("apFrom").value)), toD=endOfDay(new Date($("apTo").value));
   $("apResults").innerHTML='<div class="center-state"><div class="spin"></div></div>';
+  // Export to Excel (2026-10-26): off while the new results load, and the file
+  // is named after THIS search, not whatever the inputs say at export time.
+  apSetExportEnabled(false);
+  const apOldBox = $("apExportBox"); if(apOldBox){ apOldBox.hidden = true; apOldBox.innerHTML = ""; }   // close any earlier export box
+  const apVendorForName = apVendorRaw(vendorId);
+  AP_EXPORT_META = { vendor: (apVendorForName && (fleetIdOfVendorRaw(apVendorForName) || apVendorForName.vendor_name)) || vendorId, from: ymd(fromD), to: ymd(toD) };
   // Payment Status multi-select (PDF search item 5, 2026-09-17). With the
   // default selection (Payable only) apPaymentStatusMatches() accepts exactly
   // what isReadyForVendorPayment() accepted, so the unchanged default search
@@ -8316,6 +8432,7 @@ function apVendorRaw(vendorId){
   return (vopt && vopt.raw) || null;
 }
 function renderAccountsPayableList(){
+  apSetExportEnabled(AP_CASES.length>0);   // Export to Excel - 2026-10-26
   const vendorRaw = apVendorRaw($("apVendor").value);
   const tdsPercent = Number(vendorRaw && vendorRaw.TDS_Percentage)||0;
   // GST applies only to a vendor with a GSTIN on file — see vendorGstApplicable().
@@ -8427,7 +8544,7 @@ function renderAccountsPayableList(){
          the batch, which is the normal case; enter a figure only when what was
          actually remitted differs. Deliberately NOT part of the Record Payment
          readiness check — a vendor with no GSTIN has nothing to enter here. -->
-    <div class="fld"><label>GST Paid</label><input type="number" id="apGstPaid" placeholder="Leave blank to record the full GST Payable"></div>
+    <div class="fld" style="display:none"><label>GST Paid</label><input type="number" id="apGstPaid" placeholder="Leave blank to record the full GST Payable"></div>
     <!-- GST remittance, 2026-10-06. Its own date and reference because the GST
          is a separate transaction from the fee; see FIELDS.md on why these are
          not Vendor_Payment_Date/Vendor_UTR_No. Only used when every selected
@@ -8601,6 +8718,16 @@ function allocateBatchTds(netFees, tdsPercent){
 /* "fee" | "gst" | "mixed" | "" — what the ticked rows add up to.
    Read from the checkboxes' own data-gstonly rather than recomputed, so the
    mode can never disagree with what the row offered the user. */
+/* The GST remittance fields on this screen - 2026-10-26. GST counts as paid only
+   when BOTH the GST Paid Date and the GST UTR No. are given; one without the
+   other is "partial" and blocks recording, so a half-entered remittance can
+   never be saved. */
+function apGstTxnState(){
+  const d = $("apGstPaidDate"), u = $("apGstUtrNo");
+  const date = d ? String(d.value||"").trim() : "";
+  const utr = u ? String(u.value||"").trim() : "";
+  return { date: date, utr: utr, given: !!(date && utr), partial: !!(date || utr) && !(date && utr) };
+}
 function apSelectionMode(){
   let fee=0, gst=0;
   document.querySelectorAll(".ap-check").forEach(function(cb){
@@ -8709,7 +8836,9 @@ function recalcAccountsPayableTotals(){
     if(!cell) return;
     const already = Number(x.r.GST_Paid)||0;
     if(already>0) cell.textContent = "₹"+already.toFixed(2);
-    else cell.textContent = txnDateEntered ? ("₹"+(gstShares[i]||0).toFixed(2)) : "—";
+    // Shown once the GST transaction itself is entered (2026-10-26) - that is
+    // what now marks GST as paid, not the fee's Transaction Date.
+    else cell.textContent = apGstTxnState().given ? ("₹"+(gstShares[i]||0).toFixed(2)) : "—";
   });
   $("apTotals").innerHTML = selected.length ? `
     <div class="va-fee-row"><span>Cases selected</span><span>${selected.length}</span></div>
@@ -8732,13 +8861,13 @@ function recalcAccountsPayableTotals(){
     ready = false;
     recordBtn.textContent = "Record Payment";
   } else {
-    ready = selected.length>0 && !!($("apPaymentDate").value) && !!($("apUtrNo").value.trim());
+    ready = selected.length>0 && !!($("apPaymentDate").value) && !!($("apUtrNo").value.trim()) && !apGstTxnState().partial;
     recordBtn.textContent = "Record Payment";
   }
   const mixHint=$("apMixedHint");
   if(mixHint) mixHint.textContent = apMode==="mixed"
     ? "Unpaid cases and already-paid (GST outstanding) cases cannot be recorded together — one needs a Zoho Books bill and the other must not create a second one. Select one kind at a time."
-    : "";
+    : ((apMode==="fee" && apGstTxnState().partial) ? "Enter both GST Paid Date and GST UTR No. to mark the GST as paid, or leave both blank to pay the fee now and record the GST later." : "");
   recordBtn.disabled=!ready;
 }
 /* Records a GST remittance against cases whose fee is already settled.
@@ -8801,6 +8930,19 @@ async function recordGstOnlyPayment(){
   // Same refresh the fee path uses, so both land the screen in one known state.
   searchAccountsPayable();
 }
+/* Saves the Books vendor id onto the vendor's Vendors_Report record - the rule
+   that used to sit inline in recordVendorPayment(), unchanged: only when the
+   field is still empty, never awaited, a failure only logged. Now also used on
+   a FAILED reply (2026-10-26): the vendor is created in Books before the bill,
+   so a payment that fails later still has a real id worth keeping. The cached
+   vendor object is updated too, so a retry in this session sends the id. */
+function cacheBooksVendorId(vendorId, vendorRaw, booksVendorId){
+  if(!booksVendorId || !vendorRaw || vendorRaw.Zoho_Books_Vendor_ID) return;
+  const idText = String(booksVendorId);
+  apiUpdateReport(CONFIG.optionReports.vendors.report, vendorId, { Zoho_Books_Vendor_ID: idText })
+    .then(function(){ vendorRaw.Zoho_Books_Vendor_ID = idText; console.log("[Get-Rescue] cached Zoho_Books_Vendor_ID", idText, "on vendor", vendorId); })
+    .catch(function(e){ console.warn("[Get-Rescue] could not cache Zoho_Books_Vendor_ID", e); });
+}
 async function recordVendorPayment(){
   const fn=resolve("invokeCustomApi");
   if(!fn){ toast("Can't record payment — invokeCustomApi unavailable","err"); return; }
@@ -8820,6 +8962,9 @@ async function recordVendorPayment(){
   const selected = apSelectedCasesWithFees();
   if(!selected.length){ toast("Select at least one case","err"); return; }
   const paymentDate=$("apPaymentDate").value, utrNo=$("apUtrNo").value.trim();
+  // Checked BEFORE anything is sent to Zoho Books (2026-10-26).
+  const gstTxn = apGstTxnState();
+  if(gstTxn.partial){ toast("Enter both GST Paid Date and GST UTR No., or leave both blank to record the GST later","err"); return; }
   const btn=$("apRecordBtn"); btn.disabled=true; btn.textContent="Recording…";
   const totals = { cashCollected: selected.reduce(function(acc,x){ return acc+x.cashCollected; },0) };
   const config = {
@@ -8847,6 +8992,8 @@ async function recordVendorPayment(){
     if(!data || data.code!=="SUCCESS"){
       toast((data && data.message)||"Zoho Books payment failed — see console","err");
       console.warn("[Get-Rescue] recordVendorPayment failed", res);
+      // The Books vendor may already exist even though the payment failed - keep its id.
+      if(data) cacheBooksVendorId(vendorId, vendorRaw, data.books_vendor_id);
       btn.disabled=false; btn.textContent="Record Payment";
       return;
     }
@@ -8855,17 +9002,19 @@ async function recordVendorPayment(){
     // Real bug fixed 2026-09-04, live-confirmed (404 "No Data Available"):
     // this must target Vendors_Report, not the ticket report apiUpdate()
     // is hardcoded to — see apiUpdateReport()'s own comment.
-    if(data.books_vendor_id && !vendorRaw.Zoho_Books_Vendor_ID){
-      apiUpdateReport(CONFIG.optionReports.vendors.report, vendorId, { Zoho_Books_Vendor_ID: String(data.books_vendor_id) }).catch(function(e){ console.warn("[Get-Rescue] could not cache Zoho_Books_Vendor_ID", e); });
-    }
+    cacheBooksVendorId(vendorId, vendorRaw, data.books_vendor_id);
     /* One allocation for the whole batch, computed before the loop so every case
        is written from the same split — recomputing inside the loop would risk the
        shares not summing to what was actually paid. */
     const gstPaidInputEl = $("apGstPaid");
     const gstPaidTypedVal = gstPaidInputEl && String(gstPaidInputEl.value).trim()!=="" ? (Number(gstPaidInputEl.value)||0) : null;
     const gstPayableTotal = selected.reduce(function(a,x){ return a+(x.gstPayable||0); }, 0);
-    const gstPaidShares = allocateProportional(selected.map(function(x){ return x.gstPayable; }),
-                                               gstPaidTypedVal==null ? gstPayableTotal : gstPaidTypedVal);
+    /* GST is marked paid only with its own transaction (2026-10-26). Without the
+       GST Paid Date + GST UTR No. every share is 0: the GST stays outstanding and
+       the case comes back as "GST outstanding" for Record GST Payment later. */
+    const gstPaidShares = gstTxn.given
+      ? allocateProportional(selected.map(function(x){ return x.gstPayable; }), gstPaidTypedVal==null ? gstPayableTotal : gstPaidTypedVal)
+      : selected.map(function(){ return 0; });
     console.log("[Get-Rescue] recordVendorPayment: GST payable total", gstPayableTotal, "| GST paid total", (gstPaidTypedVal==null?gstPayableTotal:gstPaidTypedVal), "| per-case shares", gstPaidShares);
     for(const x of selected){
       // apiUpdateApproval, not apiUpdate — 2026-10-06. This write happens AFTER
@@ -8893,6 +9042,8 @@ async function recordVendorPayment(){
         // explicit nil rather than an empty field that reads as "not yet filled".
         GST_Payable: x.gstPayable,
         GST_Paid: gstPaidShares[selected.indexOf(x)]||0,
+        // The GST transaction itself, on the cases that actually carry GST - 2026-10-26.
+        ...((gstTxn.given && (x.gstPayable||0)>0) ? { GST_Paid_Date: fmtDate(gstTxn.date), GST_UTR_No: gstTxn.utr } : {}),
         Vendor_Amount_Paid: x.finalPayable,
         // Real bug fixed 2026-09-04, live-confirmed ("Enter a valid date
         // format for Vendor_Payment_Date"): a Zoho Creator Date field needs
@@ -11284,6 +11435,10 @@ function taxInvoiceServiceDate(record){
   const n=new Date();
   return pad(n.getDate())+"/"+pad(n.getMonth()+1)+"/"+n.getFullYear();
 }
+/* Link name of the ticket's invoice-number field (Create_Case), created 2026-10-26.
+   Zoho link names are case-sensitive - if the form shows it differently, change
+   it here only. */
+const INVOICE_NUMBER_FIELD = "Invoice_number";
 async function onDemandInvoicing(record, amountOverride, invoiceIdField, referenceSuffix, applyTax, paymentUrlField){
   const fn=resolve("invokeCustomApi");
   if(!fn){
@@ -11534,8 +11689,28 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
     // Chained rather than fired in parallel so the two writes can't race on the
     // same record, and so the critical one always lands first. Both stay
     // best-effort/non-blocking exactly as before.
+    /* INVOICE NUMBER - 2026-10-26, user request (new Create_Case field). Zoho Books'
+       own invoice_number, which onDemandInvoicing.deluge has always returned and
+       nothing ever stored. Only for the main invoice (Zoho_Books_Invoice_ID) - the
+       one both live callers create - so a Remaining-Fee invoice, if that call is
+       ever restored, cannot overwrite it. Set on the in-memory record at once so
+       the Closure row shows it on the next render, then written on its OWN, after
+       the id: an unknown or misnamed field fails only this write, never the id
+       write that guards against a duplicate invoice. */
+    const invoiceNumber = String((data && (data.invoice_number || (data.details && data.details.invoice_number))) || "").trim();
+    const storeNumber = !!(invoiceId && invoiceNumber && (invoiceIdField || "Zoho_Books_Invoice_ID")==="Zoho_Books_Invoice_ID");
+    if(storeNumber && record) record[INVOICE_NUMBER_FIELD] = invoiceNumber;
     if(record && record.ID){
       const targetField = invoiceIdField || "Zoho_Books_Invoice_ID";
+      const writeNumber = function(){
+        if(!storeNumber) return Promise.resolve();
+        const numFields = {}; numFields[INVOICE_NUMBER_FIELD] = invoiceNumber;
+        return apiUpdate(record.ID, numFields).then(function(){
+          console.log("[Get-Rescue] onDemandInvoicing: saved "+INVOICE_NUMBER_FIELD+" =", invoiceNumber, "on ticket", record.ID);
+        }).catch(function(e){
+          console.warn("[Get-Rescue] onDemandInvoicing: could not save "+INVOICE_NUMBER_FIELD+" ("+invoiceNumber+") on the ticket (non-blocking - the invoice and its id are fine; check the field's link name on Create_Case):", e);
+        });
+      };
       const writeUrl = function(){
         if(!(paymentUrl && paymentUrlField)) return;
         const urlFields = {}; urlFields[paymentUrlField] = paymentUrl;
@@ -11545,7 +11720,7 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
       };
       if(invoiceId){
         const idFields = {}; idFields[targetField] = String(invoiceId);
-        apiUpdate(record.ID, idFields).then(writeUrl).catch(function(e){
+        apiUpdate(record.ID, idFields).then(writeNumber).then(writeUrl).catch(function(e){
           console.warn("[Get-Rescue] onDemandInvoicing: failed to write "+JSON.stringify(idFields)+" back onto the ticket (non-blocking, invoice itself was still created) — WARNING: without this id saved, a later \"Generate Invoice\" click on this ticket could create a DUPLICATE invoice:", e);
           writeUrl();
         });
