@@ -1,0 +1,181 @@
+﻿Zoho field (use as the Airtable field name),Label in the app,Zoho type,Suggested Airtable type
+Customer_Name,Customer Name,Single Line,Single line text
+Phone_Number1,Phone Number,Single Line,Single line text
+Phone_Number,Phone Number (Primary),Single Line,Single line text
+Alternate_Phone_Number,Alternate Phone Number,Single Line,Single line text
+Email,Email,Single Line,Single line text
+Client,Client,Lookup → `Client_Report`,Single line text
+Client_Tracking_Id,Client Tracking ID,Single Line,Single line text
+Vehicle,Vehicle,Lookup → `Vehicle_Master_Report`,Single line text
+Vehicle_Registration_Number,Vehicle Reg. Number,Single Line,Single line text
+Vehicle_Issue,Vehicle Issue,Multi Select Lookup → `Vehicle_Issue_Report`,Multiple select
+Service_Type,Service Type,Dropdown,Single select
+Vehicle_Status,Vehicle Status,Dropdown,Single select
+Time_of_service,Time of Service,Radio,Single select
+Schedule_Date_Time,Schedule Date & Time,Date-Time,Date (include time)
+Computed_Service_Time,Computed Service Time,Date-Time,Date (include time)
+Lead_Source,Lead Source,Dropdown,Single select
+Remarks,Remarks,Multi-line,Long text
+Status,Status,Single Line,Single line text
+Case_ID,Case ID,Single Line,Single line text
+Added_Time,Creation Time,**,Single line text
+Created_By_Agent_Email,(hidden),Single Line,Single line text
+Assignment_Time,(hidden),Date-Time,Date (include time)
+Agent_Wizard_Step,Agent Wizard Step,Single Line,Single line text
+Locked_By,Locked By,Single Line,Single line text
+Locked_At,Locked At,Date-Time,Date (include time)
+Confirmation_Time,(hidden),Date-Time,Date (include time)
+Remaining_Fee_Receipt_Time,(hidden),Date-Time,Date (include time)
+RSP_Closure_Time,(hidden),Date-Time,Date (include time)
+TOW_Closure_Time,TOW Closure Time,Date-Time,Date (include time)
+Service_Closure_Time,Service Closure Time,Date-Time,Date (include time)
+Agent_Closure_Time,(hidden),Date-Time,Date (include time)
+Distance_For_Quote_RT_KM,Distance for Quote (RT KM),Number,Number
+Suggested_Rate,Suggested Rate,Number,Number
+Total_Service_Fee,Total Service Fee,Number,Number
+Booking_Fee,Booking Fee,Number,Number
+Remaining_Fee,Remaining Fee,Decimal,Number
+Client_Charge,Client Charge,Number,Number
+Rescue_Charge,Rescue Charge,Decimal,Number
+Rate_Breakup,Rate Breakup,Multi-line,Long text
+Send_Link_For_The_Breakdown_Location,Request Location,Radio,Single select
+Payment_Method,Payment Method,Dropdown,Single select
+Booking_Fee_Transaction_ID,BF Transaction ID,Single Line,Single line text
+Payment_Status,Payment Status,Dropdown,Single select
+Image_Upload,"BF Receipt Photo (label changed 2026-09-02, build-plan item #8 — was plain ""Receipt Photo"", identical to `Upload_Photo_of_receipt`'s own label, so a photo's fee-type wasn't distinguishable by label alone)",File Upload,Attachment
+Latitude,Breakdown Latitude / Longitude,Single Line Text,Single line text
+Longitude,Breakdown Latitude / Longitude,Single Line Text,Single line text
+Send_Link_For_The_Drop_Location,Send Drop Location Link,Checkbox,Checkbox
+DropLocationLat,Drop Latitude / Longitude,Single Line Text,Single line text
+DropLocationLong,Drop Latitude / Longitude,Single Line Text,Single line text
+RT_KM,Round-Trip KM,Number,Number
+Location_Received_Time,Location Received Time,Date-Time,Date (include time)
+Break_Down_Location1,Breakdown Location Link,Single Line or Formula,Single line text
+Navigate_To_Drop_Link,Navigate to Drop Link,Multi-line,Long text
+Preferred_Vendor,Preferred Vendor?,Radio,Single select
+Vendors1,Vendors,Lookup  → `Vendors_Report`,Single line text
+Assigned_Vendor,Assigned Vendor,Lookup → `Vendors_Report`,Single line text
+Vendor_Emails,Vendor Emails,Single Line,Single line text
+Vendor_Email,Vendor Email (Assignment),Single Line,Single line text
+Assigned_Technician,Assigned Technician,"Dropdown, populated from `Technicians_Report.Technician_Name`",Single select
+Assigned_Technician_Email,Technician Email (Assignment),Single Line,Single line text
+Reject_Reason,Reject Reason,Dropdown,Single select
+Reject_Reason1,Reject Reason,Dropdown,Single select
+Vendor_Email1,Vendor Email,Single Line,Single line text
+Vendor_Email2,Vendor Email,Single Line,Single line text
+Technician_Email,Technician/Driver Email,Single Line,Single line text
+Technician_Email1,Technician/Driver Email,Single Line,Single line text
+Technician_Emails,Technician Emails,Single Line,Single line text
+Service_Acceptance,Accept Time,Date-Time,Date (include time)
+Service_Acceptance_For_Tow,Accept Time,Date-Time,Date (include time)
+Service_Reject_Time,Reject Time,Date-Time,Date (include time)
+ETA,ETA (mins),Number,Number
+ETA_TOW,ETA (mins),Number,Number
+Distance_To_Breakdown,Distance to Breakdown (km),Number,Number
+Distance_To_Breakdown_TOW,Distance to Breakdown (km),Number,Number
+Odometer_Reading,Odometer Reading,Number,Number
+Navigation_Link,Navigation Link,Multi-line,Long text
+Navigate_To_Breakdown_Link,Navigate to Breakdown Link,Multi-line,Long text
+Image_Upload2,Arrival / Cancel Photo,File Upload,Attachment
+Image_Upload5,Arrival / Cancel Photo,File Upload,Attachment
+Cancel_Reason,Cancel Reason,Dropdown,Single select
+Reject_Reason2,Cancel Reason,Dropdown,Single select
+Reach_Time,Reach Time,Date-Time,Date (include time)
+Reach_Location_Lat,Reach Location Lat / Lon,Single Line,Single line text
+Reach_Location_Lon,Reach Location Lat / Lon,Single Line,Single line text
+Distance_Reach_To_Breakdown,Reach Location → Breakdown (km),Decimal,Number
+Distance_Reach_To_Breakdown_TOW,Reach Location → Breakdown (km),Decimal,Number
+Roundtrip_Distance,Round-Trip Distance (km),Number,Number
+Odometer_reading_at_Reached_Location,Odometer at Reached,Number,Number
+RSP_Start_Latitude,RSP Start Latitude / Longitude,Single Line,Single line text
+RSP_Start_Longitude,RSP Start Latitude / Longitude,Single Line,Single line text
+Cancellation_Time,Cancellation Time,Date-Time,Date (include time)
+Cancel_Location_Lat,Cancel Location Lat / Lon,Single Line Text,Single line text
+Cancel_Location_Lon,Cancel Location Lat / Lon,Single Line Text,Single line text
+Cancel_Distance,Cancel Distance (km),Number,Number
+Distance_Cancel_To_Breakdown,Cancel Location → Breakdown (km),Decimal,Number
+Toll_Charges,Toll Charges?,Radio,Single select
+Toll_Charges1,Toll Charges?,Radio,Single select
+Agent_ETA_Override,Agent ETA Override (mins),Number,Number
+Agent_ETA_Override_TOW,Agent ETA Override (mins),Number,Number
+Issue_Resolved,Issue Resolved?,Radio,Single select
+Unresolved_Note,Issue Not Resolved — Notes,Multi-line,Long text
+Image_Upload3,Pre-service Photo,File Upload,Attachment
+Image_Upload4,Post-service Photo,File Upload,Attachment
+Expense_Amount,Expense Amount,Number,Number
+Expense_Photo,Expense Photo,File Upload,Attachment
+Office_To_Mechanic,Office → Mechanic (km),Number,Number
+Mechanic_To_Breakdown,Mechanic → Breakdown (km),Number,Number
+Breakdown_To_Office,Breakdown → Office (km),Number,Number
+RSP_Completion_Time,Completion Time,Date-Time,Date (include time)
+Rejection_Reason,Cx Rejection Reason,Dropdown,Single select
+Pre_service_Photo,Pre-service Photo,File Upload,Attachment
+Image_Upload_On_truck,On-truck Photo,File Upload,Attachment
+VCRF,VCRF,File Upload,Attachment
+Image_Upload6,Additional Photo,File Upload,Attachment
+Pickup_Time,Pickup Time,Date-Time,Date (include time)
+Breakdown_To_Drop_Distance,Breakdown → Drop (km),Number,Number
+Return_Journey_ETA,Return ETA (mins),Number,Number
+Drop_Location_Photo,Drop Location Photo,File Upload,Attachment
+Drop_To_Office_Distance,Drop → Office (km),Number,Number
+Drop_Location_Arrival_Time,Drop Arrival Time,Date-Time,Date (include time)
+Unloaded_Images,Unloaded Photo,File Upload,Attachment
+VCRF_Image,VCRF Image,File Upload,Attachment
+Handover_Image,Handover Photo,File Upload,Attachment
+Handover_to_Name,Handover to (Name),Single Line,Single line text
+Handover_to_Number,Handover Number,Number,Number
+Handover_to_Designation,Handover Location,Dropdown,Single select
+Payment_Method_Final,Payment Method,Dropdown,Single select
+Payment_received,Payment Received?,Radio,Single select
+Remaining_Fee_Transaction_ID,RF Transaction ID,Single Line,Single line text
+QR_Code,QR / Reference,Single Line,Single line text
+Send_Payment_Link1,Send Payment Link,Checkbox,Checkbox
+Upload_Photo_of_receipt,"Remaining Fee Receipt Photo (label changed 2026-09-02, build-plan item #8 — see `Image_Upload`'s own matching note)",File Upload,Attachment
+Refund_Due,Refund Due?,Radio,Single select
+Refund_Reason,Refund Reason,Dropdown,Single select
+Refund_Amount,Refund Amount,Number,Number
+Closure_Status,Closure Status,Dropdown,Single select
+Closure_Reason,Not Converted / Cancelled Reason,Dropdown,Single select
+Cx_Feedback_Score,Customer Feedback Score,Radio,Single select
+Cx_Feedback_Text,Customer Feedback Notes,Multi-line,Long text
+B2B_GST_Invoice_Required,B2B GST Invoice Required?,Radio,Single select
+GST_Number,GST Number,Single Line,Single line text
+Zoho_Books_Invoice_ID,Zoho Books Invoice ID,Single Line,Single line text
+Zoho_Books_Invoice_ID_Remaining,Zoho Books Invoice ID (Remaining),Single Line,Single line text
+Invoice_number,Invoice Number,Single Line,Single line text
+Zoho_Books_Invoice_URL,Zoho Books Invoice URL,Single Line,Single line text
+Zoho_Payment_URL,Zoho Payment URL / (Remaining),Single Line,Single line text
+Zoho_Payment_URL_Remaining,Zoho Payment URL / (Remaining),Single Line,Single line text
+Closure_Extra_Photo,Additional Photo,File Upload,Attachment
+Vendor_Fleet_Location_Lat,Vendor Fleet Location Lat/Lon,Single Line,Single line text
+Vendor_Fleet_Location_Lon,Vendor Fleet Location Lat/Lon,Single Line,Single line text
+Vendor_Round_Trip_Distance,Vendor Round Trip Distance (km),Decimal,Number
+Vendor_Distance,Vendor Distance (km),Decimal,Number
+Google_Feedback_Requested,Google Feedback,Checkbox,Checkbox
+Extra_Payable,Extra Payable,Number,Number
+GST_Name,GST Name / GST Address,Single Line / Multi-line,Long text
+GST_Address,GST Name / GST Address,Single Line / Multi-line,Long text
+Zoho_Books_Bill_ID,Zoho Books Invoice ID / Bill ID,Single Line,Single line text
+Airtable_Record_ID,Airtable Record ID / Synced At,Single Line / Date-Time,Date (include time)
+Airtable_Synced_At,Airtable Record ID / Synced At,Single Line / Date-Time,Date (include time)
+WhatsApp_Inbound_Log,WhatsApp Replies,Multi Line,Long text
+Extras,Extras,Number,Number
+Cash_Collected,Cash Collected,Number,Number
+Vendor_KM_Fee,Vendor KM Fee / Gross Fee / Net Fee / Balance (before TDS),Number ×4,Number
+Vendor_Gross_Fee,Vendor KM Fee / Gross Fee / Net Fee / Balance (before TDS),Number ×4,Number
+Vendor_Net_Fee,Vendor KM Fee / Gross Fee / Net Fee / Balance (before TDS),Number ×4,Number
+Vendor_Balance_Before_TDS,Vendor KM Fee / Gross Fee / Net Fee / Balance (before TDS),Number ×4,Number
+Settlement_Status,Settlement Status,Dropdown,Single select
+Ops_Approval_Comments,Comments,Multi-line,Long text
+TDS_Amount,TDS Amount / Final Payable / Amount Paid,Number ×3,Number
+Final_Payable,TDS Amount / Final Payable / Amount Paid,Number ×3,Number
+Vendor_Amount_Paid,TDS Amount / Final Payable / Amount Paid,Number ×3,Number
+Vendor_Payment_Date,Payment Date,Date,Date
+Vendor_UTR_No,UTR / Reference No.,Single Line,Single line text
+Vendor_Payment_Status,Payment Status,"Dropdown: `Payable`, `Paid`",Single select
+TDS_Percentage,TDS %,Number,Number
+Zoho_Books_Vendor_ID,Zoho Books Vendor ID,Single Line,Single line text
+GST_Payable,`Create_Case`,Decimal,Number
+GST_Paid,`Create_Case`,Decimal,Number
+GST_Paid_Date,`Create_Case`,Date,Date
+GST_UTR_No,`Create_Case`,Single Line,Single line text

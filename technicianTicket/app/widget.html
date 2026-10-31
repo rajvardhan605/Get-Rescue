@@ -374,7 +374,32 @@ async function apiGetReport(report, criteria, max){
     return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
   } catch(e){ return []; }
 }
-async function apiUpdate(id, data){ return apiUpdateReport(CONFIG.reportName, id, data); }
+/* Still this login's job? - Task Tracker #51 (2026-10-29). The office can now unassign a vendor at
+   any stage before closure, so a phone still showing the job must not write over the ticket after
+   it was taken back. Checked only for a job already under way on this screen (accept, reject and
+   hand-off are untouched); a fresh read that fails lets the write through exactly as before, so a
+   weak signal never blocks real work. */
+const JOB_TAKEN_BACK_STATUSES = ["READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","SCHEDULED","NEW","SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQUEST","LOCATION PENDING"];
+async function assertJobStillMine(id){
+  const cur = state && state.current;
+  if(!cur || String(cur.ID)!==String(id)) return;
+  const localSt = String(cur.Status||"").trim().toUpperCase();
+  if(!localSt || localSt==="RSP IRA (INVITE RESPONSE AWAITED)") return;
+  let fresh = null;
+  try{
+    const rows = await apiGetReport(CONFIG.reportName, "ID == " + id, 200);
+    fresh = rows && rows.length ? rows[0] : null;
+  }catch(e){ return; }
+  if(!fresh) return;
+  const freshSt = String(fresh.Status||"").trim().toUpperCase();
+  let takenBack = JOB_TAKEN_BACK_STATUSES.indexOf(freshSt) >= 0;
+  // (technicians: the status is the signal - their record id can come from either report)
+  if(!takenBack) return;
+  console.warn("[Get-Rescue] assertJobStillMine: ticket "+id+" was taken back by the office (status "+freshSt+") - this write was refused (Task Tracker #51).");
+  if(typeof backToDashboard==="function") setTimeout(backToDashboard, 1500);
+  throw new Error("This job has been reassigned by the office - nothing was saved.");
+}
+async function apiUpdate(id, data){ await assertJobStillMine(id); return apiUpdateReport(CONFIG.reportName, id, data); }
 async function apiUpdateReport(report, id, data){
   const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
   const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
@@ -1672,6 +1697,9 @@ async function fetchMyTickets(){
          once; what no longer happens is a reject from an earlier round hiding a
          job I have since been given. Holder fields only - see ticketIsMineNow(). */
       if(inviteIsRejected(inv) && !ticketIsMineNow(r)) return false;
+      /* Rejected and handed back to the vendor (#15.7): gone from this list even if
+         the ticket still names this technician. */
+      if(inviteIsRejected(inv) && String(r[CONFIG.stageField]||"").trim().toUpperCase()==="RSP IRA (INVITE RESPONSE AWAITED)") return false;
       return inv!=null || isMine(r);
     });
 }
@@ -1792,9 +1820,54 @@ function showNewCaseNotification(rec){
 // Caps how many cards stack at once — a burst of many simultaneous new
 // invites would otherwise fill the whole screen; anything past the cap
 // folds into one plain toast instead.
+/* ---------- Loud buzzer for a new ticket - Task Tracker #9 / #15.2, 2026-10-27 ----------
+   A burst of this app's own tone (playNotifSound, unchanged) plus vibration,
+   repeated every BUZZER_REPEAT_MS until the person taps anywhere, and never
+   for longer than an invite stays open. Phones only allow sound after a first
+   tap, so a banner asks for one when the app opens. A locked phone or a
+   backgrounded app pauses this page entirely - no web app can ring then. */
+const BUZZER_REPEAT_MS = 4000, BUZZER_MAX_MS = 3*60*1000;
+const BUZZER = { timer:null, until:0 };
+function buzzOnce(){
+  playNotifSound();
+  setTimeout(playNotifSound, 400);
+  setTimeout(playNotifSound, 800);
+  try{ if(navigator.vibrate) navigator.vibrate([500,150,500,150,500]); }catch(e){}
+}
+function stopBuzzer(){
+  if(BUZZER.timer){ clearInterval(BUZZER.timer); BUZZER.timer=null; }
+  BUZZER.until = 0;
+}
+function startBuzzer(){
+  stopBuzzer();
+  BUZZER.until = Date.now() + BUZZER_MAX_MS;
+  buzzOnce();
+  BUZZER.timer = setInterval(function(){
+    if(Date.now() > BUZZER.until){ stopBuzzer(); return; }
+    buzzOnce();
+  }, BUZZER_REPEAT_MS);
+}
+// Any tap acknowledges the alert (capture phase, before the tap does anything else).
+document.addEventListener("pointerdown", function(){ if(BUZZER.timer) stopBuzzer(); }, true);
+/* "Turn on alerts" banner: shown only while sound is still locked; the tap that
+   dismisses it is the one the existing click listener uses to unlock sound. */
+function showAlertArmBanner(){
+  try{
+    const ctx = NOTIF_SOUND_STATE.ctx;
+    if(ctx && ctx.state==="running") return;
+    if(document.getElementById("alertArmBanner")) return;
+    const b = document.createElement("button");
+    b.type = "button"; b.id = "alertArmBanner";
+    b.textContent = "Tap here to turn on the sound for new tickets";
+    b.style.cssText = "position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:9999;padding:14px 16px;border:0;border-radius:12px;font:700 15px system-ui,sans-serif;background:#F15A22;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.25);cursor:pointer";
+    b.onclick = function(){ unlockNotifSound(); b.remove(); };
+    document.body.appendChild(b);
+  }catch(e){}
+}
+setTimeout(showAlertArmBanner, 1500);
 function notifyNewCases(list){
   if(!list.length) return;
-  playNotifSound();
+  startBuzzer();   // was a single playNotifSound() - Task Tracker #9 / #15.2
   list.slice(0,5).forEach(showNewCaseNotification);
   if(list.length>5) toast((list.length-5)+" more new case(s) also arrived","ok");
 }
@@ -1940,7 +2013,9 @@ function renderTicketInfo(){
   const rows=[
     ["Case ID", caseLabel(r)],
     ["Customer", readVal(r,CONFIG.nameField)],
-    ["Phone", r[CONFIG.phoneField]||""],
+    // Not shown on the Accept page (status RSP IRA) - Task Tracker #11 / 15.4, 2026-10-27.
+    // Empty drops the row (the filter below), so it appears once the job is accepted.
+    ["Phone", String(r[CONFIG.stageField]||"").trim().toUpperCase()==="RSP IRA (INVITE RESPONSE AWAITED)" ? "" : (r[CONFIG.phoneField]||"")],
     ["Vehicle", vehicleDisplayFor(r)],
     ["Location", loc],
     ["Issue", issueNamesFor(r)]
@@ -2188,6 +2263,21 @@ async function acceptService(){
   }catch(e){ console.error("[Get-Rescue] acceptService error:", e); toast((e&&e.message)||"Could not accept","err"); }
   finally{ setDisabled("acceptBtn",false); }
 }
+/* A ticket a vendor handed to this technician (Task Tracker #15.7): the vendor is
+   still on it, and the office has not taken it over. */
+function rejectReturnsToVendor(r){
+  const vendorId = lookupId(r && r.Assigned_Vendor);
+  if(vendorId==null || String(vendorId).trim()==="") return false;
+  return String(readVal(r,"Acceptance_Mode")||"").trim()!=="Agent Entering on Behalf of Vendor";
+}
+/* Best-effort and separate, so a refused column can never undo the reject above.
+   The emails are what put this ticket on this technician's own list. */
+async function releaseTechnicianFromTicket(ticketId){
+  try{ await apiUpdate(ticketId, { Assigned_Technician_Email:"", Technician_Email:"", Technician_Emails:"" }); }
+  catch(e){ console.warn("[Get-Rescue] releaseTechnicianFromTicket: technician emails not cleared on ticket "+ticketId+" - the rejected invite still hides it from this app", e); }
+  try{ await apiUpdate(ticketId, { Assigned_Technician:"" }); }
+  catch(e){ console.warn("[Get-Rescue] releaseTechnicianFromTicket: Assigned_Technician not cleared on ticket "+ticketId+" - the vendor app ignores a technician who rejected", e); }
+}
 async function rejectService(){
   const reason=$("rejectReason").value;
   if(!reason){ toast("Please pick a reject reason","err"); return; }
@@ -2198,7 +2288,18 @@ async function rejectService(){
     // flow spec (2026-07-31) — was previously (incorrectly) reusing
     // Service_Acceptance for both accept and reject; kept unconfirmed (❓ in
     // FIELDS.md) since this field name hasn't been independently verified.
-    await apiUpdate(r.ID, { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP REJECT" });
+    /* Back to the vendor who handed it over - Task Tracker #15.7 (2026-10-28). That
+       vendor still holds the case (Assigned_Vendor), so the ticket returns to their
+       Service Acceptance screen - accept it themselves or pick another technician -
+       instead of RSP REJECT, which took it off the vendor's app and left only the
+       office able to act. This technician is released from the ticket so a
+       re-assignment starts fresh. Any other ticket is rejected exactly as before. */
+    if(rejectReturnsToVendor(r)){
+      await apiUpdate(r.ID, { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP IRA (INVITE RESPONSE AWAITED)" });
+      releaseTechnicianFromTicket(r.ID);
+    } else {
+      await apiUpdate(r.ID, { Service_Reject_Time: fmtDateTime(new Date()), Reject_Reason: reason, Status:"RSP REJECT" });
+    }
     // Invites (2026-08-03) — see vendorTicket's own rejectService() comment.
     updateMyInvite(r.ID, { Status:"RSP REJECT", Reject_Reason: reason });
     // best-effort duplicate into Task_Rejections — RSP name + task details,
@@ -2372,7 +2473,17 @@ async function confirmCancel(){
       // reaches this via Cancel OR Reached, never both.
       /* Not written for ON DEMAND - 2026-10-19, client spec. The calculation
          above still runs because its other legs are wanted either way. */
-      if(!isOnDemandTicket(r)) payload.Roundtrip_Distance = await calcRoundTripKm(pos.lat,pos.lon,null,null,travelModeFor(r));
+      /* Same as the vendor app's cancel - Task Tracker #14 (2026-10-27, "technician app
+         distance calc - same as vendor app"). One office -> cancel position -> office
+         lookup now gives both the total (identical to calcRoundTripKm: same Google
+         request, same straight-line fallback, same rounding) and the three leg
+         fields the vendor app already writes on cancel. Was: payload.Roundtrip_Distance =
+         await calcRoundTripKm(pos.lat,pos.lon,null,null,travelModeFor(r)); */
+      const cancelLegs = await officeRoundTripLegs(pos.lat,pos.lon,travelModeFor(r));
+      if(!isOnDemandTicket(r)) payload.Roundtrip_Distance = cancelLegs.total;
+      payload.Office_To_Mechanic = cancelLegs.officeToMechanic;
+      payload.Mechanic_To_Breakdown = cancelLegs.mechanicToBreakdown;
+      payload.Breakdown_To_Office = cancelLegs.breakdownToOffice;
     }
     await apiUpdate(r.ID, payload);
     await uploadPendingPhotos(r.ID);
@@ -2655,7 +2766,10 @@ function renderPaymentScreen(){
        premature. Guarded on existence because the card is legitimately absent
        once the gateway has already settled the ticket. */
     const fbBlock=$("feedbackLinkBlock");
-    if(fbBlock) fbBlock.style.display = (methodEl.value==="Cash") ? "" : "none";
+    /* Also when nothing is owed - Task Tracker #86 (2026-10-29). Cash-only exists because on
+       other methods the vendor is still chasing the money; with a zero balance there is
+       nothing to chase, and the card was hidden behind an unpicked method. */
+    if(fbBlock) fbBlock.style.display = (((methodEl.value==="Cash")) || remaining<=0) ? "" : "none";
     refreshPayButton();
   }
   methodEl.onchange=syncMethod; syncMethod();
@@ -2847,6 +2961,7 @@ async function confirmPaymentReceived(){
        unchanged. */
     const gatewaySettled=String(r.Payment_Method_Final||"").trim()==="Payment Gateway" && String(r.Payment_received||"").trim()==="Yes";
     const payload={ Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()), RSP_Closure_Time: fmtDateTime(new Date()) };
+    payload.Service_Closure_Time = payload.RSP_Closure_Time;   // Service_Closure_Time - Task Tracker #57: same time in the single field for both service types.
     const chosenMethod=($("Payment_Method_Final") && $("Payment_Method_Final").value)||"";
     if(!gatewaySettled && chosenMethod) payload.Payment_Method_Final = chosenMethod;
     // Diagnostic logging (2026-08-03) — see vendorTicket's own comment on this same call.
@@ -2865,7 +2980,7 @@ async function confirmPaymentReceived(){
        must not touch a payment that has already been taken. */
     /* CASH ONLY - 2026-10-13, see this change's own note. Matches the Send
        Feedback Link card, which the client scoped to cash the same day. */
-    if(chosenMethod === "Cash"){
+    if(chosenMethod === "Cash" || (Number(r.Remaining_Fee)||0) <= 0){   // #86: also when nothing was owed
       maybeSendFeedbackRequest(r, false)
         .catch(function(e){ console.warn("[Get-Rescue] feedback request after payment failed (non-blocking)", e); });
     }
@@ -4001,6 +4116,33 @@ function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) ret
 
 /* ---------- wiring + boot ---------- */
 $("backBtn").onclick=backToDashboard;
+/* Last_Seen_At - Task Tracker #85.5 (2026-10-29): the "Login" column on the agent's assignment
+   picker. Stamped when the app opens and every LAST_SEEN_MS while it is on screen, Online or
+   Offline alike, so the office can tell "app open" from "switched to Online". Its own small
+   update, separate from every other write, so a refused field can never affect anything else;
+   a failure is logged once and retried on the next tick. */
+const LAST_SEEN_MS = 3*60*1000;
+let LAST_SEEN_TIMER = null, LAST_SEEN_FAILED = false;
+async function stampLastSeen(){
+  if(typeof document!=="undefined" && document.visibilityState && document.visibilityState!=="visible") return;
+  const rec = currentTechRecord;
+  if(!rec || rec.id==null) return;
+  try{
+    await apiUpdateReport((rec.report || CONFIG.techReport), rec.id, { Last_Seen_At: fmtDateTime(new Date()) });
+    LAST_SEEN_FAILED = false;
+  }catch(e){
+    if(!LAST_SEEN_FAILED) console.warn("[Get-Rescue] Last_Seen_At not written (is the field on the form?) - nothing else is affected", e);
+    LAST_SEEN_FAILED = true;
+  }
+}
+function startLastSeen(){
+  if(LAST_SEEN_TIMER) return;
+  stampLastSeen();
+  LAST_SEEN_TIMER = setInterval(stampLastSeen, LAST_SEEN_MS);
+  if(typeof document!=="undefined" && document.addEventListener){
+    document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible") stampLastSeen(); });
+  }
+}
 async function boot(){
   try{
     const params=await ZOHO.CREATOR.UTIL.getInitParams();
@@ -4012,6 +4154,7 @@ async function boot(){
      and before any render so the overlay is the first thing on screen. */
   await requireLocation();
   await loadAvailability();
+  startLastSeen();   // Task Tracker #85.5 - not awaited, never delays the app opening
   await loadVehicleNames();
   await loadIssueNames();
   await loadDashboard();

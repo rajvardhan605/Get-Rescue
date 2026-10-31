@@ -20,9 +20,13 @@ string getVendorPayments(string vendorId)
 	        route entirely once the reply's "verifiedBy" has been seen to read
 	        "login" for real vendors.
 
-	   ONLY PAID CASES. The query asks Zoho for cases whose fee is Paid or that
-	   carry GST_Paid, and keeps only this vendor's. Nothing about unpaid work, or
-	   any other vendor's work, ever leaves the server.
+	   PAID CASES, PLUS APPROVED-BUT-UNPAID. The query asks Zoho for cases whose fee
+	   is Paid, that carry GST_Paid, or that Operations has approved for payment
+	   (Settlement_Status Payable - Task Tracker #7, 2026-10-29: the client's
+	   "Unaccounted Tickets" view, "unaccounted means APPROVED but unpaid"), and keeps
+	   only this vendor's. Unapproved work, and any other vendor's work, never leaves
+	   the server. The page's Payment and GST views filter on Paid / GST_Paid
+	   themselves, so the approved rows show only in the new Unaccounted view.
 
 	   READ-ONLY. No insert, update or delete anywhere in this function.
 
@@ -152,7 +156,7 @@ string getVendorPayments(string vendorId)
 				}
 			}
 		}
-		for each caseRec in Create_Case[Vendor_Payment_Status == "Paid" || GST_Paid > 0]
+		for each caseRec in Create_Case[Vendor_Payment_Status == "Paid" || GST_Paid > 0 || Settlement_Status == "Payable"]
 		{
 			/* Assigned_Vendor first; the ticket's vendor email only when that is
 			   blank - the same order Accounts Payable uses, which is what keeps
@@ -330,6 +334,7 @@ string getVendorPayments(string vendorId)
 				row.put("Vehicle_Name",vehicleText);
 				row.put("Issue_Names",issueText);
 				row.put("Vendor_Payment_Status",ifnull(caseRec.Vendor_Payment_Status,"").toString());
+				row.put("Settlement_Status",ifnull(caseRec.Settlement_Status,"").toString());
 				row.put("Vendor_Payment_Date",ifnull(caseRec.Vendor_Payment_Date,"").toString());
 				row.put("Vendor_UTR_No",ifnull(caseRec.Vendor_UTR_No,"").toString());
 				row.put("Vendor_Amount_Paid",ifnull(caseRec.Vendor_Amount_Paid,"").toString());
@@ -361,7 +366,7 @@ string getVendorPayments(string vendorId)
 			gstApplicable = "true";
 		}
 		vendorMap.put("gstApplicable",gstApplicable);
-		info "getVendorPayments - returning " + tickets.size() + " paid case(s) for vendor " + wanted;
+		info "getVendorPayments - returning " + tickets.size() + " paid or approved case(s) for vendor " + wanted;
 		result.put("code","SUCCESS");
 		result.put("verifiedBy",verifiedBy);
 		result.put("vendor",vendorMap);

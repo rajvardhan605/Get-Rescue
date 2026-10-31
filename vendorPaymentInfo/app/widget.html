@@ -232,6 +232,9 @@ function has(r, key){ return val(r,key).trim() !== ""; }
 function money(n){ return "₹"+(Number(n)||0).toFixed(2); }
 function moneyField(r, key){ return has(r,key) ? money(num(r,key)) : "—"; }
 function isFeePaid(r){ return val(r,"Vendor_Payment_Status").trim().toUpperCase()==="PAID"; }
+/* Unaccounted - Task Tracker #7 (2026-10-29): approved by Operations (Settlement_Status
+   Payable) and not yet paid. Unapproved cases never reach this page at all. */
+function isUnaccounted(r){ return val(r,"Settlement_Status").trim().toUpperCase()==="PAYABLE" && !isFeePaid(r); }
 function baseFeeText(r){
   if(!has(r,"Vendor_Gross_Fee")) return "—";
   return money(Math.round((num(r,"Vendor_Gross_Fee") - num(r,"Vendor_KM_Fee"))*100)/100);
@@ -374,6 +377,47 @@ function sectionHtml(kind, title, res){
     `<span class="spacer"></span><span class="tog" aria-hidden="true">${open?"−":"+"}</span></button>` +
     `<div class="sec-body">${body}</div></div>`;
 }
+/* (D) UNACCOUNTED TICKETS - Task Tracker #7 (2026-10-29). One header line: Vendor ID,
+   Amount (the Balance Amt of every case, as Accounts Payable shows it), Cases, and a
+   + that opens the cases: RS ID, Accept Date/Time, Case Status, Vehicle, Service, Base
+   Fee, km Fee, Extra, Cash Collected, Balance Amt (and Comments, as on the other views).
+   Not limited by the dates above: these have no payment date yet. */
+function unaccountedSectionHtml(){
+  const kind = "ua", open = SEC_OPEN.has(kind);
+  const list = CASES.filter(isUnaccounted).slice().sort(function(a,b){
+    const da = parseAnyDateTime(val(a,"Service_Acceptance")||val(a,"Service_Acceptance_For_Tow"));
+    const db = parseAnyDateTime(val(b,"Service_Acceptance")||val(b,"Service_Acceptance_For_Tow"));
+    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+  });
+  const total = Math.round(list.reduce(function(a,r){ return a + num(r,"Vendor_Balance_Before_TDS"); }, 0)*100)/100;
+  const fleetId = (VENDOR && VENDOR.fleetId) || "—";
+  let body;
+  if(!list.length){
+    body = `<div class="empty">No approved cases are waiting for payment</div>`;
+  } else {
+    const isOpen = TXN_OPEN.has("ua|all");
+    const rows = list.map(function(r){
+      return `<tr><td><b>${esc(caseLabel(r))}</b></td><td>${esc(acceptedAtText(r))}</td><td>${esc(caseStatusText(r))}</td>` +
+        `<td>${esc(val(r,"Vehicle_Name").trim()||"—")}</td><td>${esc(serviceText(r))}</td>` +
+        `<td class="num">${baseFeeText(r)}</td><td class="num">${moneyField(r,"Vendor_KM_Fee")}</td>` +
+        `<td class="num">${money(num(r,"Extras"))}</td><td class="num">${moneyField(r,"Cash_Collected")}</td>` +
+        `<td class="num"><b>${moneyField(r,"Vendor_Balance_Before_TDS")}</b></td>${commentCell(r)}</tr>`;
+    }).join("");
+    const detail = isOpen ? `<tr class="detail"><td colspan="4"><div class="gridwrap"><table class="grid"><thead><tr>${INFO_HEAD}` +
+      `<th class="num">Base Fee</th><th class="num">km Fee</th><th class="num">Extra</th><th class="num">Cash Collected</th><th class="num">Balance Amt</th><th>Comments</th>` +
+      `</tr></thead><tbody>${rows}<tr class="total"><td colspan="9">Total — ${list.length} case${list.length===1?"":"s"}</td>` +
+      `<td class="num">${money(total)}</td><td></td></tr></tbody></table></div></td></tr>` : "";
+    body = `<div class="gridwrap"><table class="grid"><thead><tr><th>Vendor ID</th><th class="num">Amount</th><th class="num">Cases</th><th></th></tr></thead><tbody>` +
+      `<tr class="txn${isOpen?" open":""}"><td><b>${esc(fleetId)}</b></td><td class="num"><b>${money(total)}</b></td><td class="num">${list.length}</td>` +
+      `<td><button type="button" class="tog" data-txn="ua|all" aria-expanded="${isOpen}" title="${isOpen?"Hide":"Show"} the cases">${isOpen?"−":"+"}</button></td></tr>` +
+      detail + `</tbody></table></div><div class="note">Approved by Get-Rescue and not paid yet. Shown whatever the dates above.</div>`;
+  }
+  return `<div class="sec${open?" on":""}">` +
+    `<button type="button" class="sec-head" data-sec="${kind}" aria-expanded="${open}">` +
+    `<b>Unaccounted Tickets</b><span class="meta">${list.length} case${list.length===1?"":"s"} · ${money(total)}</span>` +
+    `<span class="spacer"></span><span class="tog" aria-hidden="true">${open?"−":"+"}</span></button>` +
+    `<div class="sec-body">${body}</div></div>`;
+}
 function render(){
   if(!RANGE) return;
   const fee = groupTransactions("fee"), gst = groupTransactions("gst");
@@ -381,6 +425,7 @@ function render(){
   $("results").innerHTML =
     sectionHtml("fee", "Payment View", fee) +
     sectionHtml("gst", "GST View", gst) +
+    unaccountedSectionHtml() +   // Task Tracker #7
     (undated ? `<div class="note">${undated} paid case${undated===1?" has":"s have"} no readable payment date and ${undated===1?"is":"are"} not listed. Please contact Get-Rescue accounts about ${undated===1?"it":"them"}.</div>` : "") +
     `<div class="note">Base Fee, TDS Rate and GST % are worked out from the amounts recorded when you were paid, so they show what was actually applied.</div>`;
 }

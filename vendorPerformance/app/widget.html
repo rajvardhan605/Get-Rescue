@@ -237,9 +237,9 @@ async function loadInviteOutcomesViaCustomApi(vendorId){
     return null;
   }
 }
-/* Same 2 minutes as the vendor app's own INVITE_TIMEOUT_MS and the agent app's
+/* Same timeout (3 minutes since 2026-10-27) as the vendor app's own INVITE_TIMEOUT_MS and the agent app's
    "Timed Out" label - if the SLA changes, change all three. */
-const OUTCOME_TIMEOUT_MS = 2*60*1000;
+const OUTCOME_TIMEOUT_MS = 3*60*1000;   // 3 min - Task Tracker #16 (2026-10-27); same value in vendorTicket and getRescueTicket
 /* One row per case, or nothing:
      - Assigned to THIS vendor, or the invite was accepted  -> not listed.
      - Rejected: a rejection-log entry, or an invite that really was rejected
@@ -459,7 +459,7 @@ function computeStats(tickets, rejections, range){
   const cancelled = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable")) return false;
+    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Not Billable" || cs==="Cancelled - Billable")) return false;   // #58: new name accepted too
     return inRange(cancellationTime(r), range);
   }).length;
   // Real bug fixed 2026-09-04, live-confirmed via console dump: Closure_Status
@@ -491,7 +491,13 @@ function computeStats(tickets, rejections, range){
   const withFeedback = mine.filter(function(r){ return r.Cx_Feedback_Score!=null && r.Cx_Feedback_Score!==""; });
   const feedbackHighPct = withFeedback.length ? Math.round(withFeedback.filter(function(r){ return Number(r.Cx_Feedback_Score)>=9; }).length/withFeedback.length*100) : null;
 
-  return { rejectedCount, completed, cancelled, etaMetPct, issuesFixedPct, feedbackHighPct };
+  /* The counts behind each % (Task Tracker #5.3, 2026-10-27) - added alongside the
+     percentages, which are computed exactly as before. */
+  const etaMetCount = etaJudged.filter(Boolean).length, etaTotal = etaJudged.length;
+  const issuesFixedCount = rsrWithResolution.filter(function(r){ return r.Issue_Resolved==="Yes"; }).length, issuesTotal = rsrWithResolution.length;
+  const feedbackHighCount = withFeedback.filter(function(r){ return Number(r.Cx_Feedback_Score)>=9; }).length, feedbackTotal = withFeedback.length;
+  return { rejectedCount, completed, cancelled, etaMetPct, issuesFixedPct, feedbackHighPct,
+           etaMetCount, etaTotal, issuesFixedCount, issuesTotal, feedbackHighCount, feedbackTotal };
 }
 
 /* Vendor Portal settlement statement (2026-09-14) — the last outstanding piece
@@ -549,6 +555,16 @@ const ICON_WARN='<svg viewBox="0 0 24 24" fill="none"><path d="M12 9v4M12 17h.01
 const ICON_PCT='<svg viewBox="0 0 24 24" fill="none"><path d="M5 19 19 5M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 function pctText(v){ return v==null ? "—" : v+"%"; }
+/* "9 of 15 cases" under a percentage - Task Tracker #5.3. Nothing when the counts
+   are absent (an older stats object), so the card reads exactly as before. */
+function ofText(n, total){
+  if(total==null || n==null) return "";
+  return " · " + n + " of " + total + " case" + (total===1 ? "" : "s");
+}
+/* Settlement section hidden - Task Tracker #5.1 (2026-10-27, "remove the
+   SETTLEMENT section completely"); payments live on the Vendor Payment page.
+   computeSettlement() still runs, so true brings the section back unchanged. */
+const SHOW_SETTLEMENT = false;
 
 function render(stats, settlement, outcomesHtml){
   // settlement is optional — render() keeps working with a single argument
@@ -564,7 +580,7 @@ function render(stats, settlement, outcomesHtml){
     </div>
     ${s.anyData ? "" : '<div style="font-size:12.5px;opacity:.7;margin-top:6px">No cases have been approved for settlement yet. Figures appear here once Operations approves your completed cases.</div>'}
   `;
-  $("content").innerHTML = settlementHtml + `
+  $("content").innerHTML = (SHOW_SETTLEMENT ? settlementHtml : "") + `
     <div class="section-title">Cases</div>
     <div class="grid">
       <div class="card warn"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.rejectedCount)}</div><div class="lbl">Rejected / Timed Out</div></div>
@@ -574,9 +590,9 @@ function render(stats, settlement, outcomesHtml){
     ${outcomesHtml || ""}
     <div class="section-title">% Percentage</div>
     <div class="grid">
-      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.etaMetPct))}</div><div class="lbl">Reached Inside ETA</div></div>
-      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.issuesFixedPct))}</div><div class="lbl">Issues Fixed (RSR)</div></div>
-      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.feedbackHighPct))}</div><div class="lbl">Customer Feedback ≥ 9</div></div>
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.etaMetPct))}</div><div class="lbl">Reached Inside ETA${esc(ofText(stats.etaMetCount, stats.etaTotal))}</div></div>
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.issuesFixedPct))}</div><div class="lbl">Issues Fixed (RSR)${esc(ofText(stats.issuesFixedCount, stats.issuesTotal))}</div></div>
+      <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.feedbackHighPct))}</div><div class="lbl">Customer Feedback ≥ 9${esc(ofText(stats.feedbackHighCount, stats.feedbackTotal))}</div></div>
     </div>
   `;
 }

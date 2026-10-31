@@ -455,7 +455,33 @@ async function apiGetReport(report, criteria, max){
     return (r && r.code===3000 && Array.isArray(r.data)) ? r.data : [];
   } catch(e){ console.log("[GR-Vendor] getRecords error:", e); return []; }
 }
-async function apiUpdate(id, data){ return apiUpdateReport(CONFIG.reportName, id, data); }
+/* Still this login's job? - Task Tracker #51 (2026-10-29). The office can now unassign a vendor at
+   any stage before closure, so a phone still showing the job must not write over the ticket after
+   it was taken back. Checked only for a job already under way on this screen (accept, reject and
+   hand-off are untouched); a fresh read that fails lets the write through exactly as before, so a
+   weak signal never blocks real work. */
+const JOB_TAKEN_BACK_STATUSES = ["READY FOR ASSIGNMENT","RSP IRA (INVITE RESPONSE AWAITED)","SCHEDULED","NEW","SERVICE FEE QUOTE","BOOKING FEE PENDING","LOCATION REQUEST","LOCATION PENDING"];
+async function assertJobStillMine(id){
+  const cur = state && state.current;
+  if(!cur || String(cur.ID)!==String(id)) return;
+  const localSt = String(cur.Status||"").trim().toUpperCase();
+  if(!localSt || localSt==="RSP IRA (INVITE RESPONSE AWAITED)") return;
+  let fresh = null;
+  try{
+    const rows = await apiGetReport(CONFIG.reportName, "ID == " + id, 200);
+    fresh = rows && rows.length ? rows[0] : null;
+  }catch(e){ return; }
+  if(!fresh) return;
+  const freshSt = String(fresh.Status||"").trim().toUpperCase();
+  let takenBack = JOB_TAKEN_BACK_STATUSES.indexOf(freshSt) >= 0;
+  const holder = lookupId(fresh.Assigned_Vendor), myId = currentVendorRecord && currentVendorRecord.id;
+  if(holder!=null && String(holder).trim()!=="" && myId && String(holder)!==String(myId)) takenBack = true;   // now another vendor's
+  if(!takenBack) return;
+  console.warn("[GR-Vendor] assertJobStillMine: ticket "+id+" was taken back by the office (status "+freshSt+") - this write was refused (Task Tracker #51).");
+  if(typeof backToDashboard==="function") setTimeout(backToDashboard, 1500);
+  throw new Error("This job has been reassigned by the office - nothing was saved.");
+}
+async function apiUpdate(id, data){ await assertJobStillMine(id); return apiUpdateReport(CONFIG.reportName, id, data); }
 async function apiUpdateReport(report, id, data){
   const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
   const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
@@ -1875,6 +1901,21 @@ const state = { tickets:[], current:null, photos:{}, files:{}, fleetTechs:[], in
 // fallback for any ticket that doesn't have a matching Invites record yet
 // (e.g. one assigned before this mechanism existed), so nothing that used to
 // show up silently disappears.
+let TECH_INVITES_BY_TICKET={};
+/* The technician this vendor handed the ticket to turned it down - Task Tracker
+   #15.7 (2026-10-28). Returns that technician's invite row, or null while the
+   assigned technician has not rejected (or nobody was ever assigned). */
+function technicianRejection(r){
+  const rows=(r && TECH_INVITES_BY_TICKET[String(r.ID)]) || [];
+  if(!rows.length) return null;
+  const assigned=lookupId(r.Assigned_Technician);
+  if(assigned!=null && String(assigned).trim()!==""){
+    const row=rows.find(function(inv){ return String(lookupId(inv.Technician))===String(assigned); });
+    return (row && inviteIsRejected(row)) ? row : null;
+  }
+  const rejected=rows.filter(inviteIsRejected);
+  return rejected.length ? rejected[rejected.length-1] : null;
+}
 async function loadMyInvites(){
   const all = await apiGetReport(CONFIG.invitesReport, null, 1000);
   console.log("[GR-Vendor] loadMyInvites: fetched "+all.length+" total Invites records; currentVendorRecord.id="+(currentVendorRecord&&currentVendorRecord.id));
@@ -1888,6 +1929,15 @@ async function loadMyInvites(){
   // for vendors since the 2026-07-31 Lookup migration. lookupId() is the
   // right comparison here instead — same no-op-on-bare-ID behavior, but
   // that's exactly the value we want to compare.
+  /* Technician hand-off rows, by ticket - Task Tracker #15.7. Same read, no extra
+     fetch; used only to tell whether the technician this vendor picked rejected. */
+  const techRows={};
+  all.forEach(function(inv){
+    const techId=lookupId(inv.Technician), tid=lookupId(inv.RSID);
+    if(techId==null || String(techId).trim()==="" || tid==null) return;
+    (techRows[String(tid)]=techRows[String(tid)]||[]).push(inv);
+  });
+  TECH_INVITES_BY_TICKET=techRows;
   const mine = all.filter(function(inv){
     const vId = lookupId(inv.Vendor);
     return currentVendorRecord && String(vId)===String(currentVendorRecord.id);
@@ -2020,7 +2070,7 @@ async function otherInvitesStillLive(ticketId){
 
    Notified ids are remembered so the 30s dashboard poll cannot re-toast the
    same missed ticket every half minute; the store self-prunes after 7 days. */
-const INVITE_TIMEOUT_MS = 2*60*1000;
+const INVITE_TIMEOUT_MS = 3*60*1000;   // 3 min - Task Tracker #16 (2026-10-27; was 2). Same value in getRescueTicket and vendorPerformance
 const MISSED_NOTIFIED_KEY = "gr_vendor_missed_notified";
 function missedNotified(){
   try{ return JSON.parse(localStorage.getItem(MISSED_NOTIFIED_KEY)||"{}") || {}; }
@@ -2082,6 +2132,15 @@ async function fetchMyTickets(){
        vendor is the one person who must be able to see it. */
     const mineNow = ticketIsMineNow(r);
     if(!(inviteMap[String(r.ID)]!=null || isMine(r) || mineNow)) return false;
+    /* Handled by the office - Task Tracker #12 (2026-10-27, "When Agent is performing
+       task on behalf of Agent, remove the ticket from the vendor app"). Once an agent
+       switches Acceptance Mode to entering on the vendor's behalf, the job is run
+       from the agent portal, so it leaves this list - with the same one-time notice a
+       ticket taken by another vendor already gets. */
+    if(String(readVal(r,"Acceptance_Mode")||"").trim()==="Agent Entering on Behalf of Vendor"){
+      missed.push({ id:r.ID, label:caseLabel(r), why:"the office is now handling it" });
+      return false;
+    }
     /* This vendor turned it down — it goes now, not in 24 hours. Either
        signal is enough: the invite row may not have been updated yet (that
        write is not awaited and can silently no-op), and the local stamp is
@@ -2392,9 +2451,54 @@ function showNewCaseNotification(rec){
 // Caps how many cards stack at once — a burst of many simultaneous new
 // invites would otherwise fill the whole screen; anything past the cap
 // folds into one plain toast instead.
+/* ---------- Loud buzzer for a new ticket - Task Tracker #9 / #15.2, 2026-10-27 ----------
+   A burst of this app's own tone (playNotifSound, unchanged) plus vibration,
+   repeated every BUZZER_REPEAT_MS until the person taps anywhere, and never
+   for longer than an invite stays open. Phones only allow sound after a first
+   tap, so a banner asks for one when the app opens. A locked phone or a
+   backgrounded app pauses this page entirely - no web app can ring then. */
+const BUZZER_REPEAT_MS = 4000, BUZZER_MAX_MS = 3*60*1000;
+const BUZZER = { timer:null, until:0 };
+function buzzOnce(){
+  playNotifSound();
+  setTimeout(playNotifSound, 400);
+  setTimeout(playNotifSound, 800);
+  try{ if(navigator.vibrate) navigator.vibrate([500,150,500,150,500]); }catch(e){}
+}
+function stopBuzzer(){
+  if(BUZZER.timer){ clearInterval(BUZZER.timer); BUZZER.timer=null; }
+  BUZZER.until = 0;
+}
+function startBuzzer(){
+  stopBuzzer();
+  BUZZER.until = Date.now() + BUZZER_MAX_MS;
+  buzzOnce();
+  BUZZER.timer = setInterval(function(){
+    if(Date.now() > BUZZER.until){ stopBuzzer(); return; }
+    buzzOnce();
+  }, BUZZER_REPEAT_MS);
+}
+// Any tap acknowledges the alert (capture phase, before the tap does anything else).
+document.addEventListener("pointerdown", function(){ if(BUZZER.timer) stopBuzzer(); }, true);
+/* "Turn on alerts" banner: shown only while sound is still locked; the tap that
+   dismisses it is the one the existing click listener uses to unlock sound. */
+function showAlertArmBanner(){
+  try{
+    const ctx = NOTIF_SOUND_STATE.ctx;
+    if(ctx && ctx.state==="running") return;
+    if(document.getElementById("alertArmBanner")) return;
+    const b = document.createElement("button");
+    b.type = "button"; b.id = "alertArmBanner";
+    b.textContent = "Tap here to turn on the sound for new tickets";
+    b.style.cssText = "position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:9999;padding:14px 16px;border:0;border-radius:12px;font:700 15px system-ui,sans-serif;background:#F15A22;color:#fff;box-shadow:0 6px 20px rgba(0,0,0,.25);cursor:pointer";
+    b.onclick = function(){ unlockNotifSound(); b.remove(); };
+    document.body.appendChild(b);
+  }catch(e){}
+}
+setTimeout(showAlertArmBanner, 1500);
 function notifyNewCases(list){
   if(!list.length) return;
-  playNotifSound();
+  startBuzzer();   // was a single playNotifSound() - Task Tracker #9 / #15.2
   list.slice(0,5).forEach(showNewCaseNotification);
   if(list.length>5) toast((list.length-5)+" more new case(s) also arrived","ok");
 }
@@ -2551,7 +2655,9 @@ function renderTicketInfo(){
     ["Case ID", caseLabel(r)],
     ["Service", r[CONFIG.serviceTypeField]||""],
     ["Customer", readVal(r,CONFIG.nameField)],
-    ["Phone", r[CONFIG.phoneField]||""],
+    // Not shown on the Accept page (status RSP IRA) - Task Tracker #11 / 15.4, 2026-10-27.
+    // Empty drops the row (the filter below), so it appears once the job is accepted.
+    ["Phone", String(r[CONFIG.stageField]||"").trim().toUpperCase()==="RSP IRA (INVITE RESPONSE AWAITED)" ? "" : (r[CONFIG.phoneField]||"")],
     ["Vehicle", vehicleDisplayFor(r)],
     ["Location", loc],
     ["Drop", drop],
@@ -2596,6 +2702,11 @@ function renderTicketInfo(){
 }
 
 /* ---------- per-status, per-Service_Type action screen router ---------- */
+function technicianIsRunning(r){
+  const techId=lookupId(r && r.Assigned_Technician);
+  if(techId==null || String(techId).trim()==="") return false;
+  return !technicianRejection(r);
+}
 function renderActionScreen(){
   renderTicketInfo();
   // Any screen change cancels the payment poll; renderPaymentScreen() restarts it.
@@ -2618,6 +2729,15 @@ function renderActionScreen(){
     </div>`;
   }
   else if(st==="RSP IRA (INVITE RESPONSE AWAITED)"){ $("ascreenTitle").textContent="Service Acceptance"; renderAcceptScreen(); }
+  /* View only once the technician has taken it on - Task Tracker #15 (2026-10-28).
+     Placed after RSP IRA on purpose: until the technician accepts, this vendor keeps
+     the Accept screen, so the job can still be taken back from a technician who
+     never answers. A technician who rejected does not count (#15.7). */
+  else if(technicianIsRunning(state.current)){
+    $("ascreenTitle").textContent="Assigned to Technician";
+    const techName=readVal(state.current,"Assigned_Technician") || String(state.current.Assigned_Technician_Email||"").trim() || "your technician";
+    $("ascreenBody").innerHTML=`<div class="empty-state"><h3>Your technician is handling this job</h3><p>${esc(/^[0-9]+$/.test(String(techName).trim()) ? "Your technician" : techName)} runs every step from the technician app. This screen is view only.</p></div>`;
+  }
   else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown Location"; isTow?renderReachScreenTow():renderReachScreenRsr(); }
   else if(st==="WORK IN PROGRESS"){ $("ascreenTitle").textContent="Work In Progress"; renderWipScreen(); }
   else if(st==="LOADING"){ $("ascreenTitle").textContent="Loading"; renderLoadingScreen(); }
@@ -2706,7 +2826,16 @@ function renderAcceptScreen(){
   // the plain truthy check above always locked the panel. lookupId() pulls
   // the real .ID (or bare id) out of it — undefined/empty when nothing was
   // ever actually assigned, a real id once someone genuinely is.
-  if(lookupId(r.Assigned_Technician)){
+  /* A technician who REJECTED no longer locks the picker - Task Tracker #15.7: the
+     job came back to this vendor, so re-assigning starts fresh. */
+  const techRej=technicianRejection(r);
+  if(techRej){
+    const who=(state.fleetTechs||[]).find(function(t){ return String(t.ID)===String(lookupId(techRej.Technician)); });
+    const techName=(who && fleetTechName(who)) || readVal(techRej,"Technician") || "Your technician";
+    const techNameShown=/^[0-9]+$/.test(String(techName).trim()) ? "Your technician" : techName;
+    $("ascreenBody").insertAdjacentHTML("afterbegin", `<div class="card" style="border-color:var(--stop);margin-bottom:12px"><b style="color:var(--stop)">${esc(techNameShown)} rejected this job</b>${techRej.Reject_Reason?(" — "+esc(techRej.Reject_Reason)):""}<div class="hint" style="margin-top:6px">Accept it yourself or assign another technician below.</div></div>`);
+  }
+  if(lookupId(r.Assigned_Technician) && !techRej){
     $("handoffPanel").style.display="block";
     $("fleetTechList").innerHTML='<p style="font-size:13px;color:var(--muted)">Already assigned to a technician — waiting on their response.</p>';
   } else {
@@ -3110,6 +3239,10 @@ async function showHandoffPanel(){
   // field left blank still shows (same "missing data shows rather than
   // silently vanishes" philosophy as the rest of this file).
   const capableTechs=techs.filter(function(t){
+    /* Hidden by an admin - Task Tracker #83.11 (2026-10-29): Technicians.Status = Hide (or
+       Technician_Status). Only that word hides; a blank or any other value shows as before. */
+    const techFlag=String(readVal(t,"Status")||readVal(t,"Technician_Status")||"").trim().toLowerCase();
+    if(techFlag==="hide" || techFlag==="hidden") return false;
     const cap=String(t.service_capability||"").trim().toUpperCase();
     if(!cap) return true;
     if(cap==="BOTH") return true;
@@ -3209,8 +3342,18 @@ async function assignTechnician(techId){
     // separate `Technician` Lookup (-> Technicians_Report) for exactly this
     // case; getRescueTicket's own vendor invites still use `Vendor` only.
     try{
+      /* Re-assigned to a technician who rejected it earlier - Task Tracker #15.7: their
+         existing row is reset to awaiting, the same two known-good fields the agent's
+         re-invite writes, so their app shows the job again. Their earlier reject is
+         kept in Task_Rejections. */
+      const oldRow=(TECH_INVITES_BY_TICKET[String(r.ID)]||[]).find(function(inv){ return String(lookupId(inv.Technician))===String(tech.ID); });
+      if(oldRow && oldRow.ID!=null){
+        await apiUpdateReport(CONFIG.invitesReport, oldRow.ID, { Status:"RSP IRA (INVITE RESPONSE AWAITED)", Invited_At: fmtDateTime(new Date()) });
+        try{ await apiUpdateReport(CONFIG.invitesReport, oldRow.ID, { Reject_Reason:"", Responded_At:"" }); }catch(e2){ console.warn("[GR-Vendor] assignTechnician: old reject reason not cleared on invite "+oldRow.ID, e2); }
+      } else {
       const fn=resolve("addRecords");
       if(fn) await fn({ app_name:CONFIG.appName, form_name:CONFIG.invitesForm, payload:{ data:{ RSID:r.ID, Technician:tech.ID } } });
+      }
     }catch(e){ console.warn("[GR-Vendor] could not create Invites record for technician", name, e); }
     /* The hand-off IS this vendor's acceptance - 2026-10-17. This screen offers
        "assign to a technician" INSTEAD of "accept" (see renderAcceptScreen's own
@@ -3726,7 +3869,7 @@ function renderReachedDropScreen(){
       <div class="fld"><label>Toll Charges?</label>
         <div class="radio-set" id="tollCharges1"><div class="opt" data-value="Yes">Yes</div><div class="opt" data-value="No">No</div></div>
       </div>
-      ${photoFieldHtml("Drop_Location_Photo","Drop Location Photos",4,4)}
+      ${photoFieldHtml("Drop_Location_Photo","Drop Location Photos",2,4)}
     </div>
     <button class="btn primary" id="reachedDropBtn" type="button">Reached Drop Location</button>`;
   wirePhotoField("Drop_Location_Photo",4);
@@ -3819,8 +3962,8 @@ function renderUnloadingScreen(){
     <div class="card">
       <div class="fld"><label>Handover to (Name)</label><input type="text" id="handoverName"></div>
       <div class="fld"><label>Handover Number</label><input type="number" id="handoverNumber"></div>
-      <div class="fld"><label>Handover Location</label>
-        <select id="handoverDesignation"><option value="">— select —</option><option value="Home">Home</option><option value="Office">Office</option><option value="Work Shop">Work Shop</option></select>
+      <div class="fld"><label>Handover Designation</label>   <!-- Task Tracker #84.7 (2026-10-29): who it was handed to -->
+        <select id="handoverDesignation"><option value="">— select —</option><option value="Customer/Customer rep">Customer/Customer rep</option><option value="Service station rep">Service station rep</option><option value="Security">Security</option></select>
       </div>
     </div>
     <button class="btn primary" id="droppedBtn" type="button">Dropped</button>`;
@@ -3835,7 +3978,7 @@ async function confirmDropped(){
   const name=$("handoverName").value.trim();
   const number=$("handoverNumber").value.trim();
   const designation=$("handoverDesignation").value;
-  if(!name || !number || !designation){ toast("Handover name, number and location are all required","err"); return; }
+  if(!name || !number || !designation){ toast("Handover name, number and designation are all required","err"); return; }
   setDisabled("droppedBtn",true);
   try{
     const r=state.current;
@@ -4240,7 +4383,10 @@ function renderPaymentScreen(){
        premature. Same guard as above - the card is legitimately absent once the
        gateway has settled the ticket. */
     const fbBlock=$("feedbackLinkBlock");
-    if(fbBlock) fbBlock.style.display = isCash ? "" : "none";
+    /* Also when nothing is owed - Task Tracker #86 (2026-10-29). Cash-only exists because on
+       other methods the vendor is still chasing the money; with a zero balance there is
+       nothing to chase, and the card was hidden behind an unpicked method. */
+    if(fbBlock) fbBlock.style.display = ((isCash) || remaining<=0) ? "" : "none";
     if(gateway) ensurePaymentQrLink();   // creates the link if it does not exist yet, then draws
     refreshPayButton();
   }
@@ -4280,12 +4426,18 @@ const FEEDBACK_SENT_FIELD = "Feedback_Sent_At";
    recorded so it is not later mistaken for a bug.
 
    Blank this to fall back to google_feedback (Google Reviews) instead. */
-const FEEDBACK_CUSTOMER_PAGE_TEMPLATE = "confirm_booking_fee_and_total_fee";
+/* "feedback" - Task Tracker #61 (2026-10-28): the client's own feedback template. Was
+   "confirm_booking_fee_and_total_fee" (the booking-fee wording, used as a stand-in while
+   no feedback template existed), which is why customers read a payment message. If
+   "feedback" is not in the WhatsApp workspace yet, the existing fallback below sends
+   google_feedback instead. */
+const FEEDBACK_CUSTOMER_PAGE_TEMPLATE = "feedback";
 /* The two body variables the template expects, in its own order. Real figures
    rather than blanks: WhatsPortal rejects an empty parameter with 422
    message_rejected, so they must carry something. */
 function feedbackTemplateParams(r){
-  return [String((r && r.Total_Service_Fee) || 0), String((r && r.Booking_Fee) || 0)];
+  // "feedback" has no body variables - only its Share Feedback button (2026-10-28).
+  return [];
 }
 /* Did the agent turn the request OFF? Read tolerantly on purpose.
 
@@ -4341,7 +4493,7 @@ async function maybeSendFeedbackRequest(r, force){
     }
     if(buttonPath){
       ok = await sendWhatsAppTemplate(phone, FEEDBACK_CUSTOMER_PAGE_TEMPLATE, feedbackTemplateParams(r), buttonPath);
-      sentWhat = FEEDBACK_CUSTOMER_PAGE_TEMPLATE + " with mode=feedback (button opens the Customer Page feedback form; the wording is the booking-fee one)";
+      sentWhat = FEEDBACK_CUSTOMER_PAGE_TEMPLATE + " with mode=feedback (button opens the Customer Page feedback form)";
       /* Fall back ONLY when WhatsApp says the template does not exist. Create it
          and this starts working on the next send with nothing redeployed. */
       if(waResponseSaysTemplateMissing()){
@@ -4407,6 +4559,7 @@ async function confirmPaymentReceived(){
     const closureTimeField = String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" ? "TOW_Closure_Time" : "RSP_Closure_Time";
     const payload={ Payment_received:"Yes", Payment_Status:"PAID", Status:"RSP CLOSED", Remaining_Fee_Receipt_Time: fmtDateTime(new Date()) };
     payload[closureTimeField] = fmtDateTime(new Date());
+    payload.Service_Closure_Time = payload[closureTimeField];   // Service_Closure_Time - Task Tracker #57: same time in the single field for both service types.
     const chosenMethod=($("Payment_Method_Final") && $("Payment_Method_Final").value)||"";
     if(!gatewaySettled && chosenMethod) payload.Payment_Method_Final = chosenMethod;
     // Diagnostic logging (2026-08-03, user-reported live: "Invalid column
@@ -4434,7 +4587,7 @@ async function confirmPaymentReceived(){
        must not touch a payment that has already been taken. */
     /* CASH ONLY - 2026-10-13, see this change's own note. Matches the Send
        Feedback Link card, which the client scoped to cash the same day. */
-    if(chosenMethod === "Cash"){
+    if(chosenMethod === "Cash" || (Number(r.Remaining_Fee)||0) <= 0){   // #86: also when nothing was owed
       maybeSendFeedbackRequest(r, false)
         .catch(function(e){ console.warn("[GR-Vendor] feedback request after payment failed (non-blocking)", e); });
     }
@@ -5695,6 +5848,54 @@ function pad(n){ return n<10?"0"+n:""+n; }
 function fmtDateTime(v){ if(!v) return ""; const d=new Date(v); if(isNaN(d)) return v; return pad(d.getDate())+"-"+MON[d.getMonth()]+"-"+d.getFullYear()+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":00"; }
 
 $("backBtn").onclick=backToDashboard;
+/* Last_Seen_At - Task Tracker #85.5 (2026-10-29): the "Login" column on the agent's assignment
+   picker. Stamped when the app opens and every LAST_SEEN_MS while it is on screen, Online or
+   Offline alike, so the office can tell "app open" from "switched to Online". Its own small
+   update, separate from every other write, so a refused field can never affect anything else;
+   a failure is logged once and retried on the next tick. */
+const LAST_SEEN_MS = 3*60*1000;
+let LAST_SEEN_TIMER = null, LAST_SEEN_FAILED = false;
+async function stampLastSeen(){
+  if(typeof document!=="undefined" && document.visibilityState && document.visibilityState!=="visible") return;
+  const rec = currentAvailabilityRecord;
+  if(!rec || rec.id==null) return;
+  try{
+    await apiUpdateReport(CONFIG.availabilityReport, rec.id, { Last_Seen_At: fmtDateTime(new Date()) });
+    LAST_SEEN_FAILED = false;
+  }catch(e){
+    if(!LAST_SEEN_FAILED) console.warn("[GR-Vendor] Last_Seen_At not written (is the field on the form?) - nothing else is affected", e);
+    LAST_SEEN_FAILED = true;
+  }
+}
+function startLastSeen(){
+  if(LAST_SEEN_TIMER) return;
+  stampLastSeen();
+  LAST_SEEN_TIMER = setInterval(stampLastSeen, LAST_SEEN_MS);
+  if(typeof document!=="undefined" && document.addEventListener){
+    document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible") stampLastSeen(); });
+  }
+}
+/* Approval Status - Task Tracker #83.4 (2026-10-29): a vendor whose Vendors.Approval_Status is
+   Deactive cannot use the app. Only that word blocks; a blank, a missing field or any other value
+   lets the vendor in exactly as before. Read from whichever of the two vendor records this login
+   resolved. */
+function vendorIsDeactivated(){
+  const recs=[currentVendorRecord && currentVendorRecord.data, currentAvailabilityRecord && currentAvailabilityRecord.data].filter(Boolean);
+  return recs.some(function(rec){
+    return ["Approval_Status","Approval_status"].some(function(f){
+      const v=String(readVal(rec,f)||"").trim().toLowerCase();
+      return v==="deactive" || v==="deactivated" || v==="inactive";
+    });
+  });
+}
+function showAccountInactive(){
+  try{ stopLocationHeartbeat(); }catch(e){}
+  const box=document.createElement("div");
+  box.id="accountInactive";
+  box.setAttribute("style","position:fixed;inset:0;z-index:99999;background:#fff;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:inherit");
+  box.innerHTML='<div style="max-width:340px"><h2 style="margin:0 0 10px">Account not active</h2><p style="margin:0;color:#555">Your vendor account is not active right now, so no jobs can be shown. Please contact Get-Rescue to have it activated.</p></div>';
+  document.body.appendChild(box);
+}
 async function boot(){
   try{
     const params=await ZOHO.CREATOR.UTIL.getInitParams();
@@ -5706,6 +5907,8 @@ async function boot(){
      and before any render so the overlay is the first thing on screen. */
   await requireLocation();
   await loadAvailability();
+  if(vendorIsDeactivated()){ console.warn("[GR-Vendor] boot: Approval_Status is Deactive - app not opened (Task Tracker #83.4)."); showAccountInactive(); return; }
+  startLastSeen();   // Task Tracker #85.5 - not awaited, never delays the app opening
   // Awaited (not fire-and-forget) so VEHICLE_NAMES is already populated
   // before the very first render — otherwise the dashboard's first paint
   // would still show a raw id with nothing to trigger a re-render once the

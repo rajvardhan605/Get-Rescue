@@ -501,6 +501,11 @@ img,svg{max-width:100%}
   .topbar{position:static}
   .form-card{margin-bottom:90px}
 }
+/* Collapsible blocks - Task Tracker #64/#65 */
+.coll-block{width:100%}
+.coll-block>summary{cursor:pointer;font-family:var(--f-disp);font-weight:800;font-size:14px;color:var(--text);padding:6px 0;list-style-position:inside}
+.coll-block>summary:focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:4px}
+.coll-block .coll-body{margin-top:8px}
 </style>
 </head>
 <body>
@@ -647,6 +652,7 @@ img,svg{max-width:100%}
              outside the step body, so it shows on every step without any per-step
              wiring. Hidden until refreshLinkCallButton() finds a call to offer. -->
         <button class="btn ghost sm" id="wizLinkCall" type="button" style="display:none;margin-left:8px;padding:2px 10px;font-size:11px">Link Call</button>
+        <button class="btn ghost sm" id="wizRefresh" type="button" title="Reload this ticket's latest saved information without leaving it" style="margin-left:8px;padding:2px 10px;font-size:11px">Refresh</button>
         <button class="close-x" id="wizClose" type="button" aria-label="Back to dashboard"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
       </div>
       <div class="progress">
@@ -1446,6 +1452,34 @@ function bookingFeeConfirmedPaid(r){
   return Number(r.Booking_Fee)>0 && !statusStillEarly(r, ["SERVICE FEE QUOTE","BOOKING FEE PENDING"]);
 }
 function remainingFeeConfirmedPaid(r){ return r.Payment_received==="Yes"; }
+/* Task Tracker 82 #6 / 82.1 #6 (2026-10-31). Payment_Status is the ONE field shared by the booking
+   fee and the remaining fee, so on the Final Payment page it kept showing the booking-fee value
+   and opened as "BF Payment Status". This works the remaining-fee status out from the fields that
+   really record it (the webhook and every app set Payment_received "Yes"). Display only. */
+function rfPaymentStatusText(r){
+  if(!r) return "";
+  if(remainingFeeConfirmedPaid(r)) return "PAID";
+  if(!(Number(r.Remaining_Fee)>0)) return "NOT APPLICABLE";
+  return "PENDING";
+}
+/* RSP Closure Status (Vendor) - Task Tracker 53/54/55, 94 #4 (2026-10-31). Amith: the three values
+   are RSP CLOSED, RSP CANCELLED and CX REJECT. Worked out from what the vendor side recorded;
+   no field is written. Anything else still shows the ticket Status, as before. */
+function rspClosureStatusText(r){
+  if(!r) return "";
+  const st=String(r.Status||"").trim().toUpperCase();
+  if(String(r.Rejection_Reason||"").trim()) return "CX REJECT";
+  if(st==="RSP CANCELLED" || String(r.Cancellation_Time||"").trim()) return "RSP CANCELLED";
+  if(r.Payment_received==="Yes" || r.Service_Closure_Time || r.RSP_Closure_Time || r.TOW_Closure_Time || st==="RSP CLOSED") return "RSP CLOSED";
+  return r.Status||"";
+}
+/* RSP Closure Time - Task Tracker 96 / 82.1 #12-13 / 82.4 #19-20 (2026-10-31): one row for both
+   service types. The Payment Received time (Service_Closure_Time, or the older per-type fields
+   on tickets closed before it), else the Cancel time - the two are mutually exclusive. */
+function rspClosureTimeText(r){
+  if(!r) return "";
+  return r.Service_Closure_Time || r.TOW_Closure_Time || r.RSP_Closure_Time || r.Cancellation_Time || "";
+}
 
 /* =====================================================================
    STAGE SCHEMA  —  each field's "n" is the Create_Case field link name.
@@ -1512,7 +1546,13 @@ const STAGES = [
       if(cur==="NEW") return "SERVICE FEE QUOTE";
       if(EARLY_STATUSES.indexOf(cur)<0) return r.Status;
       const feeSettled = !(Number(r.Booking_Fee)>0) || r.Payment_Status==="PAID";
-      if(feeSettled && locationReady(r)) return isServiceTimeFarFuture(r) ? "SCHEDULED" : "READY FOR ASSIGNMENT";
+      /* Judged on the service time THIS save writes - Task Tracker #52 (2026-10-27).
+         The status is computed before extra() puts the new Computed_Service_Time on
+         the record, so switching NOW -> LATER (+3 h) on a READY ticket used the old
+         NOW+30 min time and stayed READY. computeServiceTime() is exactly what
+         extra() writes, so the two can no longer disagree. */
+      const svcCheck = Object.assign({}, r, { Computed_Service_Time: computeServiceTime(r) });
+      if(feeSettled && locationReady(r)) return isServiceTimeFarFuture(svcCheck) ? "SCHEDULED" : "READY FOR ASSIGNMENT";
       return "SERVICE FEE QUOTE";
     },
     /* Create_Case has a required "Phone_Number" field separate from the one
@@ -1696,7 +1736,13 @@ const STAGES = [
        because that is what builds the closure page's "Customer & Vehicle - Agent"
        section (closure-page PDF item 4), but on the create STEP it is an empty
        read-only box: extra() only writes it when the ticket is first saved. */
-    { n:"Created_By_Agent_Email", l:"Agent (Owner)", t:"text", readonly:true, row:"meta", wizardHide:true },
+    // closureHide - #84.11: the closure page shows the agent's NAME (row below). Still saved as before.
+    { n:"Created_By_Agent_Email", l:"Agent (Owner)", t:"text", readonly:true, row:"meta", wizardHide:true, closureHide:true },
+    /* Agent (Owner) by NAME - Task Tracker #84.11 (2026-10-29). Looked up from Agent_Report by
+       the stored email (agentDisplayNameFor); the email itself where that report cannot be
+       read by this login. Closure page only. */
+    { n:"__AgentOwnerName", l:"Agent (Owner)", t:"computed", wizardHide:true, closureShow:true,
+      compute:(r)=>agentDisplayNameFor(r.Created_By_Agent_Email)||"", emptyHint:"—" },
     // "Remarks [Text Area – optional]" — shown as a plain editable field on
     // both this step's and `quote`'s flow-spec screens (2026-07-31); `quote`'s
     // own copy was `readonly:true` before this (added 2026-07-28, with no
@@ -1801,7 +1847,10 @@ const STAGES = [
       // this field are shared by both service types, and PAID is the only lock.
       readonly:(s)=>bookingFeeAlreadyPaid(s),
       hint:(s)=> bookingFeeAlreadyPaid(s) ? "Locked because the booking fee is marked PAID - the amount cannot be changed once it has been collected. Set BF Payment Status back to Pending to edit it." : "" },
-    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true, row:"rate3" },
+    // showZero - Task Tracker #87 (2026-10-29): 0 is drawn as "0", not an empty box. An empty
+    // box read back as blank on Save, and blank fields are never sent, so Zoho kept the old
+    // figure (400 -> 410 -> 400 left 10 behind).
+    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true, row:"rate3", showZero:true },
     /* Client_Charge / Rescue_Charge (2026-08-17, user-provided spec — On-Demand
        Invoicing / Vendor & Client Accounting prep): "Add 2 fields next to each
        other, below the booking fee and remaining fee." A separate split from
@@ -2252,7 +2301,7 @@ const STAGES = [
     // paymentWebhook still writes it on a successful online booking-fee
     // payment regardless of what is on screen here.
     { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5",
-      when:(s)=>!!s.Payment_Method && s.Payment_Method!=="Cash" },
+      when:(s)=>!!s.Payment_Method && s.Payment_Method!=="Cash", closureAlways:true },   // closure page shows it even for Cash (2026-10-31)
     /* Task Tracker item 8, "time of receiving booking fee" - 2026-10-13. Stamped
        by this step's own extra() hook the moment the fee goes PAID, and never
        displayed until now. Read-only: it records when something happened. */
@@ -2776,18 +2825,21 @@ const STAGES = [
     // renderVendorAcctFeeBox()'s own matching use, and CONFIG.vendorPhoneField
     // ("Mobile_Number_01") is the same confirmed-real phone field
     // recordVendorPayment() already sends to Zoho Books).
-    { n:"__VendorMobileDisplay", l:"Vendor Mobile Number", t:"computed", full:true,
+    // row:"assignedWho" - Task Tracker #84.3 (2026-10-29): beside Assigned Vendor.
+    { n:"__VendorMobileDisplay", l:"Vendor Mobile Number", t:"computed", row:"assignedWho", closureShow:true,   // #84.9: also in the vendor section of the closure page
       compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
       emptyHint:"No accepted vendor yet." },
     // closureHide:true (2026-09-11, Task Tracker PDF item 3 — "email can be
     // removed" from the closure page's own Vendor Response section, now that
     // Name/Mobile are shown there instead) — still fully live/editable on
     // this Accept step itself, only hidden from the Final Closure summary.
-    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true },
+    // wizardHide - Task Tracker #84.1 (2026-10-29): off the Accept step too. Still saved -
+    // it is filled from the picked vendor - only the box is gone.
+    { n:"Vendor_Email1", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true, wizardHide:true },
     // Moved here from `assignment` 2026-07-31 (UI simplification, matches
     // the Action 4 mock) — these are outcome fields, shown once someone's
     // actually accepted, not something the agent fills in upfront.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true, wizardHide:true }, // closureHide / wizardHide (#84.1): see Vendor_Email1's own matching comment
     // Technician fields below all gated on vendorHasTechnicians() (2026-08-07,
     // user request) — pointless clutter for an Individual vendor who will
     // never hand a job to a technician; see that function's own comment.
@@ -2832,7 +2884,7 @@ const STAGES = [
     // FIELD_ACTIVITY_LOG_FIELDS): these values may now show twice in Final
     // Closure (once here, once in the existing Distance & ETA Metrics /
     // Field Activity Log groups) — cosmetic only, not a functional issue.
-    { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number" },
+    { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number", closureHide:true },   // closure: Distance & ETA section (2026-10-31)
     { n:"Service_Acceptance", l:"Accept Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     // "Accept Location (Lat)"/"Accept Location (Lon)" (RSP_Start_Latitude/
     // Longitude) removed from this page 2026-08-20 (user request) — added
@@ -3002,12 +3054,12 @@ const STAGES = [
     // be entering/touching ANY of this outcome data, same principle as the
     // `acceptance` stage's own gate.
     { n:"Image_Upload2", l:"Arrival Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Cancel_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"Cancel_Reason", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>acceptanceIsAgentManual(s) || !!s.Cancel_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },   // 82 #7: always there when the agent runs the job
     // Added 2026-08-11 (user request) — normally stamped automatically by
     // the vendor's own Cancel action at this exact step (confirmed live
     // write point in vendorTicket) — shown here (Agent-entering mode only)
     // so the agent can fill it in themselves when standing in for the vendor.
-    { n:"Cancellation_Time", l:"Cancellation Time", t:"datetime", when:acceptanceIsAgentManual },
+    { n:"Cancellation_Time", l:"Cancellation Time", t:"datetime", when:(s)=>acceptanceIsAgentManual(s) || !!String(s.Cancellation_Time||"").trim(), readonly:(s)=>!acceptanceIsAgentManual(s) },   // 93 #1 / 94 #1: shown read-only once the vendor cancels
     // Added 2026-08-11 (user request, "Missing Fields & Field Behavior" spec)
     // — Reach Time itself was a real gap even before this: it had NO
     // Acceptance_Mode gate anywhere at all (only ever shown, always
@@ -3029,7 +3081,7 @@ const STAGES = [
     // needs to display REACH BDL Time") — was hidden entirely outside
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
-    { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true },   // 82 #2 / 82.1 #2 - saved value kept
     /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (RSR) - 2026-10-13.
        Written by the field apps at Reach since September; the closure page had
        the cancel position and the accept position but never this one. */
@@ -3049,7 +3101,8 @@ const STAGES = [
     // 2-leg Office→Breakdown→Office estimate when no drop coordinates exist
     // (true for every RSR ticket, and for a TOW ticket whose drop pin isn't
     // captured yet), so it works correctly here with zero changes needed.
-    { n:"__RoundTripEstimate", l:"Round Trip Distance (Estimate)", t:"computed", full:true,
+    // wizardHide - Task Tracker #84.4 (2026-10-29): removed from the Reach page.
+    { n:"__RoundTripEstimate", l:"Round Trip Distance (Estimate)", t:"computed", full:true, wizardHide:true,
       compute:(r)=>{ const km=calcRoundTripKm(r); return km>0 ? (km+" km (straight-line estimate via office)") : ""; },
       emptyHint:"Not available yet — breakdown location not captured." },
     // Cancel_Distance already exists and is already written by the vendor's
@@ -3068,7 +3121,7 @@ const STAGES = [
     // needed [on closure page], cancel distance will be populated in
     // 'Distance to Breakdown (km, RSR)' field instead"). Still fully live on
     // this Reach step itself.
-    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
+    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>acceptanceIsAgentManual(s) || String(s.Cancel_Distance==null?"":s.Cancel_Distance).trim()!=="", readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },   // 93 #2: shown read-only once the vendor cancels
     // Distance_Cancel_To_Breakdown - CONFIRMED to exist in Create_Case
     // (user-confirmed 2026-10-08). This note previously warned it did not.
     // for "Cancel location → breakdown location" existed anywhere before
@@ -3076,7 +3129,7 @@ const STAGES = [
     // measurement (Accept location → Cancel location, see that field's own
     // FIELDS.md note); this is the one the spec's item 2 ("Distance: Cancel
     // Location → Rescue/Breakdown Location") actually asked for.
-    { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual }
+    { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true }   // 82 #3 / 82.1 #3 - saved value kept
   ]},
   { key:"wip", branch:"rsr", bucket:2, short:"WIP", title:"Work In Progress",
     desc:"On-site repair — photos, expense and resolution.", save:"Save Progress",
@@ -3129,7 +3182,7 @@ const STAGES = [
     // Customer_Name/Phone_Number1/Email already use on the Create step.
     { n:"Expense_Amount", l:"Expense Amount", t:"number", row:"expense", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Expense_Photo", l:"Expense Photo", t:"file", row:"expense", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>acceptanceIsAgentManual(s) || !!s.Rejection_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },   // 82 #8 / 82.3 #8
     // t:"datetime" (2026-08-11, was t:"text") — real bug fixed: free-form text
     // let an ambiguous/invalid date string (e.g. locale-formatted "10/8/2026")
     // reach Zoho unvalidated, rejected with "Enter a valid date format". A
@@ -3144,7 +3197,7 @@ const STAGES = [
     // officeRoundTripLegs() (confirmed live write point in vendorTicket's own
     // Work Completed/Cx Reject actions); nothing computes them when the agent
     // is filling this in manually instead, so real editable inputs here.
-    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:acceptanceIsAgentManual },
+    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },   // 94 #8: shown read-only on vendor-run jobs; 82.1 #4: closure shows it under Distance & ETA
     // closureHide:true on Office_To_Mechanic/Breakdown_To_Office (2026-09-11,
     // Task Tracker PDF items 23/24 — "field not needed to be displayed" on
     // the closure page). Mechanic_To_Breakdown is NOT in that removal list —
@@ -3156,13 +3209,13 @@ const STAGES = [
     // Roundtrip_Distance/Mechanic_To_Breakdown also depend on) is left
     // untouched, since stopping the calculation itself is a bigger,
     // structurally different change not requested by this PDF pass.
-    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
+    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true },
     /* closureHide:true - 2026-10-16, user request: hidden from the closure page.
        This copy is the AGENT-ENTERING one; the Distance & ETA Metrics copy carries
        the same flag, because between them they cover both modes. Still fully live
        and editable on this step - closureHide only ever affects the summary. */
-    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
-    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true }
+    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true },
+    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true }
   ]},
 
   /* ---- TOW branch (reordered: accept -> reach -> load -> reached drop -> unload,
@@ -3220,7 +3273,8 @@ const STAGES = [
     // own copy of this stage). row: pairings (same day, same "fields feel
     // scattered" request) — see `acceptance`'s own matching comment on why
     // same-row fields have to sit adjacent in this array.
-    { n:"Image_Upload1", l:"Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // Hidden - Task Tracker #84.2 / #84.10 (2026-10-29): off this step and the closure page.
+    { n:"Image_Upload1", l:"Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s), wizardHide:true, closureHide:true },
     // REORDERED 2026-09-12 — see `acceptance`'s own matching comment (same
     // client email, same reasoning): Name (Assigned_Vendor) and Mobile
     // (__VendorMobileDisplay_TOW) now come before the raw email fields.
@@ -3229,12 +3283,12 @@ const STAGES = [
     { n:"Assigned_Vendor", l:"Assigned Vendor", t:"select", o:"@vendors", useId:true, readonly:(s)=>!acceptanceIsAgentManual(s), row:"assignedWho" },
     // Soft-test item #17 — see `acceptance`'s own matching comment (same
     // computed display, TOW's own copy of the stage).
-    { n:"__VendorMobileDisplay_TOW", l:"Vendor Mobile Number", t:"computed", full:true,
+    { n:"__VendorMobileDisplay_TOW", l:"Vendor Mobile Number", t:"computed", row:"assignedWho", closureShow:true,   // #84.3, #84.9
       compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
       emptyHint:"No accepted vendor yet." },
-    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment (Vendor_Email1)
+    { n:"Vendor_Email2", l:"Vendor Email", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true, wizardHide:true }, // closureHide / wizardHide (#84.1): see `acceptance`'s own matching comment (Vendor_Email1)
     // Moved here from `assignment` 2026-07-31 — see `acceptance`'s own comment.
-    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true }, // closureHide: see Vendor_Email1's own matching comment just above
+    { n:"Vendor_Email", l:"Vendor Email (Assignment)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s), row:"vendorEmails", closureHide:true, wizardHide:true }, // closureHide / wizardHide (#84.1): see Vendor_Email1's own matching comment
     // Technician/driver hand-off fields below all gated on
     // vendorHasTechnicians() — see `acceptance`'s own matching comment above.
     { n:"Technician_Email1", l:"Driver Email", t:"text", when:vendorHasTechnicians, readonly:(s)=>!acceptanceIsAgentManual(s), row:"techEmails", closureHide:true }, // closureHide: see `acceptance`'s own matching comment
@@ -3246,7 +3300,7 @@ const STAGES = [
     // for the full reasoning (same fix, same day, same two stages).
     // Same 2026-09-10 visibility fix as `acceptance`'s own matching fields —
     // see that stage's own comment for the full reasoning.
-    { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number" },
+    { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km)", readonly:(s)=>!acceptanceIsAgentManual(s), t:"number", closureHide:true },   // closure: Distance & ETA section (2026-10-31)
     { n:"Service_Acceptance_For_Tow", l:"Accept Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
     /* Task Tracker item 34, "TRUCK START READING" - 2026-10-13. The driver and
        vendor apps have written this at Accept since August; nothing displayed it.
@@ -3338,10 +3392,14 @@ const STAGES = [
           .then(function(ok){ toast(ok?(eta?("ETA "+eta+" sent to customer"):"ETA sent to customer"):"Couldn't send the WhatsApp ETA message — check console", ok?"ok":"err"); });
       } },
     { n:"Image_Upload5", l:"Arrival Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Reject_Reason2", l:"Reject Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Reject_Reason2, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // Labelled "Cancel Reason" - Task Tracker #48/49 (2026-10-27): on this step it holds
+    // the RSP's CANCEL reason (driverTicket / vendorTicket TOW cancel write it here).
+    { n:"Reject_Reason2", l:"Cancel Reason", t:"select", o:REJECT_REASONS, when:(s)=>acceptanceIsAgentManual(s) || !!s.Reject_Reason2, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },   // 82.3 #7
     // Added 2026-08-11 (user request) — see `reach`'s own matching comment
     // (same shared Cancellation_Time field, TOW's own copy of this step).
-    { n:"Cancellation_Time", l:"Cancellation Time", t:"datetime", when:acceptanceIsAgentManual },
+    // Also shown (read-only) when the RSP cancelled in their own app - Task Tracker
+    // #48/49, 2026-10-27. Agent-entry mode keeps it editable exactly as before.
+    { n:"Cancellation_Time", l:"Cancellation Time", t:"datetime", when:(s)=>acceptanceIsAgentManual(s) || !!String(s.Cancellation_Time||"").trim(), readonly:(s)=>!acceptanceIsAgentManual(s) },
     // See `reach`'s own matching 2026-08-11 comment for the full rationale.
     // Reach_Time/Cancel_Location_Lat/Lon/Cancel_Distance are the SAME shared
     // fields as RSR's own copy (not split RSR/TOW) — only one branch's Reach
@@ -3360,7 +3418,7 @@ const STAGES = [
     // needs to display REACH BDL Time") — was hidden entirely outside
     // Agent-manual mode; now always shown, readonly() gates editing instead.
     { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
-    { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual },
+    { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true },   // 82.3 #2 / 82.4 #2 - saved value kept
     /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (TOW) - 2026-10-13.
        Written by the field apps at Reach since September; the closure page had
        the cancel position and the accept position but never this one. */
@@ -3371,17 +3429,17 @@ const STAGES = [
     // automatically includes the drop leg here once DropLocationLat/Long are
     // captured (Office→Breakdown→Drop→Office), or falls back to the same
     // 2-leg estimate as RSR if the drop pin isn't set yet.
-    { n:"__RoundTripEstimate_TOW", l:"Round Trip Distance (Estimate)", t:"computed", full:true,
+    { n:"__RoundTripEstimate_TOW", l:"Round Trip Distance (Estimate)", t:"computed", full:true, wizardHide:true,   // #84.4
       compute:(r)=>{ const km=calcRoundTripKm(r); return km>0 ? (km+" km (straight-line estimate via office)") : ""; },
       emptyHint:"Not available yet — breakdown location not captured." },
     // closureHide:true (2026-09-11, Task Tracker PDF item 22 — "field not
     // needed [on closure page], cancel distance will be populated in
     // 'Distance to Breakdown (km, RSR)' field instead"). Still fully live on
     // this Reach step itself.
-    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
+    { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>acceptanceIsAgentManual(s) || String(s.Cancel_Distance==null?"":s.Cancel_Distance).trim()!=="", readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },   // 93 #2: shown read-only once the vendor cancels
     // Distance_Cancel_To_Breakdown is the SAME shared brand-new field as
     // RSR's own copy (not split) — see `reach`'s own matching comment.
-    { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual }
+    { n:"Distance_Cancel_To_Breakdown", l:"Cancel Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true }   // 82 #3 / 82.1 #3 - saved value kept
   ]},
   { key:"wipLoadingTow", branch:"tow", bucket:2, short:"Loading", title:"Loading",
     desc:"On-truck loading photos and VCRF.", save:"Save Loading",
@@ -3418,19 +3476,22 @@ const STAGES = [
     { n:"Pre_service_Photo", l:"Pre-service Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Image_Upload_On_truck", l:"On-truck Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"VCRF", l:"VCRF", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Image_Upload6", l:"Additional Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>!!s.Rejection_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // Hidden - Task Tracker #84.5 / #84.12 (2026-10-29): off this step and the closure page.
+    { n:"Image_Upload6", l:"Additional Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s), wizardHide:true, closureHide:true },
+    { n:"Rejection_Reason", l:"Cx Rejection Reason", t:"select", o:REJECT_REASONS, when:(s)=>acceptanceIsAgentManual(s) || !!s.Rejection_Reason, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },   // 82 #8 / 82.3 #8
     // t:"datetime" (2026-08-11, was t:"text") — real bug fixed: free-form text
     // let an ambiguous/invalid date string (e.g. locale-formatted "10/8/2026")
     // reach Zoho unvalidated, rejected with "Enter a valid date format". A
     // real datetime-local picker only ever produces an unambiguous ISO value
     // — see toDatetimeLocalValue()'s own comment.
-    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // Completion Time replaced by the vehicle picked-up time here - Task Tracker #46/47
+    // (2026-10-27). Completion Time stays on the Unloading step, where the job
+    // actually completes; the Pickup_Time row below now shows in every mode.
     // Added 2026-08-11 (user request) — "Vehicle Picked" timestamp, normally
     // stamped automatically by the vendor/driver's own vehiclePicked() action
     // at this exact step (confirmed live write point in vendorTicket) —
     // Agent-entering-mode only, same reasoning as this stage's own siblings above.
-    { n:"Pickup_Time", l:"Pickup Time", t:"datetime", when:acceptanceIsAgentManual }
+    { n:"Pickup_Time", l:"Vehicle Picked Up Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) }
   ]},
   { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
     desc:"Odometer and drop-location proof.", save:"Save",
@@ -3464,6 +3525,12 @@ const STAGES = [
     // dedicated field, this row has to point there too — it was left
     // pointing at the old field when that fix shipped, the actual gap being
     // fixed here.
+    /* Navigate to Drop - Task Tracker #84.8 (2026-10-29): moved here from Unloading, and
+       clickable. Built from the drop link or drop pin the same way the vendor and driver
+       apps build theirs (resolveNavHref). Display only - never saved. */
+    { n:"__NavigateToDropLink", l:"Navigate to Drop Location", t:"navlink", full:true, ephemeral:true,
+      hrefCompute:(r)=>resolveNavHref(r.Navigate_To_Drop_Link, parseCoord(r.DropLocationLat), parseCoord(r.DropLocationLong)),
+      linkLabel:"🧭 Navigate to Drop Location", emptyMsg:"Drop location not captured yet." },
     { n:"Odometer_reading_at_Drop_Location", l:"Odometer Reading (Drop)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Drop_Location_Photo", l:"Drop Location Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Toll_Charges1", l:"Toll Charges?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s) },
@@ -3492,7 +3559,7 @@ const STAGES = [
     // this exact step via calc4PointRoundtrip() (confirmed live write point
     // in vendorTicket). Agent-entering-mode only, same reasoning as `wip`'s
     // own RSR copy of these four fields.
-    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:acceptanceIsAgentManual },
+    { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) },   // 94.1 #8 / 82.4 #5: shown on vendor-run jobs too
     // closureHide:true on Office_To_Mechanic/Breakdown_To_Office (2026-09-11,
     // Task Tracker PDF items 23/24 — "field not needed to be displayed" on
     // the closure page). Mechanic_To_Breakdown is NOT in that removal list —
@@ -3504,13 +3571,13 @@ const STAGES = [
     // Roundtrip_Distance/Mechanic_To_Breakdown also depend on) is left
     // untouched, since stopping the calculation itself is a bigger,
     // structurally different change not requested by this PDF pass.
-    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
+    { n:"Office_To_Mechanic", l:"Office → Mechanic (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true },
     /* closureHide:true - 2026-10-16, user request: hidden from the closure page.
        This copy is the AGENT-ENTERING one; the Distance & ETA Metrics copy carries
        the same flag, because between them they cover both modes. Still fully live
        and editable on this step - closureHide only ever affects the summary. */
-    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
-    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true },
+    { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true },
+    { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:acceptanceIsAgentManual, closureHide:true, wizardHide:true },
     // Added 2026-08-11 — RSP_Start_Latitude/Longitude's own "Reached Drop
     // Location" reuse (see this stage's own comment a few lines up) never
     // had an agent-manual editable copy anywhere, unlike every other field
@@ -3530,8 +3597,8 @@ const STAGES = [
        entry. Read-only - it is a recorded position, not something to type. */
     { n:"RSP_Drop_Latitude", l:"Drop Location (Lat)", t:"number", readonly:true, when:(s)=>!acceptanceIsAgentManual(s), row:"dropLocReal", closureHide:true },   // item 29 - shown in Field Activity Log instead
     { n:"RSP_Drop_Longitude", l:"Drop Location (Lon)", t:"number", readonly:true, when:(s)=>!acceptanceIsAgentManual(s), row:"dropLocReal", closureHide:true },   // item 29 - shown in Field Activity Log instead
-    { n:"RSP_Start_Latitude", l:"Drop Location (Lat)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc" },
-    { n:"RSP_Start_Longitude", l:"Drop Location (Lon)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc" }
+    { n:"RSP_Start_Latitude", l:"Drop Location (Lat)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc", wizardHide:true },   // 82.3 #4 - saved value kept
+    { n:"RSP_Start_Longitude", l:"Drop Location (Lon)", t:"text", when:acceptanceIsAgentManual, row:"dropLoc", wizardHide:true }   // 82.3 #4 - saved value kept
   ]},
   { key:"wipUnloadingTow", branch:"tow", bucket:2, short:"Unload", title:"Unloading & Handover",
     desc:"Unload, handover details and return journey.", save:"Save Handover",
@@ -3561,8 +3628,14 @@ const STAGES = [
     { n:"Handover_Image", l:"Handover Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Handover_to_Name", l:"Handover to (Name)", t:"text", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Handover_to_Number", l:"Handover Number", t:"number", readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Handover_to_Designation", l:"Handover Location", t:"select", o:["Home","Office","Work Shop"], readonly:(s)=>!acceptanceIsAgentManual(s) },
-    { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
+    /* "Handover Designation" - Task Tracker #84.7 (2026-10-29): who the vehicle was handed to.
+       The three options must exist in the Zoho dropdown (Home / Office / Work Shop stay there for
+       older tickets). An older ticket shows blank here, and a blank is never sent, so its saved
+       value is kept. */
+    { n:"Handover_to_Designation", l:"Handover Designation", t:"select", o:["Customer/Customer rep","Service station rep","Security"], readonly:(s)=>!acceptanceIsAgentManual(s) },
+    // closureHide - Task Tracker #84.13 (2026-10-29): off the closure page.
+    // wizardHide - #84.8: the link now sits on the At Drop step. Still saved as before.
+    { n:"Navigate_To_Drop_Link", l:"Navigate to Drop Link", t:"textarea", full:true, readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true, wizardHide:true },
     // Breakdown_To_Drop_Distance/Drop_To_Office_Distance/Return_Journey_ETA
     // moved to Final Closure's own "Distance & ETA Metrics" group 2026-08-04
     // (per user request) — see DISTANCE_METRICS_FIELDS.
@@ -3621,6 +3694,7 @@ const STAGES = [
       const stampedAt = fmtDateTime(new Date());
       const out = { Remaining_Fee_Receipt_Time: stampedAt };
       out[closureField] = stampedAt;
+      out.Service_Closure_Time = stampedAt;   // Service_Closure_Time - Task Tracker #57: same time in the single field for both service types.
       return out;
     },
     fields:[
@@ -3654,14 +3728,19 @@ const STAGES = [
     // (Payment_Method_Final, Payment_received, etc.) — this one had NO gate
     // at all, editable regardless of Acceptance_Mode, unlike every one of
     // its siblings on this page.
-    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true },
+    { n:"Remaining_Fee", l:"Remaining Fee", t:"decimal", readonly:true, showZero:true },   // #87
     // Options corrected 2026-08-03 (user's own Zoho field screenshot): real
     // list is Cash / UPI / Card / Net Banking — same as `quote`'s own
     // Payment_Method, not the earlier guessed "Payment Gateway/Direct/Cash".
     // "Payment Gateway" re-added 2026-08-11 (user request) — same option
     // vendorTicket's own payment screen already restored 2026-08-04 (see that
     // widget's own comment); this agent-side screen never had it back.
-    { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], default:"Cash", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    /* Blank by default - client feedback 2026-10-29 ("shows cash by default, it needs to be null").
+       Required instead when the agent runs the job and a balance is still owed: Vendor Accounting
+       deducts cash the vendor collected only when this says Cash, and the old default is what used
+       to fill it for a payment saved without a choice. The vendor app fills it for its own jobs. */
+    { n:"Payment_Method_Final", l:"Payment Method", t:"select", o:["Cash","UPI","Card","Net Banking","Payment Gateway"], readonly:(s)=>!acceptanceIsAgentManual(s),
+      req:(s)=>acceptanceIsAgentManual(s) && Number(s.Remaining_Fee)>0 },
     /* SHOWN ON THE CLOSURE PAGE AGAIN - 2026-10-14, user request. It carried
        closureHide:true from 2026-09-11, Task Tracker PDF item 17: "REMOVE FROM
        CLOSURE PAGE (DUPLICATE FIELD OF PAYMENT STATUS)".
@@ -3675,7 +3754,7 @@ const STAGES = [
        CLOSURE_ALWAYS_EDITABLE_FIELDS, and that list only ever governed the edit
        lock on a row that is SHOWN. Hiding the row made the entry inert; showing
        it again makes it work, with no change to that list. */
-    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"Payment_received", l:"Payment Received?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s), closureHide:true },   // 82.1 #5 / 82.4 #6 / 94 #10: off the closure page
     // Decorative QR block (2026-08-11, user request) — same placeholder
     // pattern vendorTicket's own renderPaymentScreen() already uses (no real
     // gateway/webhook wired up on that side either, see its own comment) —
@@ -3727,8 +3806,12 @@ const STAGES = [
        Nothing else on this step changes — Payment_Method_Final,
        Payment_received, QR_Code and the receipt photo all keep their existing
        readonly rules. */
-    { n:"Send_Payment_Link1", l:"Send payment link", t:"button", full:true, repeatable:true,
-      when:(s)=>Number(s.Remaining_Fee)>0,
+    // agentEditable - client feedback 2026-10-29: usable by the agent when the vendor is running the
+    // job in the app too (that page is otherwise view-only for the agent).
+    { n:"Send_Payment_Link1", l:"Send payment link", t:"button", full:true, repeatable:true, agentEditable:true,
+      // Hidden once the remaining fee is paid - Task Tracker #62: the Send Feedback
+      // Message button below takes its place.
+      when:(s)=>Number(s.Remaining_Fee)>0 && !remainingFeeConfirmedPaid(s),
       buttonLabel:"Send Payment Link", doneLabel:"Payment Link Sent",
       // Real gap fixed 2026-09-07 (user decision: "split into two invoices"
       // — see onDemandInvoicing()'s own header comment and Send_Payment_Link's
@@ -3877,9 +3960,32 @@ const STAGES = [
         });
         }); // end persistPromise.then — see the field-persist block at the top of this action
       } },
+    /* Send Feedback Message - Task Tracker #62 (2026-10-28): "if remaining payment is
+       zero or if remaining payment status is 'paid' then the message button has to
+       change to 'send feedback message'", sending the "feedback" template. ephemeral:
+       a client-side action with no Zoho field of its own, so saving this step never
+       writes it. */
+    { n:"__SendFeedbackMessage", l:"Send feedback message", t:"button", full:true, repeatable:true, ephemeral:true, agentEditable:true,   // usable on a vendor-run job too (2026-10-29)
+      when:(s)=>!(Number(s.Remaining_Fee)>0) || remainingFeeConfirmedPaid(s),
+      buttonLabel:"Send Feedback Message", doneLabel:"Feedback Message Sent",
+      action:(r)=>{ sendFeedbackTemplateMessage(r); } },
     // Soft-test item #4/#7 — same reasoning as the Booking Fee payment-link
     // display on the Quote stage above, for the Remaining Fee.
-    { n:"__PaymentLinkDisplay_RF", l:"Remaining Fee Payment Link", t:"navlink", full:true,
+    /* Payment link WITHOUT WhatsApp - client feedback 2026-10-29: "a button to open the payment
+       message link ... if in any case WhatsApp is not working". Creates the remaining-fee payment
+       link exactly as Send Payment Link does (same fees saved first, same Zoho link, same field) but
+       sends no message; the row below then opens the same page the WhatsApp message links to, for
+       the agent to open or share another way. */
+    { n:"__GetPaymentLinkOnly", l:"Payment link without WhatsApp", t:"button", full:true, repeatable:true, ephemeral:true, agentEditable:true,
+      when:(s)=>Number(s.Remaining_Fee)>0 && !remainingFeeConfirmedPaid(s),
+      buttonLabel:"Get Payment Link (without WhatsApp)", doneLabel:"Payment Link Ready",
+      action:(r)=>{ createRemainingPaymentLinkOnly(r); } },
+    { n:"__PaymentMessageLinkDisplay", l:"Payment Message Link", t:"navlink", full:true, agentEditable:true,
+      when:(s)=>Number(s.Remaining_Fee)>0 && !remainingFeeConfirmedPaid(s),
+      hrefCompute:(r)=> r.Zoho_Payment_URL_Remaining ? (buildCustomerPageUrl(r, "remaining_payment", { bookingamount: String(Number(r.Remaining_Fee)||0) }) || "") : "",
+      linkLabel:"🔗 Open Payment Message Link",
+      emptyMsg:"No payment link yet — use Send Payment Link, or Get Payment Link (without WhatsApp) above." },
+    { n:"__PaymentLinkDisplay_RF", l:"Remaining Fee Payment Link", t:"navlink", full:true, agentEditable:true,
       hrefField:"Zoho_Payment_URL_Remaining", linkLabel:"💳 Open Payment Link",
       emptyMsg:"No payment link yet — click \"Send Payment Link\" above to generate one." },
     // Payment Failures — same read-only row as the Quote stage's own copy above;
@@ -3910,7 +4016,10 @@ const STAGES = [
     // collision" flag: it isn't, it's one field used at both steps), just
     // mirrored read-only here since it wasn't shown on this stage's own
     // screen before. The field widgets write "PAID" on Payment Received.
-    { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true }
+    // 82 #6 / 82.1 #6 (2026-10-31): the shared field showed the booking-fee value here. Hidden, saved as
+    // before; the RF status below is worked out from the remaining-fee payment itself.
+    { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true, wizardHide:true, closureHide:true },
+    { n:"__RFPaymentStatus", l:"RF Payment Status", t:"computed", closureShow:true, compute:rfPaymentStatusText, emptyHint:"—" }
   ]},
   /* the old "closure" stage (branch:"final", __summary + Remarks) was removed
      2026-07-30 — ticket closure stopped being the last step of this linear
@@ -4020,14 +4129,16 @@ const CLOSURE_FIELDS=[
   // accidentally overwrite the real Status field — this is read-only by
   // construction, not just by convention.
   { n:"__RSPClosureStatusDisplay", l:"RSP Closure Status (Vendor)", t:"computed", full:true,
-    compute:(r)=>r.Status||"", emptyHint:"No status yet." },
+    compute:rspClosureStatusText, emptyHint:"No status yet." },   // 53-55: RSP CLOSED / RSP CANCELLED / CX REJECT (2026-10-31)
   /* Task Tracker item 3, "VENDOR MOBILE NUMBER" - 2026-10-13. The wizard has
      shown this since August as __VendorMobileDisplay, but that is t:"computed"
      and closureFieldGroups() drops computed fields from every stage-derived
      section. CLOSURE_FIELDS is not one of those sections, so the same value
      renders here. Reuses vendorRawForTicket() - no second way to resolve a
      vendor, which is exactly how the two could drift apart. */
-  { n:"__VendorMobileClosure", l:"Vendor Mobile Number", t:"computed", full:true,
+  // Off the bottom of the closure page - Task Tracker #84.9 (2026-10-29): it now shows in the
+  // vendor section (closureShow on the Accept step's own mobile row).
+  { n:"__VendorMobileClosure", l:"Vendor Mobile Number", t:"computed", full:true, when:()=>false,
     compute:(r)=>{ const vraw=vendorRawForTicket(r); return (vraw && vraw[CONFIG.vendorPhoneField]) || ""; },
     emptyHint:"No accepted vendor yet." },
   /* Closure-page PDF item 28, "CUSTOMER PAGE LINK" - built 2026-10-13,
@@ -4050,17 +4161,30 @@ const CLOSURE_FIELDS=[
   // in this widget before. Plain read-only mirror, nothing new stored.
   /* Split by Service_Type - 2026-10-13. Repair keeps the field and the label it
      has always had; towing gets its own. */
-  { n:"RSP_Closure_Time", l:"RSP Closure Time (RSR)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" },
+  /* Task Tracker 96 (2026-10-31): the three closure-time rows below are replaced by this one row. They
+     stay defined, hidden, so nothing else that reads them changes. */
+  { n:"__RSPClosureTimeDisplay", l:"RSP Closure Time", t:"computed", compute:rspClosureTimeText,
+    emptyHint:"Not closed yet \u2014 stamped when Payment Received is recorded, or the Cancel time." },
+  { n:"RSP_Closure_Time", l:"RSP Closure Time (RSR)", t:"text", readonly:true, when:()=>false },
   /* Computed, not the plain field, ONLY so towing tickets closed before
      TOW_Closure_Time existed still show their time instead of a blank that reads
      as a bug. New closures fill the real field and it is preferred. Nothing is
      lost by not binding to the field directly - this row was always readonly. */
-  { n:"__TowClosureTimeDisplay", l:"TOW Closure Time", t:"computed", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW",
+  { n:"__TowClosureTimeDisplay", l:"TOW Closure Time", t:"computed", when:()=>false,   // 96: merged into RSP Closure Time
     compute:(r)=> r.TOW_Closure_Time || r.RSP_Closure_Time || "",
+    emptyHint:"Not closed yet \u2014 stamped when the final payment is recorded." },
+  /* Service Closure Time - Task Tracker #57 (2026-10-27): the single field for both
+     service types. Falls back to the per-type field for tickets closed before it
+     existed. Read-only display, nothing written from here. */
+  { n:"__ServiceClosureTimeDisplay", l:"Service Closure Time", t:"computed", when:()=>false,   // 82.1 #12 / 96: merged into RSP Closure Time
+    compute:(r)=> r.Service_Closure_Time || r.TOW_Closure_Time || r.RSP_Closure_Time || "",
     emptyHint:"Not closed yet \u2014 stamped when the final payment is recorded." },
   // "Cancelled - Billable" added 2026-08-17 (user-provided spec) — see this
   // field's own header comment further up for the full history/rationale.
-  { n:"Closure_Status", l:"Closure Status", t:"select", o:["Not Converted","Cancelled","Cancelled - Billable","Completed"], req:true, full:true },
+  /* "Cancelled" renamed "Cancelled - Not Billable" - Task Tracker #58 (2026-10-29), matching the option
+     renamed in Zoho the same day. Every check in this app accepts both names, so tickets saved
+     with the old one still behave the same; an old ticket re-saved here must pick a current option. */
+  { n:"Closure_Status", l:"Closure Status", t:"select", o:["Not Converted","Cancelled - Not Billable","Cancelled - Billable","Completed"], req:true, full:true },
   // Agent_Closure_Time (2026-09-11, Task Tracker PDF item 15 — "field not
   // available on closure page; CAN DISPLAY BELOW agent CLOSURE STATUS").
   // Field already exists and is already written on every Final Closure save
@@ -4070,7 +4194,7 @@ const CLOSURE_FIELDS=[
   // readonly display field in this app).
   { n:"Agent_Closure_Time", l:"Task Closure Time (Agent)", t:"text", readonly:true },
   { n:"Closure_Reason", l:"Not Converted / Cancelled Reason", t:"select", o:REJECT_REASONS, full:true,
-    when:(s)=>s.Closure_Status==="Cancelled"||s.Closure_Status==="Cancelled - Billable"||s.Closure_Status==="Not Converted", req:true },
+    when:(s)=>s.Closure_Status==="Cancelled"||s.Closure_Status==="Cancelled - Not Billable"||s.Closure_Status==="Cancelled - Billable"||s.Closure_Status==="Not Converted", req:true },   // #58
   { n:"Remarks", l:"Remarks", t:"remarks", full:true },
   // Revised 2026-08-06 (user request, supersedes the earlier "make WhatsApp/
   // GST view-only" ask from this same tracking item) — the actual final
@@ -4208,7 +4332,7 @@ const CLOSURE_FIELDS=[
   // onDemandInvoiceEligibility() and still refuses a ₹0 invoice, which is
   // correct: an amount of 0 means there is genuinely nothing to bill.
   { n:"Generate_OnDemand_Invoice", l:"Generate Invoice", t:"button", full:true, repeatable:true, agentEditable:true, ephemeral:true,
-    when:(s)=>isOnDemandClient(s),
+    when:(s)=>customerInvoiceApplies(s),   // #88
     buttonLabel:"Generate Invoice", doneLabel:"Invoice Generated",
     action:(r)=>{
       if(r.Zoho_Books_Invoice_ID){
@@ -4228,7 +4352,7 @@ const CLOSURE_FIELDS=[
       }
       const finalTsf = computeClosureTSF(r);
       const elig = onDemandInvoiceEligibility(r, finalTsf);
-      if(!elig || !elig.isOnDemand){
+      if(!elig){   // #88: company tickets with a Rescue Charge too
         // Says WHICH of the three eligibility conditions failed (2026-09-17)
         // — was a single generic "Not eligible for an On Demand invoice right
         // now" for all of them. Same guard, same refusal, same three
@@ -4236,8 +4360,10 @@ const CLOSURE_FIELDS=[
         // itself uses (isOnDemandClient / closureCountsAsFeeBearing /
         // computeClosureTSF) so this message can never drift out of sync with
         // the real rule — only the wording changed.
-        if(!isOnDemandClient(r)){
-          toast("This ticket's Client is not ON DEMAND — nothing to invoice here","err");
+        if(!customerInvoiceApplies(r)){
+          toast("No Rescue Charge on this ticket — nothing to invoice the customer for","err");
+        } else if(!isOnDemandClient(r) && String(r.Closure_Status||"").trim()!=="Completed"){
+          toast("Set Closure Status to Completed first","err");   // #88: company tickets are invoiced on a completed job only
         } else if(!closureCountsAsFeeBearing(String(r.Closure_Status||"").trim())){
           toast("Set Closure Status to Completed, Cancelled or Cancelled - Billable first","err");
         } else {
@@ -4315,7 +4441,7 @@ const CLOSURE_FIELDS=[
   // vendor-mobile displays (soft-test items #4/#7/#17) — read-only,
   // recomputed fresh on every render, nothing new stored.
   { n:"__OnDemandInvoiceIdDisplay", l:"Zoho Books Invoice ID", t:"computed", full:true,
-    when:(s)=>isOnDemandClient(s),
+    when:(s)=>customerInvoiceApplies(s),   // #88
     compute:(r)=>r.Zoho_Books_Invoice_ID||"",
     emptyHint:"Not generated yet — click \"Generate Invoice\" above." },
   /* Invoice Number - 2026-10-26, user request. Shows the ticket's Invoice_number
@@ -4323,7 +4449,7 @@ const CLOSURE_FIELDS=[
      Display-only (computed), so saving the Closure step never writes it. Shown
      wherever invoicing applies, and on any ticket that already carries a number. */
   { n:"__InvoiceNumberDisplay", l:"Invoice Number", t:"computed", full:true,
-    when:(s)=>isOnDemandClient(s) || !!String((s && s[INVOICE_NUMBER_FIELD]) || "").trim(),
+    when:(s)=>customerInvoiceApplies(s) || !!String((s && s[INVOICE_NUMBER_FIELD]) || "").trim(),   // #88
     compute:(r)=>String((r && r[INVOICE_NUMBER_FIELD]) || "").trim(),
     emptyHint:"Not generated yet — filled automatically when the invoice is generated." },
   // Invoice Link (2026-09-11, Task Tracker PDF item 27 — "DISPLAY at end of
@@ -4374,7 +4500,8 @@ const CLOSURE_FIELDS=[
   /* LOG - 2026-10-17, Task Details spec group 7: "ONLY VIEW - LOGS OF ALL DATA
      EDITS FOR THE TASK". Reads the cache loadTaskEditLogForTicket() fills when
      the ticket opens. View only - nothing here writes. */
-  { n:"__TaskEditLog", l:"Edit Log", t:"htmlblock", full:true,
+  // collapsible: collapsed by default on the Closure page - Task Tracker #64 (2026-10-27).
+  { n:"__TaskEditLog", l:"Edit Log", t:"htmlblock", full:true, collapsible:true,
     html:(r)=>{
       const rows = TASK_EDIT_LOG_BY_TICKET[String(r.ID)];
       const TH='style="text-align:left;padding:7px 10px;white-space:nowrap;font-family:var(--f-mono);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)"';
@@ -4399,7 +4526,8 @@ const CLOSURE_FIELDS=[
         `<thead><tr><th ${TH}>When</th><th ${TH}>Field</th><th ${TH}>From</th><th ${TH}>To</th><th ${TH}>By</th></tr></thead>`+
         `<tbody>${body}</tbody></table></div></div>`;
     } },
-  { n:"__CallHistoryDisplay", l:"Call History", t:"htmlblock", full:true,
+  // collapsible: collapsed by default on the Closure page - Task Tracker #65 (2026-10-27).
+  { n:"__CallHistoryDisplay", l:"Call History", t:"htmlblock", full:true, collapsible:true,
     html:(r)=>{
       const logs=CALL_LOGS_BY_TICKET[String(r.ID)]||[];
       /* An empty table now says why — 2026-10-09. With the display narrowed to
@@ -4505,7 +4633,7 @@ const CLOSURE_FIELDS=[
      at generation time), and replacing it would have broken a working path for
      the accounts team. */
   { n:"__InvoicePdfDisplay", l:"Invoice PDF", t:"navlink", full:true,
-    when:(s)=>isOnDemandClient(s),
+    when:(s)=>customerInvoiceApplies(s),   // #88
     hrefCompute:(r)=>zohoFileDownloadUrl(r.ID||state.recordId, "Invoice_PDF", r.Invoice_PDF, 0),
     linkLabel:"⬇ Download Invoice PDF",
     emptyMsg:"No PDF stored yet — generated with the invoice. If the invoice exists but this stays empty, use Fetch PDF below — it pulls the document from Zoho Books for the invoice this ticket already has, without creating another one." },
@@ -4522,7 +4650,7 @@ const CLOSURE_FIELDS=[
      already carries. Safe to press repeatedly: the worst case is overwriting
      Invoice_PDF with the same document. */
   { n:"Fetch_Invoice_PDF", l:"Fetch PDF", t:"button", full:true, repeatable:true, agentEditable:true, ephemeral:true,
-    when:(s)=>isOnDemandClient(s) && !!s.Zoho_Books_Invoice_ID,
+    when:(s)=>customerInvoiceApplies(s) && !!s.Zoho_Books_Invoice_ID,   // #88
     buttonLabel:"⬇ Fetch PDF", doneLabel:"PDF Fetched",
     hint:"Pulls the rendered invoice onto this ticket so Open Invoice shows the PDF itself.",
     action:async function(r){
@@ -4621,8 +4749,8 @@ const SERVICE_TYPE_BRANCH_ROW={ n:"_Service_Type_Branch", l:"Service Type (decid
     const raw = readVal(rec, CONFIG.serviceTypeField);
     const norm = String(raw||"").trim().toUpperCase();
     if(!norm) return "— came back blank on this ticket, so the TOW rows are hidden";
-    if(norm==="TOW") return raw+" — TOW rows shown";
-    return raw+" — read as \""+norm+"\", which is not \"TOW\", so the RSR rows are shown instead";
+    if(norm==="TOW") return "TOW";
+    return "RSR";
   },
   emptyHint:"—" };
 /* The fleet location as the closure maths would resolve it - 2026-10-14. Stored
@@ -4652,9 +4780,9 @@ const DISTANCE_METRICS_FIELDS=[
      entry regardless. "ETA Met / Missed" and "BDL ETA" read ETA/ETA_TOW off the
      record, not off these rows, so both keep working. */
   { n:"ETA", l:"ETA to Breakdown (mins, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA), closureHide:true }, // when: extended 2026-08-11 — see `acceptance`'s own new ETA field, needs the same exclusion every other duplicated field here already has
-  { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Distance_To_Breakdown", l:"Distance to Breakdown (km, RSR)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" }, // 2026-08-11; every ticket since 2026-10-31 (82.1 #7)
   { n:"ETA_TOW", l:"ETA to Breakdown (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s), readonly:(s)=>hasRealEta(s.ETA_TOW), closureHide:true }, // when: extended 2026-08-11, see ETA's own note just above
-  { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Distance_To_Breakdown_TOW", l:"Distance to Breakdown (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }, // 2026-08-11; every ticket since 2026-10-31 (82.4 #10)
   // Added 2026-09-02 (build-plan item #7) — unconditional (no RSR/TOW split,
   // no acceptanceIsAgentManual gate) since etaMetStatusText()/
   // expectedArrivalDeadline() already branch RSR-vs-TOW internally, and
@@ -4665,7 +4793,14 @@ const DISTANCE_METRICS_FIELDS=[
   // an editable one — see closureFieldRowHtml()'s own matching comment).
   { n:"_ETA_Met_Status", l:"ETA Met / Missed", t:"computed", compute:etaMetStatusText,
     emptyHint:"Not available yet — needs an ETA, an Accept time, and a Reach time." },
-  { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11 — see `reach`/`reachTow`'s own new Cancel_Distance field; closureHide — see that field's own matching comment (Task Tracker PDF item 22)
+  /* RSP Accept -> Cancel distance shown on Closure - Task Tracker #39 (2026-10-27,
+     "start to cancel - repair tickets - rsp accept to rsp cancel, not displayed in
+     closure page"). Hidden since 2026-09-11 on the plan to copy it into Distance to
+     Breakdown, which was never built and would overwrite the accept-time distance.
+     Shown read-only, only when a value exists (any mode); the field apps keep
+     writing it exactly as before. Original line kept below for reference. */
+  // was: { n:"Cancel_Distance", l:"Cancel Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11 — see `reach`/`reachTow`'s own new Cancel_Distance field; closureHide — see that field's own matching comment (Task Tracker PDF item 22)
+  { n:"Cancel_Distance", l:"RSP Accept → Cancel (km)", t:"number", readonly:true, when:(s)=>String(s.Cancel_Distance==null?"":s.Cancel_Distance).trim()!=="" },
   // Reach_Location→Breakdown / Cancel_Location→Breakdown (2026-08-11, user
   // request, "Missing Fields & Field Behavior" spec) — brand-new fields, see
   // `reach`/`reachTow`'s own matching comment; not yet in Create_Case.
@@ -4684,7 +4819,7 @@ const DISTANCE_METRICS_FIELDS=[
      exports - it is only no longer shown on this page. */
   { n:"Mechanic_To_Breakdown", l:"Mechanic → Breakdown (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true },
   { n:"Breakdown_To_Office", l:"Breakdown → Office (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; closureHide — Task Tracker PDF item 24
-  { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Roundtrip_Distance", l:"Round-Trip Distance (km)", t:"number" }, // 2026-08-11; every ticket since 2026-10-31 (82.1 #5, 82.4 #8)
   { n:"Breakdown_To_Drop_Distance", l:"Breakdown → Drop (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   { n:"Drop_To_Office_Distance", l:"Drop → Office (km, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
   /* Task Tracker item 37, "DROP ETA" - 2026-10-13. Relabelled, not moved: both
@@ -4692,7 +4827,7 @@ const DISTANCE_METRICS_FIELDS=[
      Up, the same call that fills Breakdown_To_Drop_Distance. The old name read
      as a return leg and the client reported the drop ETA missing. Field name
      unchanged, so every reader and writer is unaffected. */
-  { n:"Return_Journey_ETA", l:"Drop ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" },
+  { n:"Return_Journey_ETA", l:"Drop ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW", closureHide:true },   // 82.4 #12-13: now in Field Activity Log under BDL ETA
   /* Vendor Fleet Location / Vendor Round Trip Distance / Vendor Distance
      (2026-08-17, user-provided spec — "2 new fields to be added in Distance
      and ETA Metrics group"). Unlike every other field in this group, these
@@ -4762,7 +4897,9 @@ const DISTANCE_METRICS_FIELDS=[
 const FIELD_ACTIVITY_LOG_FIELDS=[
   SERVICE_TYPE_BRANCH_ROW,   // 2026-10-13 - the one value both of this section's RSR/TOW splits hang on
   { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Service_Acceptance", l:"Accept Time (RSR)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW" && acceptanceIsAgentManual(s) },   // 82.1 #8 (2026-10-31): agent-run too
   { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Service_Acceptance_For_Tow", l:"Accept Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && acceptanceIsAgentManual(s) },   // 82.4 #14
   /* SHOWN ON THE CLOSURE PAGE AGAIN - 2026-10-14, user request. It carried
      closureHide:true from 2026-09-11, Task Tracker PDF item 16: "REMOVE FROM
      CLOSURE PAGE", with a new home named in the same breath - "display along
@@ -4778,7 +4915,7 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
      copy is the one that shows. Service_Acceptance and Service_Acceptance_For_Tow
      directly above run on exactly that arrangement with no closureHide of their
      own, so this is the established pattern here, not a new risk. */
-  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Service_Reject_Time", l:"Reject Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s), closureHide:true }, // 2026-08-11; off the closure page 2026-10-31 (94 #3, 94.1 #3)
   // Real bug fixed 2026-08-11 (user-reported via the "Missing Fields & Field
   // Behavior" spec's own item 3: "these fields should be read-only for the
   // agent while [the vendor is using the app]") — this was the ONE field in
@@ -4787,8 +4924,12 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // Excluded here now that `reach`/`reachTow` have their own real editable
   // copy (agent-manual mode only) — see those stages' own comments.
   { n:"Reach_Time", l:"Reached Breakdown Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s) },
+  { n:"Reach_Time", l:"Reached Breakdown Time", t:"text", readonly:true, when:acceptanceIsAgentManual },   // 82.1 #9 / 82.4 #15
   { n:"Pickup_Time", l:"Vehicle Picked Up Time (TOW)", t:"text", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && !acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Pickup_Time", l:"Vehicle Picked Up Time (TOW)", t:"text", readonly:true, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" && acceptanceIsAgentManual(s) },   // 82.4 #16
   { n:"Cancellation_Time", l:"Cancellation Time", t:"text", when:(s)=>!acceptanceIsAgentManual(s) }, // 2026-08-11
+  { n:"Cancellation_Time", l:"Cancellation Time", t:"text", readonly:true, when:acceptanceIsAgentManual },   // 82.1 #10 / 82.4 #17
+  { n:"RSP_Completion_Time", l:"Completion Time", t:"text", readonly:true },   // 82.1 #11 / 82.4 #18 / 94 #5: below the cancellation time
   // Excluded 2026-08-11 — see `reach`/`reachTow`'s own new Cancel_Location_Lat/
   // Lon fields (same reasoning as Reach_Time just above).
   { n:"Cancel_Location_Lat", l:"Cancel Location (Lat)", t:"decimal", when:(s)=>!acceptanceIsAgentManual(s) },
@@ -4851,7 +4992,8 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // own closureFieldGroups() filter (unlike grp()'s STAGES-based one) never
   // excluded computed/navlink field types to begin with.
   { n:"_BDL_ETA", l:"BDL ETA", t:"computed", compute:expectedArrivalTime,
-    emptyHint:"Not available yet — needs an Accept time and an ETA." }
+    emptyHint:"Not available yet — needs an Accept time and an ETA." },
+  { n:"Return_Journey_ETA", l:"Drop ETA (mins, TOW)", t:"number", when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }   // 82.4 #13 / 94.1 #13: below BDL ETA
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -5048,7 +5190,14 @@ function optionsListFor(field){
   if(Array.isArray(field.o)) return field.o.map(function(v){ return {v:v,label:v}; });
   if(field.o==="@vehicleIssues") return vehicleIssuesFor(state.record[CONFIG.vehicleField]);
   if(field.o==="@vendorsFiltered") return vendorsFor(state.record);
-  if(typeof field.o==="string" && field.o[0]==="@"){ return OPTIONS[field.o.slice(1)] || []; }
+  if(typeof field.o==="string" && field.o[0]==="@"){
+    const list = OPTIONS[field.o.slice(1)] || [];
+    const cur = state.record ? state.record[field.n] : null;
+    if(field.o==="@vendors") return withoutHidden(list, vendorHiddenFromAssignment, cur);      // #83.3 / #83.4
+    if(field.o==="@technicians") return withoutHidden(list, technicianHidden, cur);           // #83.11
+    if(field.o==="@vehicles") return withoutHidden(list, vehicleHidden, cur);                 // #83.13
+    return list;
+  }
   return [];
 }
 function resolveOptions(field){ return optionsListFor(field); }
@@ -5245,6 +5394,49 @@ function vendorLiveLatLon(raw){
    single Address field. Call sites with no breakdown in hand (the email
    lookup, the "does any vendor have a location" check, the Ops Map) pass
    nothing and behave exactly as before. */
+/* This vendor's nearest ONLINE technician to a point, or null - Task Tracker #85.
+   Technicians belong to a vendor by name (Technicians.Fleet_Vendor holds the vendor's
+   name - FIELDS.md Form 5), the same match the vendor app's own hand-off uses. Only
+   technicians whose app is Online and has a live position are considered. */
+/* Technicians.Fleet_Vendor names this vendor? - Task Tracker #66 (2026-10-29). Today it is the
+   vendor's NAME as text; the client wants it picked from a dropdown, which in Zoho means a Lookup
+   to Vendors - read back as the vendor's record id or an {ID, display_value} object. All three
+   shapes are accepted, so the field can be switched at any time. vendorHasTechnicians() and the
+   vendor app's hand-off list already accept all three. */
+function fleetLinkMatchesVendor(v, vendorOpt, lowerNames){
+  if(v==null || v==="") return false;
+  const linkId = (typeof v==="object") ? (v.ID!=null ? v.ID : v.id) : v;
+  if(vendorOpt && vendorOpt.id!=null && linkId!=null && String(linkId).trim()===String(vendorOpt.id).trim()) return true;
+  const label = (typeof v==="object") ? (v.display_value||v.zc_display_value||v.value||"") : v;
+  const l = String(label||"").trim().toLowerCase();
+  return !!l && (lowerNames||[]).indexOf(l) >= 0;
+}
+function nearestOnlineTechnicianOf(vendorOpt, bLat, bLon){
+  const names = [vendorOpt && vendorOpt.label, vendorOpt && vendorOpt.raw && vendorOpt.raw.vendor_name]
+    .map(function(n){ return String(n||"").trim().toLowerCase(); }).filter(Boolean);
+  if(!names.length) return null;
+  let best = null;
+  (OPTIONS.technicians||[]).forEach(function(t){
+    if(!fleetLinkMatchesVendor((t && t.raw) ? t.raw.Fleet_Vendor : null, vendorOpt, names)) return;   // #66: name, id or lookup
+    if(technicianHidden(t && t.raw)) return;   // #83.11
+    const ti = techInfo(t);
+    if(!ti.online || ti.lat==null || ti.lon==null) return;
+    const km = haversineKm(bLat, bLon, ti.lat, ti.lon);
+    if(!best || km < best.km) best = { km:km, lat:ti.lat, lon:ti.lon, name:ti.name };
+  });
+  return best;
+}
+/* "Logged In" when the app stamped Last_Seen_At within LOGIN_FRESH_MS - two of its 3-minute
+   ticks plus a margin, so one missed tick does not flip it. Task Tracker #85.5. */
+const LOGIN_FRESH_MS = 7*60*1000;
+function loginStateFor(v){
+  const seen = v && v.lastSeen ? (parseDateTime24(v.lastSeen) || parseDateTime12(v.lastSeen) || parseAnyDateTime(v.lastSeen)) : null;
+  if(seen){
+    const fresh = (Date.now() - seen.getTime()) <= LOGIN_FRESH_MS;
+    return { on: fresh, label: fresh ? "Logged In" : "Logged Out" };
+  }
+  return { on: !!(v && v.online), label: (v && v.statusKnown) ? (v.online ? "Logged In" : "Logged Out") : "Unknown" };
+}
 function vendorInfo(opt, breakdown){
   const raw=(opt&&opt.raw)||{};
   const phone=rawValue(raw,CONFIG.vendorPhoneField);
@@ -5275,7 +5467,15 @@ function vendorInfo(opt, breakdown){
     nearestBase = nearestVendorLocation(raw, breakdown.lat, breakdown.lon);   // 2026-10-17 - the registered address is a candidate now, not just the fallback
   }
   const ll = hasLive ? live : (nearestBase || staticLL);
-  const lat=ll.lat, lon=ll.lon;
+  /* Online technicians count too - Task Tracker #85 (2026-10-28): the distance is from
+     the vendor's NEAREST point - their own live location (online) or nearest fleet
+     location (offline) as above, OR any of their technicians who is online right now.
+     Only when a breakdown point is known (the assignment picker); the map and every
+     other caller see exactly the vendor's own point, as before. */
+  const techPick = (breakdown && breakdown.lat!=null && breakdown.lon!=null) ? nearestOnlineTechnicianOf(opt, breakdown.lat, breakdown.lon) : null;
+  const ownKm = (techPick && ll.lat!=null && ll.lon!=null) ? haversineKm(breakdown.lat, breakdown.lon, ll.lat, ll.lon) : Infinity;
+  const useTech = !!(techPick && techPick.km < ownKm);
+  const lat = useTech ? techPick.lat : ll.lat, lon = useTech ? techPick.lon : ll.lon;
   const hasLoc=lat!=null&&lon!=null;
   const email=rawValue(raw,CONFIG.vendorEmailField);
   // Diagnostic logging (2026-08-04) — warns whenever the label, phone,
@@ -5292,7 +5492,10 @@ function vendorInfo(opt, breakdown){
       "| static lat/lon ("+CONFIG.vendorAddressField+".latitude/longitude, or flat "+CONFIG.vendorLatField+"/"+CONFIG.vendorLonField+"):", staticLL.lat, staticLL.lon,
       "| this record's own keys:", Object.keys(raw), "| full raw record:", raw);
   }
-  return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:online, lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email, locationSource: hasLoc ? (hasLive?"live":(nearestBase?"nearestBase":"static")) : null };
+  return { name:opt.label, phone:phone, priority:priority, statusKnown:!!status, online:online, lat:hasLoc?lat:null, lon:hasLoc?lon:null, email:email,
+           locationSource: hasLoc ? (useTech ? "technician" : (hasLive?"live":(nearestBase?"nearestBase":"static"))) : null,
+           nearestTechnician: useTech ? techPick.name : "",
+           lastSeen: String(rawValue(opt.raw||{}, "Last_Seen_At")||"").trim() };   // Task Tracker #85.5
 }
 /* Added 2026-07-31 per user request: whenever Vendors1 is saved, also
    auto-populate a hidden "Vendor_Emails" field with the selected vendors'
@@ -5345,7 +5548,7 @@ async function reviveRejectedInvite(inv, name, recordId){
      same test the Accept/Reject panel uses, which is the point - a row born
      carrying the form's "RSP REJECT" initial value is not a reject, and an
      accepted vendor must not be knocked back to awaiting-response. */
-  if(!inviteWasRejected(inv)) return false;
+  if(!inviteWasRejected(inv) && !inviteWasUnassigned(inv)) return false;   // #51: an unassigned vendor can be invited again
   try{
     /* Known-good values only - see this change's own note on why this call
        carries nothing experimental. */
@@ -5858,6 +6061,12 @@ function vendorDropGps(record){
   const lat=parseCoord(record.RSP_Drop_Latitude), lon=parseCoord(record.RSP_Drop_Longitude);
   return (lat!=null && lon!=null) ? {lat:lat, lon:lon} : null;
 }
+/* Customer rejected the job at the site (Cx Reject) - Task Tracker #41/#43. Only the
+   field apps' Cx Reject writes Rejection_Reason (the agent can edit it only on an
+   agent-run ticket), and a Cx-rejected vehicle is never towed, so no drop GPS exists. */
+function customerRejectedAtSite(record){
+  return !!String((record && record.Rejection_Reason) || "").trim() && !vendorDropGps(record);
+}
 function vendorReachPointFor(record, bLat, bLon){
   if(vendorRanTicketInApp(record)){
     const lat=parseCoord(record.Reach_Location_Lat), lon=parseCoord(record.Reach_Location_Lon);
@@ -6049,14 +6258,28 @@ async function runClosureDistanceCalculations(record){
           record.Vendor_Distance=null;
           if(distanceNotComputedYet(record.Vendor_Round_Trip_Distance)){   // item 32 - a defaulted 0 used to block this permanently
             const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
+            /* The drop is where the RSP actually stood at Reached Drop (B) when that was
+               recorded, otherwise the customer's drop pin - Task Tracker #44 (2026-10-28). */
+            const dropGps=vendorDropGps(record);
+            const drop = dropGps || ((dLat!=null && dLon!=null) ? {lat:dLat,lon:dLon} : null);
             let legs=null;
-            if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null){
+            /* Cx Reject - Task Tracker #43 (2026-10-28): base -> where the RSP actually
+               reached (E) -> base; the customer breakdown location when no reach GPS.
+               Checked first because the vehicle never went to the drop, whatever
+               Closure_Status the agent chose. */
+            if(customerRejectedAtSite(record)){
+              const pickup=vendorReachPointFor(record, bLat, bLon);
+              console.log("[Get-Rescue] TOW round-trip (Cx Reject): base -> " + pickup.source + " -> base");
+              legs=[base,{lat:pickup.lat,lon:pickup.lon},base];
+            }
+            else if(record.Closure_Status==="Completed" && drop){
               // The pickup point is where the vendor actually reached the
               // vehicle, not where the agent said it was — see
               // vendorReachPointFor(). Drop and both base legs are unchanged.
               const pickup=vendorReachPointFor(record, bLat, bLon);
               console.log("[Get-Rescue] TOW round-trip pickup point:", pickup.source, "| Acceptance_Mode:", record.Acceptance_Mode||"(blank)");
-              legs=[base,{lat:pickup.lat,lon:pickup.lon},{lat:dLat,lon:dLon},base];
+              console.log("[Get-Rescue] TOW round-trip drop point:", dropGps ? "RSP Reached-Drop GPS (RSP_Drop_*)" : "customer drop location");
+              legs=[base,{lat:pickup.lat,lon:pickup.lon},drop,base];
             }
             /* SPEC BRANCH 4 - 2026-10-09. "cancelled billable or cancelled
                not-billable". This workspace has no "Cancelled - Not Billable"
@@ -6065,7 +6288,7 @@ async function runClosureDistanceCalculations(record){
                the not-billable case. The body below already falls back from
                the vendor cancel GPS to the agent-entered breakdown, which is
                branch 4's own route, so one condition serves both branches. */
-            else if(record.Closure_Status==="Cancelled - Billable" || record.Closure_Status==="Cancelled"){
+            else if(record.Closure_Status==="Cancelled - Billable" || record.Closure_Status==="Cancelled" || record.Closure_Status==="Cancelled - Not Billable"){   // #58
               /* PDF "Vendor Roundtrip KM", the CANCEL cases. The two differ only
                  in the middle point:
                    vendor cancelled in the app -> the vendor's CANCEL location
@@ -6204,8 +6427,15 @@ if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null
       let legs=null;
       if(isTow){
         const dLat=parseCoord(record.DropLocationLat), dLon=parseCoord(record.DropLocationLong);
-        if(record.Closure_Status==="Completed" && dLat!=null && dLon!=null) legs=[{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:dLat,lon:dLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
-        else if(record.Closure_Status==="Cancelled"||record.Closure_Status==="Cancelled - Billable") legs=[{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
+        /* RSP's actual reach (E) / reached-drop (B) GPS when recorded, the customer's
+           breakdown / drop locations otherwise - Task Tracker #41/#44 (2026-10-28). Same
+           points the field apps already use when they write this field themselves. */
+        const office={lat:OFFICE_LAT,lon:OFFICE_LON};
+        const reach=vendorReachPointFor(record, bLat, bLon);
+        const rtDrop=vendorDropGps(record) || ((dLat!=null && dLon!=null) ? {lat:dLat,lon:dLon} : null);
+        if(customerRejectedAtSite(record)) legs=[office,{lat:reach.lat,lon:reach.lon},office];
+        else if(record.Closure_Status==="Completed" && rtDrop) legs=[office,{lat:reach.lat,lon:reach.lon},rtDrop,office];
+        else if(record.Closure_Status==="Cancelled"||record.Closure_Status==="Cancelled - Not Billable"||record.Closure_Status==="Cancelled - Billable") legs=[office,{lat:bLat,lon:bLon},office];   // #58
       } else if(record.Closure_Status==="Completed"){
         legs=[{lat:OFFICE_LAT,lon:OFFICE_LON},{lat:bLat,lon:bLon},{lat:OFFICE_LAT,lon:OFFICE_LON}];
       }
@@ -6229,6 +6459,46 @@ if(legs){ const km=await legDistanceKm(legs, travelModeFor(record)); if(km!=null
 // its own approved button. GOOGLE_REVIEW_LINK is therefore obsolete: it was a
 // placeholder that never had a value, and the guard on it meant this function
 // returned false without sending even once the template existed.
+/* The "feedback" template - Task Tracker #61/#62 (2026-10-28). No body values; its
+   "Share Feedback" button opens the Customer Page feedback form (mode=feedback), the
+   same link the vendor app sends. Feedback_Sent_At is stamped on success - the
+   vendor apps' guard against sending the customer that form twice. */
+/* Remaining-fee payment link, no WhatsApp - client feedback 2026-10-29. The first half of Send
+   Payment Link (save the fees, then generateZohoPaymentLink into Zoho_Payment_URL_Remaining),
+   without the messages. A link already on the ticket is reused, never replaced. */
+async function createRemainingPaymentLinkOnly(r){
+  if(!r) return "";
+  const due = Number(r.Remaining_Fee)||0;
+  if(!(due>0)){ toast("No balance is owed - no payment link needed","err"); return ""; }
+  if(r.Zoho_Payment_URL_Remaining){ toast("Payment link is ready - use Open Payment Message Link below","ok"); renderWizard(); return r.Zoho_Payment_URL_Remaining; }
+  try{
+    if(r.ID){
+      const fees = { Total_Service_Fee: Number(r.Total_Service_Fee)||0, Booking_Fee: Number(r.Booking_Fee)||0, Remaining_Fee: due };
+      try{ await updateTicket(r.ID, fees); }catch(e){ console.warn("[Get-Rescue] createRemainingPaymentLinkOnly: fees not saved first (continuing)", e); }
+    }
+    const url = await generateZohoPaymentLink(r, due, caseLabel(r)+"-RF", paymentLinkDescriptionWithGst(r.Remaining_Fee, serviceLabelFor(r)), "Zoho_Payment_URL_Remaining");
+    if(!url){ toast("The payment link could not be created - check the console","err"); return ""; }
+    r.Zoho_Payment_URL_Remaining = url;
+    toast("Payment link created - no WhatsApp sent. Use Open Payment Message Link below","ok");
+    renderWizard();
+    return url;
+  }catch(e){
+    console.warn("[Get-Rescue] createRemainingPaymentLinkOnly failed", e);
+    toast("The payment link could not be created","err");
+    return "";
+  }
+}
+async function sendFeedbackTemplateMessage(r){
+  const path = customerPageButtonPath(r, "feedback", {});
+  if(!path){ toast("Couldn't build the feedback link - message not sent","err"); return false; }
+  const ok = await sendWhatsAppTemplate(r.Phone_Number1, "feedback", [], null, path);
+  if(!ok){ toast("The feedback message could not be sent - check console","err"); return false; }
+  toast("Feedback message sent to the customer","ok");
+  const stamp = fmtDateTime(new Date());
+  r.Feedback_Sent_At = stamp;
+  if(r.ID) updateTicket(r.ID, { Feedback_Sent_At: stamp }).catch(function(e){ console.warn("[Get-Rescue] feedback message sent but not marked on the ticket", e); });
+  return true;
+}
 function sendGoogleFeedbackRequest(record){
   return sendWhatsAppTemplate(record.Phone_Number1, "google_feedback", []);
 }
@@ -6304,7 +6574,7 @@ function fmtClockTime24(d){ return pad(d.getHours())+":"+pad(d.getMinutes()); }
 function customerEtaClock(r){
   const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
-  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw) || parseBoxDateTime(acceptRaw);   // #89
   if(!acceptAt) return "";
   const ranInApp = vendorRanTicketInApp(r);
   const overrideRaw = isTow ? r.Agent_ETA_Override_TOW : r.Agent_ETA_Override;
@@ -6364,13 +6634,23 @@ function sendRescuerEtaMessage(r){
    Called only from the two entry points the sheets name. The Locations step's own
    "Send Breakdown Location Link" button is a resend of 4 alone and deliberately
    does NOT call this, or a second click would repeat the opener. */
+function noteTemplateParams(r){
+  const service = lookupNamesFor(r.Vehicle_Issue, OPTIONS.issues) || String(r[CONFIG.serviceTypeField]||"").trim() || "-";
+  const vehicle = lookupNamesFor(r[CONFIG.vehicleField], OPTIONS.vehicles) || "-";
+  const caseId  = caseLabel(r) || "-";
+  return [service, vehicle, caseId];
+}
 async function sendOpenerMessages(r){
   try{
     // const ok1 = await sendWhatsAppTemplate(r.Phone_Number1, "initiate_conversation", []);
     // if(!ok1) console.warn("[Get-Rescue] SEND 1 initiate_conversation failed (non-blocking) — the customer may have opted out of marketing messages.");
     // const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", []);
     // if(!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
-    const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", []);
+    /* "note" now carries its three values - Task Tracker #59/#60 (2026-10-28):
+       "You have requested <Service> assistance for your <Vehicle>. Service Request ID
+       <Service ID>". Same helpers the other templates use; "-" rather than a blank,
+       because WhatsPortal rejects an empty parameter. */
+    const ok2 = await sendWhatsAppTemplate(r.Phone_Number1, "note", noteTemplateParams(r));
 if (!ok2) console.warn("[Get-Rescue] SEND 2 note failed (non-blocking).");
   }catch(e){ console.warn("[Get-Rescue] opener messages threw (non-blocking)", e); }
 }
@@ -6615,6 +6895,15 @@ function isOnDemandClient(r){
 function onDemandRescueChargeAtClosure(r, finalTsf){
   return (Number(finalTsf)||0);
 }
+/* Does this ticket get a customer invoice? - Task Tracker #88 (2026-10-29). ON DEMAND always did.
+   A company-client ticket now does too whenever it carries a Rescue Charge: that is the part the
+   CUSTOMER pays (Total Service Fee - Client Charge); the Client Charge itself is billed to the
+   company outside this app, as before. Decides which invoice rows the closure page shows; the
+   amount and the Completed rule stay in onDemandInvoiceEligibility() below. */
+function customerInvoiceApplies(r){
+  if(isOnDemandClient(r)) return true;
+  return (Number(r && r.Rescue_Charge)||0) > 0;
+}
 function onDemandInvoiceEligibility(r, finalTsf){
   const status = String(r.Closure_Status||"").trim();
   const isOnDemand = isOnDemandClient(r);
@@ -6748,8 +7037,9 @@ async function maybeCreateOnDemandInvoice(r, finalTsf){
    parameter), which is precisely why "auto on closure, remove the button" was
    not chosen.
 
-   ON DEMAND only (elig.isOnDemand), same gate as the button's own when: — B2B
-   invoicing stays out of this app entirely per the 2026-09-14 decision.
+   ON DEMAND, and since Task Tracker #88 (2026-10-29) also a company-client ticket with a Rescue
+   Charge: the CUSTOMER's part is invoiced to the customer. The company's Client Charge is still
+   billed outside this app (2026-09-14 decision).
 
    Fired best-effort from saveClosure() AFTER the closure has genuinely been
    saved, never blocking or failing the close itself — the same deliberate
@@ -6776,7 +7066,7 @@ async function maybeCreateOnDemandInvoice(r, finalTsf){
 async function maybeGenerateBooksInvoiceOnClosure(r, finalTsf){
   try{
     const elig = onDemandInvoiceEligibility(r, finalTsf);
-    if(!elig || !elig.isOnDemand){
+    if(!elig){   // #88: company tickets with a Rescue Charge too (was ON DEMAND only)
       console.log("[Get-Rescue] maybeGenerateBooksInvoiceOnClosure: not an eligible ON DEMAND closure — no Books invoice. Closure_Status:", r.Closure_Status, "| Client:", r.Client, "| finalTsf:", finalTsf, "| Extra_Payable:", r.Extra_Payable);
       return;
     }
@@ -6950,12 +7240,20 @@ function resolveIssueLabels(rawValue, optionsList){
 //       TOW but neither FBT nor MT found among the issues -> returns null
 //         + warns — still not guessed at; an unrecognized TOW issue
 //         combination has no slab field to fall back to.
+/* Every name a TOW issue may carry in the master, upper-cased - Task Tracker #70. */
+const TOW_ISSUE_NAME_ALIASES = {
+  FBT: ["FBT", "FLAT BED TOWING", "FLATBED TOWING"],
+  MT:  ["MT", "WHEEL LIFT TOWING", "WHEEL-LIFT TOWING"]
+};
 function vendorKmSlabFieldFor(record){
   const svc=String(record[CONFIG.serviceTypeField]||"").toUpperCase();
   if(svc!=="TOW") return "KM_Slab_Repair";
   const issueLabels=resolveIssueLabels(record.Vehicle_Issue, OPTIONS.issues).map(function(s){ return String(s).trim().toUpperCase(); });
-  const hasFBT=issueLabels.indexOf("FBT")!==-1;
-  const hasMT=issueLabels.indexOf("MT")!==-1;
+  /* Old or new master names - Task Tracker #70 (2026-10-29): the client is renaming FBT to
+     FLAT BED TOWING and MT to WHEEL LIFT TOWING in the issue master. Either name picks the
+     same slab, so fees are right before, during and after the rename. */
+  const hasFBT=issueLabels.some(function(l){ return TOW_ISSUE_NAME_ALIASES.FBT.indexOf(l)!==-1; });
+  const hasMT=issueLabels.some(function(l){ return TOW_ISSUE_NAME_ALIASES.MT.indexOf(l)!==-1; });
   const veh=(OPTIONS.vehicles||[]).find(function(v){ return String(v.id)===String(record[CONFIG.vehicleField]); })
     || (OPTIONS.vehicles||[]).find(function(v){ return v.v===record[CONFIG.vehicleField]; });
   const category=String((veh && veh.raw && valuesOf(veh.raw[CONFIG.vehicleCategoryField])[0]) || "").toUpperCase();
@@ -7358,6 +7656,26 @@ function vendorRawForTicket(r){
   return (vopt && vopt.raw) || null;
 }
 let VA_CASES=[], VA_OPEN_ID=null;
+/* Closure "Extra Payable" and approval "Extras" are one figure - Task Tracker #22
+   (2026-10-29, client: "Yes, both are the same field"). Closure has only ever written
+   Extra_Payable while approval, the vendor fee and the vendor payment page read Extras, so
+   the closure figure never reached them. Copied across ONLY while the case is not yet
+   approved (Settlement_Status blank or Pending Approval); an approved or paid figure is
+   never touched. A blank Extra Payable copies nothing. */
+function closureExtrasForApproval(r){
+  const v = r ? r.Extra_Payable : null;
+  if(v==null || String(v).trim()==="") return {};
+  const settlement = String((r && r.Settlement_Status) || "").trim();
+  if(!(settlement==="" || settlement===SETTLEMENT_STATUS_PENDING)) return {};
+  return { Extras: Number(v)||0 };
+}
+/* Tickets closed before this change: their Extras is still blank, so the approval
+   screen fills it from Extra_Payable in memory; approving saves it as usual. */
+function seedExtrasFromClosure(rec){
+  if(!rec || !(rec.Extras==null || String(rec.Extras).trim()==="")) return;
+  const add = closureExtrasForApproval(rec);
+  if("Extras" in add) rec.Extras = add.Extras;
+}
 async function loadVendorAcct(){
   showView("vendoracct");
   VA_OPEN_ID=null;
@@ -7365,6 +7683,7 @@ async function loadVendorAcct(){
   $("vaListColumns").innerHTML='<div class="center-state"><div class="spin"></div></div>';
   const all = await apiGet(null);
   VA_CASES = all.filter(isPendingOpsApproval);
+  VA_CASES.forEach(seedExtrasFromClosure);   // #22
   console.log("[Get-Rescue] loadVendorAcct: "+all.length+" total tickets, "+VA_CASES.length+" pending Operations approval");
   renderVendorAcctList();
 }
@@ -7700,7 +8019,7 @@ function renderVendorAcctGrid(){
       ? (d.towKm.toFixed(1)+(d.needsKm?' <span title="TOW case with no round-trip distance — its KM Fee is calculated on 0 km. Open it in List view to set the distance before approving.">⚠</span>':""))
       : "—";
     return `<tr${cls} data-row="${id}">
-      <td><input type="checkbox" class="va-check" data-id="${id}"${d.fee?"":" disabled"}></td>
+      <td><input type="checkbox" class="va-check" data-id="${id}"${(d.fee && !d.pendingAgentClosure)?"":" disabled"}${d.pendingAgentClosure?' title="Awaiting agent closure - can be approved once an agent closes the case"':""}></td>
       <td>${esc(d.vendorName)}</td>
       <td>${esc(d.fleetId)}</td>
       <td><b>${esc(d.caseId)}</b></td>
@@ -7736,7 +8055,7 @@ function renderVendorAcctGrid(){
     </div>
     <div class="va-hint" style="margin-top:8px">Click a column header to sort, again to reverse, a third time to clear. <b>Shift-click</b> another header to sort by it within the first — the small number on each header shows the order being applied.${VA_SORT.length?' <a href="#" id="vaClearSort">Clear sorting</a>':""}</div>
     ${anyNeedsKm?'<div class="va-hint" style="margin-top:10px">⚠ Highlighted rows are TOW cases with no round-trip distance recorded, so their KM Fee is calculated on 0 km. Open those in List view and set the distance before approving.</div>':""}
-    ${anyPending?'<div class="va-hint" style="margin-top:6px">⚠ Some cases are still awaiting AGENT CLOSURE (status RSP CLOSED). Vendor distances are calculated at agent closure, so their Travel Kms and KM Fee are 0 for now. They can still be approved, but the vendor will be paid base fee only.</div>':""}
+    ${anyPending?'<div class="va-hint" style="margin-top:6px">⚠ Some cases are still awaiting AGENT CLOSURE (status RSP CLOSED). They are listed for reference but cannot be selected or approved until an agent closes them (vendor distances and the KM Fee are calculated at agent closure).</div>':""}
     ${anyUnavail?'<div class="va-hint" style="margin-top:6px">Dimmed rows have no calculable fee (no matching KM slab for the vehicle/issue combination, or no vendor rate card) and cannot be approved — here or in List view.</div>':""}
     <div class="va-fee-box" id="vaGridTotals" style="margin-top:14px"></div>
     <div class="va-gridbar">
@@ -7799,9 +8118,14 @@ function renderVendorAcctGrid(){
   $("vaBulkApproveBtn").onclick = bulkApproveVendorAcct;
   recalcVendorAcctGridTotals();
 }
+/* Not approvable until an AGENT has closed the case - Task Tracker #21
+   (2026-10-27: "Do not allow tickets that are not closed by Agents to be
+   approved (display but do not allow to select it)"). A vendor-closed case
+   (status RSP CLOSED) is listed but cannot be selected or approved. */
+function vaAwaitingAgentClosure(r){ return String(d_status(r)).trim().toUpperCase()==="RSP CLOSED"; }
 function vaSelectedRows(){
   return VA_CASES.filter(function(r){ return VA_SELECTED.has(String(r.ID)); })
-    .map(vaGridRowData).filter(function(d){ return !!d.fee; });
+    .map(vaGridRowData).filter(function(d){ return !!d.fee && !d.pendingAgentClosure; });
 }
 function recalcVendorAcctGridTotals(){
   const totalsBox = $("vaGridTotals");
@@ -8061,7 +8385,8 @@ function openVendorAcctInline(id){
     <div class="fld"><label>Overtime (mins)</label><input type="number" min="0" id="vaOvertimeMins_${esc(r.ID)}" value="${esc(r.Overtime_Minutes||0)}"></div>
     <div class="fld"><label>Comments</label><textarea id="vaComments_${esc(r.ID)}">${esc(r.Ops_Approval_Comments||"")}</textarea></div>
     <div class="va-fee-box" id="vaFeeBox_${esc(r.ID)}"></div>
-    <button class="btn primary" id="vaApproveBtn_${esc(r.ID)}" type="button" style="margin-top:10px">Operations Approved</button>
+    ${vaAwaitingAgentClosure(r) ? '<div class="va-hint" style="margin-top:10px">⚠ Awaiting agent closure - this case can be approved once an agent closes it.</div>' : ""}
+    <button class="btn primary" id="vaApproveBtn_${esc(r.ID)}" type="button" style="margin-top:10px"${vaAwaitingAgentClosure(r) ? " disabled" : ""}>Operations Approved</button>
   `;
   box.classList.add("on");
   renderVendorAcctFeeBox(r, vendorRaw);
@@ -8076,6 +8401,7 @@ function openVendorAcctInline(id){
   document.getElementById("vaApproveBtn_"+r.ID).onclick = function(){ saveVendorAcctApproval(r, vendorRaw); };
 }
 async function saveVendorAcctApproval(r, vendorRaw){
+  if(vaAwaitingAgentClosure(r)){ toast("This case is still awaiting agent closure - close it first, then approve.","err"); return; }   // Task Tracker #21
   const fee = vaFeePreview(r, vendorRaw);
   if(!fee){ toast("Can't approve — fee calculation failed, see console","err"); return; }
   const btn=document.getElementById("vaApproveBtn_"+r.ID); btn.disabled=true; btn.textContent="Saving…";
@@ -9175,6 +9501,46 @@ function vendorCapabilityMatches(raw, ticketServiceType){
   if(cap==="BOTH") return true;
   return cap===String(ticketServiceType||"").trim().toUpperCase();
 }
+/* Records an admin has switched off in Zoho - Task Tracker #83 (2026-10-29).
+     83.3  Vendors.Display_in_list_crm = Hide       -> not offered for assignment
+     83.4  Vendors.Approval_Status     = Deactive   -> not offered for assignment (and the vendor
+                                                       app refuses to open for them)
+     83.11 Technicians.Status          = Hide       -> not offered as a technician
+     83.13 vehicle_master.Status       = Hide       -> not offered as a vehicle
+   Only those exact words switch a record off, so a missing field, a blank, or any other value
+   changes nothing. A record a ticket already uses always stays in that ticket's own list, so
+   re-saving can never drop it. The second name in each list is accepted as well, in case the
+   field was created under it. */
+const ADMIN_HIDE_FIELDS = {
+  vendorList:     ["Display_in_list_crm", "Display_In_List_CRM"],
+  vendorApproval: ["Approval_Status", "Approval_status"],
+  technician:     ["Status", "Technician_Status"],
+  vehicle:        ["status", "Status", "Vehicle_Status"]   // vehicle_master's link name is lowercase "status" (SHOW / HIDE), confirmed 2026-10-29
+};
+function adminFlagIs(raw, fields, words){
+  return fields.some(function(f){ return words.indexOf(String(rawValue(raw||{}, f)||"").trim().toLowerCase()) >= 0; });
+}
+function vendorHiddenFromAssignment(raw){
+  return adminFlagIs(raw, ADMIN_HIDE_FIELDS.vendorList, ["hide","hidden"]) ||
+         adminFlagIs(raw, ADMIN_HIDE_FIELDS.vendorApproval, ["deactive","deactivated","inactive"]);
+}
+function technicianHidden(raw){ return adminFlagIs(raw, ADMIN_HIDE_FIELDS.technician, ["hide","hidden"]); }
+function vehicleHidden(raw){ return adminFlagIs(raw, ADMIN_HIDE_FIELDS.vehicle, ["hide","hidden"]); }
+/* Ids (and labels) of whatever the ticket already holds in a field - single or multi, bare or object. */
+function keptValuesOf(v){
+  if(v==null || v==="") return [];
+  return (Array.isArray(v) ? v : [v]).map(function(x){
+    if(x && typeof x==="object") return String(x.ID!=null ? x.ID : (x.id!=null ? x.id : (x.display_value||"")));
+    return String(x);
+  }).map(function(x){ return x.trim(); }).filter(Boolean);
+}
+function withoutHidden(list, isHidden, current){
+  const keep = keptValuesOf(current);
+  return (list||[]).filter(function(o){
+    if(keep.indexOf(String(o.id))>=0 || keep.indexOf(String(o.label))>=0 || keep.indexOf(String(o.v))>=0) return true;
+    return !isHidden(o.raw);
+  });
+}
 function vendorsFor(record){
   // Fire-and-forget (2026-08-17) — kicks off the batched Google Distance
   // Matrix fetch for this breakdown location if it isn't already cached or
@@ -9196,7 +9562,8 @@ function vendorsFor(record){
   // fallback and vendorInfo()'s own "incomplete data" console warning both
   // still fire and stay useful for diagnosing the underlying bad/incomplete
   // Zoho record — only the picker's own list is what changes.
-  const capFiltered=OPTIONS.vendors.filter(function(o){ return vendorCapabilityMatches(o.raw, record.Service_Type); });
+  const capFiltered=withoutHidden(OPTIONS.vendors, vendorHiddenFromAssignment, keptValuesOf(record.Vendors1).concat(keptValuesOf(record.Assigned_Vendor)))   // #83.3 / #83.4
+    .filter(function(o){ return vendorCapabilityMatches(o.raw, record.Service_Type); });
   const all=capFiltered.filter(function(o){ return o.label!==o.id; }).map(function(o){
     const info=vendorInfo(o, { lat:parseCoord(record.Latitude), lon:parseCoord(record.Longitude) });
     return Object.assign({},o,{ vinfo:Object.assign({},info,{ distanceKm:vendorDistanceKm(record,info,o.id) }) });
@@ -9274,7 +9641,7 @@ function vendorOptionHtml(o){
   // "(nearest base)" added 2026-10-05 alongside the item-22 fix — same
   // transparency argument as "(live)" above: an agent comparing vendors should
   // be able to see which point each figure was measured from.
-  if(v.distanceKm!=null) meta.push(v.distanceKm+" km"+(v.locationSource==="live"?" (live)":(v.locationSource==="nearestBase"?" (nearest base)":"")));
+  if(v.distanceKm!=null) meta.push(v.distanceKm+" km"+(v.locationSource==="live"?" (live)":(v.locationSource==="nearestBase"?" (nearest base)":(v.locationSource==="technician"?(" (technician"+(v.nearestTechnician?" "+v.nearestTechnician:"")+")"):""))));
   if(v.phone) meta.push(v.phone);
   const statusLabel=v.statusKnown?(v.online?"Online":"Offline"):"Unknown";
   /* App Status and Login Status, 2026-09-25 — ETA sheet item 24 lists both as
@@ -9293,7 +9660,12 @@ function vendorOptionHtml(o){
      against "Online" at least reads as the same fact said twice, which is what it
      is. Unknown stays Unknown rather than defaulting to logged out — a vendor whose
      status was never set is not the same as one known to be signed out. */
-  const loginLabel=v.statusKnown?(v.online?"Logged In":"Logged Out"):"Unknown";
+  /* Real login state - Task Tracker #85.5 (2026-10-29): from Last_Seen_At, which the vendor app
+     stamps while it is open. A vendor whose app has never stamped it (not updated yet, or the
+     field not on Vendors_Report) keeps the previous Online-based answer, so nothing changes
+     until the stamp exists. */
+  const login=loginStateFor(v);
+  const loginLabel=login.label;
   return `<div class="vopt">
     <div style="min-width:0">
       <div class="vnm">${esc(v.name)}</div>
@@ -9303,7 +9675,7 @@ function vendorOptionHtml(o){
       <span class="lbl">App</span>
       <span class="flag ${v.online?"on":""}">${v.online?FLAG_ON:FLAG_OFF}${esc(statusLabel)}</span>
       <span class="lbl">Login</span>
-      <span class="flag ${v.online?"on":""}">${esc(loginLabel)}</span>
+      <span class="flag ${login.on?"on":""}">${esc(loginLabel)}</span>
     </span>
   </div>`;
 }
@@ -9583,7 +9955,15 @@ function inviteWasRejected(inv){
   const responded=String(inv.Responded_At||"").trim();
   return reason!=="" || responded!=="";
 }
+/* Unassigned by the office - Task Tracker #51 (2026-10-29). unassignVendor() writes
+   Service_Acceptance_Next "No" with Status "RSP REJECT"; no vendor or technician app ever writes
+   "No", so the pair can only mean an agent took the job back. */
+function inviteWasUnassigned(inv){
+  if(!inv) return false;
+  return String(inv.Service_Acceptance_Next||"").trim().toUpperCase()==="NO" && String(inv.Status||"").toUpperCase().indexOf("REJECT")!==-1;
+}
 function inviteStatusFor(inv){
+  if(inviteWasUnassigned(inv)) return {label:"Unassigned", color:"var(--muted)"};   // #51
   /* Accepted is tested FIRST - 2026-10-13. It used to come second, and with
      Status defaulting to "RSP REJECT" that made every invite read as Rejected,
      including accepted ones - which rejectedVendorIds() then fed into pruning
@@ -9625,7 +10005,7 @@ function inviteStatusFor(inv){
 function rejectedVendorIds(){
   return (state.inviteStatuses||[])
     .filter(function(inv){ return inv.Vendor!=null && inv.Vendor!==""; })
-    .filter(function(inv){ return inviteStatusFor(inv).label==="Rejected"; })
+    .filter(function(inv){ const l=inviteStatusFor(inv).label; return l==="Rejected" || l==="Unassigned"; })   // #51: off the pick list too
     .map(function(inv){ return String(unwrapLookup(inv.Vendor)||""); })
     .filter(Boolean);
 }
@@ -9766,7 +10146,11 @@ function assignInviteStatusHtml(){
        inviteStatusFor() it read "Awaiting response" forever, because nobody ever
        answers it and nothing ever writes to it. */
     if(isHandoff){
-      st = { label:"Assigned by "+takenByName, color:"var(--ok)" };
+      /* The technician's answer, once there is one - Task Tracker #15.6/#15.7
+         (2026-10-28). "Assigned by" stays until they accept or reject. */
+      if(st.label==="Accepted" || st.label==="Rejected"){ /* their own answer, as read */ }
+      else if(technicianHoldsTicket(state.record, inv)) st = { label:"Accepted", color:"var(--ok)" };
+      else st = { label:"Assigned by "+takenByName, color:"var(--ok)" };
     }
     /* This vendor holds the case, whatever their invite row still says -
        2026-10-17. Assigned_Vendor is the field this file already treats as the
@@ -9796,12 +10180,17 @@ function assignInviteStatusHtml(){
        why Rejected deliberately has no button: vendorTicket keeps a local
        reject stamp this write cannot clear, so it would look resent and stay
        hidden on the vendor's phone. */
+    /* Unassign - Task Tracker #51 (2026-10-29): on the vendor holding the case, any time before
+       the ticket is closed. Two clicks (the second confirms), handled by unassignVendor(). */
+    const unassignBtn = (!isHandoff && st.label==="Accepted" && inv.ID!=null && unassignAllowed(state.record))
+      ? `<button type="button" class="btn ghost sm" data-unassign="${esc(inv.ID)}" style="margin-left:10px;padding:1px 8px;font-size:11px">Unassign</button>`
+      : "";
     const reinviteBtn = (st.label==="Timed Out" && inv.ID!=null && !alreadyTaken)
       ? `<button type="button" class="btn ghost sm" data-reinvite="${esc(inv.ID)}" style="margin-left:10px;padding:1px 8px;font-size:11px">Re-invite</button>`
       : "";
     return `<div class="crow" style="cursor:default">
       <span class="k">${esc(name)}</span>
-      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${esc(elapsed)}${reason?(" — "+esc(reason)):""}${reinviteBtn}</span>
+      <span class="v"><span style="color:${st.color};font-weight:700">${esc(st.label)}</span>${esc(elapsed)}${reason?(" — "+esc(reason)):""}${reinviteBtn}${unassignBtn}</span>
     </div>`;
   }).join("");
   return `<div class="form-card" style="margin-top:14px">
@@ -10248,14 +10637,14 @@ function fmtDurationShort(ms){
 function ticketAgeText(r, urgentMs){
   const ms=ticketAgeMs(r);
   if(ms==null) return null;
-  return { text:fmtDurationShort(ms)+" ago", urgent: ms>=urgentMs };
+  return { text:"Open "+fmtDurationShort(ms), urgent: ms>=urgentMs };   // #95: labelled
 }
 function scheduledCountdownText(r){
   const ms=scheduledCountdownMs(r);
   if(ms==null) return null;
   return ms>=0
-    ? { text:"in "+fmtDurationShort(ms), urgent: ms<=SCHEDULED_URGENT_MS }
-    : { text:fmtDurationShort(ms)+" overdue", urgent:true };
+    ? { text:"Service in "+fmtDurationShort(ms), urgent: ms<=SCHEDULED_URGENT_MS }
+    : { text:"Service overdue "+fmtDurationShort(ms), urgent:true };
 }
 /* Re-reads every visible timer badge's own data-* attributes and refreshes
    just its text/urgent class — no re-render of the dashboard list at all, so
@@ -10270,13 +10659,13 @@ function tickDashboardTimers(){
     const urgentMs = el.dataset.timerUrgentMs ? Number(el.dataset.timerUrgentMs) : TICKET_AGE_URGENT_MS_MODERATE;
     const info=ticketAgeText(r, urgentMs);
     if(!info) return;
-    el.textContent=info.text;
+    el.textContent="⏱ "+info.text;   // #95: the icon used to drop off on the first refresh
     el.classList.toggle("timer-urgent", info.urgent);
   });
   document.querySelectorAll("[data-timer-sched]").forEach(function(el){
     const info=scheduledCountdownText({ Computed_Service_Time: el.dataset.timerSched });
     if(!info) return;
-    el.textContent=info.text;
+    el.textContent="📅 "+info.text;
     el.classList.toggle("timer-urgent", info.urgent);
   });
 }
@@ -10298,6 +10687,17 @@ function fmtClockTime(d){
 // minutes computed at that SAME moment — deliberately NOT "now + ETA", which
 // would keep drifting later the longer the agent waits before opening this
 // screen, even though the vendor's actual ETA was fixed at accept time.
+/* The datetime box's own value, "2026-10-29T12:20" - Task Tracker #89 (2026-10-29).
+   Leaving the Accept step copies its (read-only) Service Acceptance box back into the
+   record in this shape, which neither Zoho-format parser reads, so Expected Arrival
+   went blank on the Reach page until the ticket was reopened. Local time, read field
+   by field rather than through new Date(string). */
+function parseBoxDateTime(str){
+  const m=String(str||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if(!m) return null;
+  const d=new Date(Number(m[1]), Number(m[2])-1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]||0));
+  return isNaN(d) ? null : d;
+}
 function expectedArrivalTime(r){
   const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
@@ -10314,7 +10714,7 @@ function expectedArrivalTime(r){
   // this field type in this app), then 24-hour as a fallback, rather than
   // assuming either one — whichever the API is really returning, this
   // now handles it instead of guessing wrong and silently failing.
-  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw) || parseBoxDateTime(acceptRaw);   // #89
   // Agent_ETA_Override(_TOW) (2026-08-07, user request — see reach/reachTow's
   // own field comment) takes priority over the vendor's own Google-Maps-
   // derived ETA/ETA_TOW the moment the agent actually enters one — that's the
@@ -10341,7 +10741,7 @@ function expectedArrivalTime(r){
 function expectedArrivalDeadline(r){
   const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
-  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw);
+  const acceptAt = parseDateTime12(acceptRaw) || parseDateTime24(acceptRaw) || parseBoxDateTime(acceptRaw);   // #89
   const overrideMins = isTow ? r.Agent_ETA_Override_TOW : r.Agent_ETA_Override;
   const etaMins = (overrideMins!=null && overrideMins!=="") ? Number(overrideMins) : Number(isTow ? r.ETA_TOW : r.ETA);
   if(!etaMins || isNaN(etaMins) || !acceptAt) return null;
@@ -11504,8 +11904,11 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
   // invoice total). Computed here rather than inline so the capping
   // arithmetic is readable and so both values are plain numbers by the time
   // the payload stringifies them.
-  const bfCollected = (isOnDemand && bookingFeeConfirmedPaid(record)) ? (Number(record.Booking_Fee)||0) : 0;
-  const rfCollected = (isOnDemand && remainingFeeConfirmedPaid(record)) ? (Number(record.Remaining_Fee)||0) : 0;
+  /* What the customer paid, for company tickets too - Task Tracker #88 (2026-10-29). Capped at the
+     invoice amount just below, exactly as for ON DEMAND, so a company ticket can never show more
+     paid than its Rescue Charge invoice. */
+  const bfCollected = bookingFeeConfirmedPaid(record) ? (Number(record.Booking_Fee)||0) : 0;
+  const rfCollected = remainingFeeConfirmedPaid(record) ? (Number(record.Remaining_Fee)||0) : 0;
   const bookingFeeToApply = Math.max(0, Math.min(bfCollected, amount));
   const remainingFeeToApply = Math.max(0, Math.min(rfCollected, amount - bookingFeeToApply));
   if(bfCollected+rfCollected > amount){
@@ -11903,14 +12306,22 @@ $("mYes").onclick=()=>{ $("modal").classList.remove("on"); if(modalResolve) moda
    Notion, etc.) accept; a genuinely atomic version would need a server-side
    Deluge function doing a real compare-and-set, not attempted here. */
 const LOCK_STALE_MS = 15*60*1000; // no heartbeat in 15 min -> treat as abandoned (crashed tab, forgotten session), safe to silently take over
-const LOCK_HEARTBEAT_MS = 60*1000; // refresh Locked_At this often while the wizard is genuinely open, so an active session's own lock never goes stale mid-edit
+const LOCK_HEARTBEAT_MS = 30*1000; // refresh Locked_At this often while the wizard is genuinely open, so an active session's own lock never goes stale mid-edit (30 s since 2026-10-27, was 60 s - see LOCK_TAKEOVER_AFTER_MS)
+/* Take Over only after one minute - Task Tracker #50 (2026-10-27): "only one agent
+   must be allowed to open the ticket at any one time ... 'takeover anyway' ... should
+   be allowed only after one minute". An agent who has the ticket open refreshes
+   the lock every 30 s, so a lock younger than a minute means someone is on it right
+   now: the second agent is told so and stays on the dashboard. Older than a minute
+   (their page closed or lost connection) offers Take Over Anyway as before; older
+   than LOCK_STALE_MS is still taken over silently, unchanged. */
+const LOCK_TAKEOVER_AFTER_MS = 60*1000;
 // Vendor invite "Timed Out" threshold — see inviteStatusFor()'s own comment
 // for the full reasoning. 15 minutes chosen to match LOCK_STALE_MS's own
 // value above as a reasonable default for "how long is too long to wait for
 // a vendor to respond to an invite" — this was NOT an explicit client
 // requirement/SLA, just a sensible starting point; easy to change here if a
 // different threshold is wanted later.
-const INVITE_TIMEOUT_MS = 2*60*1000; // 2 min — client-set 2026-10-03 (was a 15-min placeholder; see the comment above, which anticipated exactly this change)
+const INVITE_TIMEOUT_MS = 3*60*1000; // 3 min — Task Tracker #16 (2026-10-27; was 2 min, client-set 2026-10-03). Same value in vendorTicket and vendorPerformance (was a 15-min placeholder; see the comment above, which anticipated exactly this change)
 let LOCK_HEARTBEAT_TIMER=null;
 /* Which record THIS session actually holds the lock on — 2026-10-03.
    releaseLock() used to blank Locked_By/Locked_At unconditionally, so any
@@ -12305,7 +12716,7 @@ async function loadInviteStateForDashboard(){
         // per-ticket panel can never describe one invite differently.
         const label=inviteStatusFor(inv).label;
         if(label==="Accepted") slot.accepted++;
-        else if(label==="Rejected") slot.rejected++;
+        else if(label==="Rejected" || label==="Unassigned") slot.rejected++;   // #51
         else if(label==="Timed Out") slot.expired++;
         else slot.live++;
       });
@@ -12371,7 +12782,7 @@ async function releaseTimedOutInvites(recs){
         slot.total++;
         const label = inviteStatusFor(inv).label;
         if(label==="Accepted") slot.accepted++;
-        else if(label==="Rejected") slot.rejected++;
+        else if(label==="Rejected" || label==="Unassigned") slot.rejected++;   // #51
         else if(label==="Timed Out") slot.expired++;
         else slot.live++;
       });
@@ -12927,6 +13338,10 @@ async function openTicket(rec){
   // anyone out.
   if(!state.closureReadOnly){
     const lock = activeLockOn(rec);
+    if(lock && lock.ageMs < LOCK_TAKEOVER_AFTER_MS){
+      toast((lock.name||lock.email)+" is working on this ticket right now. Try again in a minute.","err");
+      return false; // Task Tracker #50 - nothing touched, still on the dashboard
+    }
     if(lock){
       const mins = Math.max(1, Math.round(lock.ageMs/60000));
       const takeOver = await confirmBox(
@@ -13813,9 +14228,11 @@ function buildField(f){
        returns the markup; returning "" falls back to f.emptyHint. The callee
        is responsible for escaping — every caller here builds through esc(). */
     const markup = typeof f.html==="function" ? (f.html(state.record)||"") : "";
-    wrap.innerHTML = markup
-      ? lab+markup
-      : lab+`<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`;
+    wrap.innerHTML = f.collapsible
+      ? collapsibleWrap(f, markup || `<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`)
+      : (markup
+        ? lab+markup
+        : lab+`<span class="hint">${esc(f.emptyHint||"Not available yet.")}</span>`);
   } else if(f.t==="qrblock"){
     // Decorative QR placeholder (2026-08-11, user request) — same pattern/
     // caveat as vendorTicket's own renderPaymentScreen() qrBlock: no real
@@ -13870,7 +14287,7 @@ function buildField(f){
     // Same function-or-string hint as the file branch above (2026-10-08) -
     // Booking_Fee uses it to say why it is locked rather than just greying out.
     const inputHint = typeof f.hint==="function" ? f.hint(state.record) : f.hint;
-    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc(displayVal||"")}">`+telLinkHtml+ozonetelCallHtml+(inputHint?`<span class="hint">${esc(inputHint)}</span>`:"");
+    wrap.innerHTML=lab+`<input type="${map[f.t]||"text"}" id="${id}"${step2}${isReadonly(f)?" readonly":""} value="${esc((f.showZero && displayVal===0) ? "0" : (displayVal||""))}">`+telLinkHtml+ozonetelCallHtml+(inputHint?`<span class="hint">${esc(inputHint)}</span>`:"");
     if(SHOW_OZONETEL_CALL_BUTTON && f.t==="tel" && f.ozonetelCall && cur){
       setTimeout(function(){
         const ozBtn=$(id+"_ozonetelCall");
@@ -14040,6 +14457,40 @@ async function pollPaymentStatusRefresh(){
       toast("Payment details updated from the payment gateway","ok");
     }
   }catch(e){ console.warn("[Get-Rescue] pollPaymentStatusRefresh failed (non-blocking)", e); }
+}
+/* Refresh inside an open ticket - Task Tracker #31 (2026-10-27): reload the
+   latest saved data and stay on the same ticket and step. The same merge the
+   Agent Closure poll below already uses (snapshot typing, merge, unwrap
+   lookups, reload invites and rejections, re-render). If the agent has typed
+   something on this step that is not saved yet, they are asked first; "Keep
+   editing" leaves everything exactly as it was. */
+async function refreshOpenTicket(){
+  if(state.view!=="wizard" || !state.recordId){ return; }
+  const btn=$("wizRefresh");
+  const step=state.path[state.stepIndex];
+  const before=JSON.stringify((step && step.fields || []).map(function(f){ return state.record[f.n]; }));
+  collectStep(false);
+  const after=JSON.stringify((step && step.fields || []).map(function(f){ return state.record[f.n]; }));
+  if(before!==after){
+    const ok = await confirmBox("Refresh this ticket?", "You have changes on this page that are not saved yet. Refreshing loads the latest saved information and discards them.", "Refresh");
+    if(!ok) return;
+  }
+  if(btn){ btn.disabled=true; btn.textContent="Refreshing…"; }
+  try{
+    const fresh=await apiGetById(state.recordId);
+    if(!fresh){ toast("Could not load the latest information - try again","err"); return; }
+    Object.keys(fresh).forEach(function(k){ state.record[k]=fresh[k]; });
+    STAGES.forEach(function(st){ st.fields.forEach(function(f){ if(f.useId && state.record[f.n]!=null) state.record[f.n]=unwrapLookup(state.record[f.n]); }); });
+    await loadInviteStatuses(state.recordId); pruneRejectedVendorsFromPick(); pruneSingleVendorIfTicketRejected();
+    await loadRejectionHistory(state.recordId);
+    rerenderCurrentView();
+    toast("Ticket refreshed","ok");
+  }catch(e){
+    console.warn("[Get-Rescue] refreshOpenTicket failed", e);
+    toast("Could not refresh this ticket - "+((e&&e.message)||"try again"),"err");
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent="Refresh"; }
+  }
 }
 async function pollAgentClosureRefresh(){
   // Re-check we're still actually here — covers any transition that didn't
@@ -14493,7 +14944,32 @@ function wireField(f,id){
       // first field" — see rerenderCurrentView()'s own comment above.
       rerenderCurrentView();
     };
+    /* Tab after editing this field - Task Tracker #67/#68 (2026-10-27). The change
+       event fires while the browser is still moving focus, and the redraw above
+       replaces the field it was moving to, so focus fell back to the top of the
+       page. When the value really changed, do the recalculation first and then
+       move to the neighbouring field of the rebuilt form. Unchanged value: Tab is
+       left completely alone. */
+    const committedValue = el.value;
+    el.addEventListener("keydown", function(ev){
+      if(ev.key!=="Tab" || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+      if(el.value===committedValue) return;
+      ev.preventDefault();
+      const myId = el.id, back = ev.shiftKey;
+      el.onchange();
+      focusNeighbourOf(myId, back);
+    });
   }
+}
+/* Focus the field after (or before) the one with this id, in the CURRENT DOM -
+   used once a redraw has replaced the original element. Task Tracker #67/#68. */
+function focusNeighbourOf(id, back){
+  const sel = "input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex=\"-1\"])";
+  const list = Array.prototype.filter.call(document.querySelectorAll(sel), function(x){ return x.offsetParent!==null || x===document.activeElement; });
+  const me = document.getElementById(id);
+  const i = me ? list.indexOf(me) : -1;
+  const target = i<0 ? me : list[back ? i-1 : i+1];
+  if(target && typeof target.focus==="function") target.focus();
 }
 /* Searchable single-select combo (Client/Vehicle) — a plain text input plus a
    custom filtered dropdown instead of a native <select>, since these option
@@ -14744,8 +15220,10 @@ function closureFieldGroups(){
     keys.forEach(function(k){
       const st=byKey[k]; if(!st) return;
       st.fields.forEach(function(f){
-        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||f.t==="computed"||f.t==="htmlblock"||f.t==="qrblock") return; // no meaningful value to show/edit here
-        if(f.when && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses
+        // closureShow (Task Tracker #84.9, 2026-10-29): a computed field may opt in; it shows as a
+        // read-only row (closureFieldValueDisplay computes it). Every other computed field is still skipped.
+        if(f.t==="button"||f.t==="badge"||f.t==="summary"||f.t==="navlink"||(f.t==="computed" && !f.closureShow)||f.t==="htmlblock"||f.t==="qrblock") return; // no meaningful value to show/edit here
+        if(f.when && !f.closureAlways && !f.when(state.record)) return; // same conditional-visibility rules the wizard itself uses (closureAlways: closure page shows it regardless)
         if(f.closureHide) return;
         fields.push(f);
         FIELD_ORIGIN_STAGE[f.n]=st;
@@ -14906,6 +15384,19 @@ function closureFieldValueDisplay(f){
   return {text:String(v), empty:false};
 }
 const EDIT_ICON='<svg class="edit-ic" viewBox="0 0 24 24" width="14" height="14"><path d="M4 20h4l10.5-10.5-4-4L4 16v4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 5.5 18.5 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+/* Collapsible read-only blocks - Task Tracker #64/#65 (2026-10-27): Edit Log and
+   Call History start collapsed on the Closure page. A block the agent opened
+   stays open across the re-renders that happen when its data arrives. */
+const COLLAPSIBLE_OPEN = new Set();
+function collapsibleWrap(f, inner){
+  const open = COLLAPSIBLE_OPEN.has(f.n);
+  return `<details class="coll-block" data-coll="${esc(f.n)}"${open?" open":""}><summary>${esc(f.l)}</summary><div class="coll-body">${inner}</div></details>`;
+}
+document.addEventListener("toggle", function(e){
+  const d = e.target;
+  if(!d || !d.classList || !d.classList.contains("coll-block")) return;
+  if(d.open) COLLAPSIBLE_OPEN.add(d.getAttribute("data-coll")); else COLLAPSIBLE_OPEN.delete(d.getAttribute("data-coll"));
+}, true);
 function closureFieldRowHtml(f){
   const d=closureFieldValueDisplay(f);
   // Added 2026-09-02 (build-plan item #7) — a plain non-clickable div, NOT a
@@ -14921,6 +15412,9 @@ function closureFieldRowHtml(f){
   // Stacked rather than inline: a table needs the full row width.
   if(f.t==="htmlblock"){
     const markup = typeof f.html==="function" ? (f.html(state.record)||"") : "";
+    if(f.collapsible){
+      return `<div class="crow-ro" style="display:block">${collapsibleWrap(f, markup || `<span class="v empty">${esc(f.emptyHint||"—")}</span>`)}</div>`;
+    }
     return `<div class="crow-ro" style="display:block">
       <span class="k" style="display:block;margin-bottom:6px">${esc(f.l)}</span>
       ${markup || `<span class="v empty">${esc(f.emptyHint||"—")}</span>`}
@@ -16198,7 +16692,9 @@ function cancelClosure(){ backToDash(); }
 // a fee (that's the whole point of the distinction), so it needs the same
 // Booking_Fee+Remaining_Fee-Refund reconciliation the other two get.
 function closureCountsAsFeeBearing(status){
-  return status==="Completed" || status==="Cancelled" || status==="Cancelled - Billable";
+  /* "Cancelled - Not Billable" - Task Tracker #58 (2026-10-29): the client's new name for
+     "Cancelled". Both are accepted so old tickets and new ones behave the same. */
+  return status==="Completed" || status==="Cancelled" || status==="Cancelled - Not Billable" || status==="Cancelled - Billable";
 }
 async function saveClosure(){
   const chk=collectStep(true);
@@ -16309,6 +16805,7 @@ async function saveClosure(){
        still succeeds: an unconditional entry would quietly overwrite a stored
        value with "" on every close. */
     if(!distanceNotComputedYet(r.Mechanic_To_Breakdown)) payload.Mechanic_To_Breakdown=r.Mechanic_To_Breakdown;
+    Object.assign(payload, closureExtrasForApproval(r));   // #22 - the closure Extra is the approval Extras
     await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
     /* Audit the edit - 2026-10-17. After the save, never before: this is a
        record of what WAS saved, and it must not be able to fail the save. */
@@ -16596,7 +17093,7 @@ function smSetView(lat,lon,zoom){
 // where it was rather than snapping back to the office default.
 function smSetMarkers(markers){
   SIMPLE_MAP.markers=markers;
-  if(markers.length){
+  if(markers.length && !SIMPLE_MAP.keepView){
     const container=SIMPLE_MAP.container;
     const fit=smFitBounds(markers.map(function(m){return {lat:m.lat,lon:m.lon};}), (container&&container.clientWidth)||800, (container&&container.clientHeight)||500);
     SIMPLE_MAP.lat=fit.lat; SIMPLE_MAP.lon=fit.lon; SIMPLE_MAP.zoom=fit.zoom;
@@ -16645,10 +17142,16 @@ function opsMapPinColor(online,onCase){
   if(!online) return "#6b7280"; // dark grey — offline
   return onCase ? "#dc2626" : "#16a34a"; // red — on a case; green — free
 }
+/* Map opens on the Bangalore office - Task Tracker #75 (2026-10-27, "By default
+   please zoom into bangalore office location"). It used to zoom out to fit every
+   marker. keepView stops smSetMarkers() refitting, so filter changes leave the
+   agent's own pan/zoom alone; the +/- buttons and dragging work as before. */
+const MAP_DEFAULT_ZOOM = 12;
 async function loadOpsMap(){
   showView("opsmap");
   const canvas=$("opsMapCanvas");
   smMount(canvas);
+  SIMPLE_MAP.lat=OFFICE_LAT; SIMPLE_MAP.lon=OFFICE_LON; SIMPLE_MAP.zoom=MAP_DEFAULT_ZOOM; SIMPLE_MAP.keepView=true;
   renderOpsMapMarkers();
 }
 async function renderOpsMapMarkers(){
@@ -16741,6 +17244,15 @@ let INVITE_AUDIT_ROWS=null;   // cached per visit; Refresh clears it
 let INVITE_AUDIT_DIAG=null;
 /* Reads a Zoho date-time into something sortable. Falls back to 0 rather than
    dropping the row — an invite with an unparseable stamp still matters. */
+/* One format for every time in the Accept/Reject report - Task Tracker #17 (2026-10-29).
+   Invited_At is a Zoho Date-Time and Responded_At is text, so the two columns came back
+   looking different. Both are shown as fmtDateTime(); anything unreadable as it is. */
+function iaShowTime(v){
+  const raw=String(v==null?"":v).trim();
+  if(!raw) return "";
+  const d=parseDateTime24(raw) || parseDateTime12(raw) || parseBoxDateTime(raw) || parseAnyDateTime(raw);
+  return d ? fmtDateTime(d) : raw;
+}
 function iaTimeOf(v){
   const d=parseAnyDateTime(v);
   return d ? d.getTime() : 0;
@@ -16761,11 +17273,58 @@ function iaTimeOf(v){
    Resolved states are checked FIRST: a vendor who accepted or rejected an
    hour ago has responded, and must never be relabelled as having timed out. */
 function iaStatusOf(inv){
+  if(inviteWasUnassigned(inv)) return "Unassigned";   // #51
   if(String(inv.Service_Acceptance_Next||"").trim().toLowerCase()==="yes") return "Accepted";
   if(inviteWasRejected(inv)) return "Rejected";   // 2026-10-13 - not the form default, see inviteWasRejected()
   const sentAt = inviteStartedAtDate(inv);
   if(sentAt && (Date.now()-sentAt.getTime()) > INVITE_TIMEOUT_MS) return "Timed Out";
   return "Pending";
+}
+/* The technician on this hand-off row accepted, read off the ticket - Task Tracker
+   #15.6 (2026-10-28). The technician app marks its invite row too, but that write is
+   best-effort; the ticket naming them with a Service Acceptance time and a status past
+   acceptance says the same thing. */
+function technicianHoldsTicket(ticket, inv){
+  if(!ticket || !inv) return false;
+  const techId=lookupId(inv.Technician), held=lookupId(ticket.Assigned_Technician);
+  if(techId==null || held==null || String(techId).trim()==="" || String(techId)!==String(held)) return false;
+  if(!String(readVal(ticket,"Service_Acceptance")||"").trim()) return false;
+  const st=String(readVal(ticket,CONFIG.stageField)||"").trim().toUpperCase();
+  return ["RSP IRA (INVITE RESPONSE AWAITED)","RSP REJECT","READY FOR ASSIGNMENT"].indexOf(st)<0;
+}
+/* iaStatusOf() with the ticket in view - Task Tracker #15.5/#15.6 (2026-10-28).
+   A technician hand-off row is the vendor passing the job on, not an invitation
+   with a 3-minute clock: "Assigned" until the technician answers, never Timed Out
+   or Pending. A vendor row the ticket shows holding the case reads Accepted, the
+   rule the per-ticket panel already uses. Answered rows are never relabelled. */
+function iaStatusInContext(inv, ticket){
+  const base=iaStatusOf(inv);
+  if(base==="Accepted" || base==="Rejected" || base==="Unassigned") return base;   // #51: an answered row
+  const isHandoff=!inviteLookupSet(inv.Vendor) && inviteLookupSet(inv.Technician);
+  if(isHandoff) return technicianHoldsTicket(ticket, inv) ? "Accepted" : "Assigned";
+  const assigned=ticket ? lookupId(ticket.Assigned_Vendor) : null;
+  if(assigned!=null && String(assigned).trim()!=="" && String(lookupId(inv.Vendor)||"").trim()===String(assigned).trim()) return "Accepted";
+  return base;
+}
+/* Task_Rejections is the append-only history - Task Tracker #19 (2026-10-28). Every
+   field app already adds a row there on each reject; a timeout is added here before
+   a re-invite resets its clock. One row per event, never updated. */
+function iaRejectionTicket(x){ return String(unwrapLookup(x && x.RSID)||"").trim(); }
+function iaSameMoment(a, b){
+  const ta=iaTimeOf(a), tb=iaTimeOf(b);
+  return !!(ta && tb && Math.abs(ta-tb) <= 2*60000);
+}
+async function appendInviteHistory(inv, reason, at){
+  try{
+    const fn=resolve("addRecords"); if(!fn || !inv) return;
+    const who=lookupNamesFor(inv.Vendor, OPTIONS.vendors) || lookupNamesFor(inv.Technician, OPTIONS.technicians)
+           || unwrapLookupDisplay(inv.Vendor) || unwrapLookupDisplay(inv.Technician) || "";
+    await fn({ app_name:CONFIG.appName, form_name:"Task_Rejections", payload:{ data:{
+      RSID: (state.record && readVal(state.record, CONFIG.caseIdField)) || String(state.recordId||""),
+      RSP_Name: who, Reason: reason, Rejected_At: fmtDateTime(at || new Date())
+    } } });
+    INVITE_AUDIT_ROWS=null;
+  }catch(e){ console.warn("[Get-Rescue] appendInviteHistory: the history row was not added (the re-invite itself is unaffected)", e); }
 }
 async function loadInviteAudit(){
   showView("inviteaudit");
@@ -16788,8 +17347,8 @@ async function loadInviteAudit(){
     }catch(e){ console.warn("[Get-Rescue] loadInviteAudit: Task_Rejections read failed — reasons/times will be blank", e); }
     // Ticket id -> Case ID label. The dashboard list is used first because it
     // is already in memory and free.
-    const labelById={};
-    (state.tickets||[]).forEach(function(t){ if(t && t.ID!=null) labelById[String(t.ID)]=caseLabel(t); });
+    const labelById={}, ticketById={};
+    (state.tickets||[]).forEach(function(t){ if(t && t.ID!=null){ labelById[String(t.ID)]=caseLabel(t); ticketById[String(t.ID)]=t; } });
     // ...then the tickets it does NOT hold are fetched — 2026-10-06. This map
     // used to be dashboard-only ("never fetched again"), but an audit spans
     // closed and older cases the dashboard list does not carry, so those rows
@@ -16807,6 +17366,7 @@ async function loadInviteAudit(){
         if(tkRes && tkRes.code===3000 && Array.isArray(tkRes.data)){
           tkRes.data.forEach(function(t){
             if(t && t.ID!=null && labelById[String(t.ID)]==null) labelById[String(t.ID)]=caseLabel(t);
+            if(t && t.ID!=null && ticketById[String(t.ID)]==null) ticketById[String(t.ID)]=t;
           });
         }
       }catch(e){ console.warn("[Get-Rescue] loadInviteAudit: could not resolve Case ID labels — the Ticket column will show record ids instead", e); }
@@ -16816,7 +17376,7 @@ async function loadInviteAudit(){
       const who=lookupNamesFor(inv.Vendor, OPTIONS.vendors)
              || lookupNamesFor(inv.Technician, OPTIONS.technicians)
              || unwrapLookupDisplay(inv.Vendor) || unwrapLookupDisplay(inv.Technician) || "—";
-      const status=iaStatusOf(inv);
+      const status=iaStatusInContext(inv, ticketById[ticketId]);
       // Matched on ticket AND mechanic: one ticket can be rejected by several
       // mechanics, so matching on ticket alone would show the wrong reason.
       let reason=String(inv.Reject_Reason||"").trim();
@@ -16825,20 +17385,49 @@ async function loadInviteAudit(){
          no Responded_At, so that join stays exactly as it was. */
       let respondedAt=String(readVal(inv,"Responded_At")||"").trim();
       if(status==="Rejected"){
-        const rj=rejections.find(function(x){
-          return String(unwrapLookup(x.RSID)||"")===ticketId &&
-                 String(x.RSP_Name||"").trim().toLowerCase()===String(who).trim().toLowerCase();
-        });
+        /* Latest matching history row, and only one per invite row (#19): the rest stay
+           as their own entries below. The ticket is the record id on older rows and the
+           Case ID on newer ones (RSID became text 2026-10-22), so both are tried. */
+        const label=labelById[ticketId];
+        const rj=rejections.filter(function(x){
+          if(x.__iaUsed) return false;
+          const xt=iaRejectionTicket(x);
+          if(!(xt===ticketId || (label && xt===label))) return false;
+          return String(x.RSP_Name||"").trim().toLowerCase()===String(who).trim().toLowerCase()
+              || iaSameMoment(x.Rejected_At, respondedAt)
+              || (reason!=="" && String(x.Reason||"").trim().toLowerCase()===reason.toLowerCase());
+        }).sort(function(a,b){ return iaTimeOf(b.Rejected_At)-iaTimeOf(a.Rejected_At); })[0];
+        if(rj) rj.__iaUsed=true;
         if(rj){
           if(!respondedAt) respondedAt=String(rj.Rejected_At||"").trim();
           if(!reason) reason=String(rj.Reason||"").trim();
         }
       }
       const invitedAt=String(inv.Invited_At||inv.Added_Time||"").trim();
+      /* A timed-out invite was never answered, so it has no responded time - Task
+         Tracker #18 (2026-10-29). Any value on such a row is left over from a late
+         response or an earlier round; it is not shown. */
+      const shownResponded = status==="Timed Out" ? "" : respondedAt;
       return { ticketId:ticketId,
                ticket: labelById[ticketId] || unwrapLookupDisplay(inv.RSID) || ticketId || "—",
-               who:who, status:status, invitedAt:invitedAt, respondedAt:respondedAt,
-               reason:reason, sortAt: iaTimeOf(respondedAt||invitedAt) };
+               who:who, status:status, invitedAt:invitedAt, respondedAt:shownResponded,
+               reason:reason, sortAt: iaTimeOf(shownResponded||invitedAt) };
+    });
+    /* Every other reject / timeout as its own entry - Task Tracker #19. These are the
+       earlier rounds an invite row no longer shows after a re-invite reset it. */
+    const idByLabel={};
+    Object.keys(labelById).forEach(function(k){ idByLabel[labelById[k]]=k; });
+    rejections.forEach(function(x){
+      if(x.__iaUsed) return;
+      const raw=iaRejectionTicket(x);
+      const tid=labelById[raw]!=null ? raw : (idByLabel[raw] || "");
+      const reason=String(x.Reason||"").trim(), at=String(x.Rejected_At||"").trim();
+      INVITE_AUDIT_ROWS.push({ ticketId:tid, ticket:(tid && labelById[tid]) || raw || "—",
+        who:String(x.RSP_Name||"").trim() || "—", status:/^timed out/i.test(reason) ? "Timed Out" : "Rejected",
+        /* A logged timeout (#18): no responded time; its invite time is the moment it ran out
+           less the timeout window. */
+        invitedAt: /^timed out/i.test(reason) && iaTimeOf(at) ? fmtDateTime(new Date(iaTimeOf(at)-INVITE_TIMEOUT_MS)) : "",
+        respondedAt: /^timed out/i.test(reason) ? "" : at, reason:reason, sortAt:iaTimeOf(at), history:true });
     });
     // Newest activity first — an ops manager is looking at what just happened.
     INVITE_AUDIT_ROWS.sort(function(a,b){ return b.sortAt-a.sortAt; });
@@ -16854,7 +17443,7 @@ async function loadInviteAudit(){
        panel, since loadInviteStatuses() filters on this exact value.
        The first raw row is printed so the real field names are visible rather
        than inferred. */
-    const withTicket=INVITE_AUDIT_ROWS.filter(function(r){ return r.ticketId; }).length;
+    const withTicket=INVITE_AUDIT_ROWS.filter(function(r){ return !r.history && r.ticketId; }).length;
     INVITE_AUDIT_DIAG = {
       total: invites.length,
       withTicket: withTicket,
@@ -16879,14 +17468,14 @@ function renderInviteAudit(){
   const shown=q ? rows.filter(function(r){
     return (r.ticket+" "+r.ticketId+" "+r.who+" "+r.status+" "+r.reason).toLowerCase().indexOf(q)!==-1;
   }) : rows;
-  const counts={Accepted:0,Rejected:0,"Timed Out":0,Pending:0};
+  const counts={Accepted:0,Rejected:0,"Timed Out":0,Pending:0,Assigned:0};
   shown.forEach(function(r){ counts[r.status]=(counts[r.status]||0)+1; });
   // Timed out is only named when there ARE any, so the usual case reads
   // exactly as it did before rather than carrying a permanent "0 timed out".
   const timedOut = counts["Timed Out"];
   $("iaSub").textContent = shown.length+" invite"+(shown.length===1?"":"s")+" · "+
     counts.Accepted+" accepted · "+counts.Rejected+" rejected · "+
-    (timedOut ? (timedOut+" timed out · ") : "")+counts.Pending+" pending";
+    (timedOut ? (timedOut+" timed out · ") : "")+(counts.Assigned ? (counts.Assigned+" assigned to a technician · ") : "")+counts.Pending+" pending";
   if(!shown.length){
     host.innerHTML=`<div class="hint" style="display:block;padding:16px">${rows.length?"No invite matches that filter.":"No invites have been sent yet."}</div>`;
     return;
@@ -16905,7 +17494,7 @@ function renderInviteAudit(){
   const head=["Ticket","Mechanic","Status","Invited","Responded","Reason"]
     .map(function(h){ return "<th "+TH+">"+esc(h)+"</th>"; }).join("");
   const body=shown.map(function(r){
-    return "<tr>"+[cell(r.ticket),cell(r.who),pill(r.status),cell(r.invitedAt),cell(r.respondedAt),cell(r.reason)]
+    return "<tr>"+[cell(r.ticket),cell(r.who),pill(r.status),cell(iaShowTime(r.invitedAt)),cell(iaShowTime(r.respondedAt)),cell(r.reason)]
       .map(function(v){ return "<td "+TD+">"+v+"</td>"; }).join("")+"</tr>";
   }).join("");
   /* Shown whenever ANY row cannot name its ticket — 2026-10-06, second pass.
@@ -16955,10 +17544,81 @@ $("vendorAcctBtn").onclick=loadVendorAcct;
    would write blanks over nothing while risking an "Invalid column value" on
    this report's own strictness — a failure mode this project has paid for
    several times. */
+/* UNASSIGN AN ACCEPTED VENDOR - Task Tracker #51 (2026-10-29). User decisions: allowed at any
+   stage before the ticket is closed; the ticket goes back to READY FOR ASSIGNMENT for the agent to
+   invite again. Order matters - the status first, because it alone takes the job off the field
+   apps (they list only their working statuses, and their write guard refuses once it reads it).
+   Every other write is its own best-effort call, so one refused field cannot leave the job half
+   taken back:
+     1. ticket Status -> READY FOR ASSIGNMENT
+     2. ticket vendor / technician emails cleared (they put the job on those apps' lists)
+     3. ticket Assigned_Vendor, then Assigned_Technician, cleared
+     4. the vendor's invite (and any technician hand-off invite) marked Unassigned
+     5. one Task_Rejections history row, "Unassigned by office"
+   Distances, photos, times and fees already on the ticket are left exactly as they are. */
+const UNASSIGN_BLOCKED_STATUSES = ["CLOSED","RSP CLOSED"];
+function unassignAllowed(r){
+  const st = String((r && r[CONFIG.stageField]) || "").trim().toUpperCase();
+  return !!st && UNASSIGN_BLOCKED_STATUSES.indexOf(st) < 0;
+}
+async function unassignVendor(inviteId, btn){
+  if(!inviteId || !state.recordId) return;
+  if(btn){ btn.disabled=true; btn.textContent="Unassigning…"; }
+  const inv = (state.inviteStatuses||[]).find(function(x){ return String(x.ID)===String(inviteId); });
+  try{
+    const fresh = await apiGetById(state.recordId);
+    if(!unassignAllowed(fresh || state.record)){
+      toast("This ticket is already closed - it cannot be unassigned","err");
+      if(btn){ btn.disabled=false; btn.textContent="Unassign"; btn.removeAttribute("data-armed"); }
+      return;
+    }
+    await updateTicket(state.recordId, { [CONFIG.stageField]: "READY FOR ASSIGNMENT" });
+    const tries = [
+      { Vendor_Email:"", Vendor_Email1:"", Vendor_Email2:"" },
+      { Assigned_Technician_Email:"", Technician_Email:"", Technician_Email1:"", Technician_Emails:"" },
+      { Assigned_Vendor:"" },
+      { Assigned_Technician:"" }
+    ];
+    for(const data of tries){
+      try{ await updateTicket(state.recordId, data); }
+      catch(e){ console.warn("[Get-Rescue] unassignVendor: could not clear "+Object.keys(data).join(", ")+" (the ticket IS back to Ready for Assignment)", e); }
+    }
+    const marks = [inviteId];
+    (state.inviteStatuses||[]).forEach(function(x){
+      if(x && x.ID!=null && !inviteLookupSet(x.Vendor) && inviteLookupSet(x.Technician) && !inviteWasRejected(x)) marks.push(x.ID);
+    });
+    for(const id of marks){
+      try{ await apiUpdateReport(CONFIG.invitesReport, id, { Service_Acceptance_Next:"No", Status:"RSP REJECT" }); }
+      catch(e){ console.warn("[Get-Rescue] unassignVendor: invite "+id+" not marked Unassigned", e); }
+      try{ await apiUpdateReport(CONFIG.invitesReport, id, { Responded_At: fmtDateTime(new Date()) }); }catch(e){}
+    }
+    if(inv) await appendInviteHistory(inv, "Unassigned by office");
+    if(state.record){
+      state.record[CONFIG.stageField]="READY FOR ASSIGNMENT";
+      ["Assigned_Vendor","Assigned_Technician","Vendor_Email","Vendor_Email1","Vendor_Email2","Assigned_Technician_Email","Technician_Email","Technician_Email1","Technician_Emails"].forEach(function(k){ state.record[k]=""; });
+    }
+    INVITE_AUDIT_ROWS=null;
+    await loadInviteStatuses(state.recordId);
+    if(typeof pruneRejectedVendorsFromPick==="function") pruneRejectedVendorsFromPick();
+    const host=$("assignInviteStatus"); if(host) host.innerHTML=assignInviteStatusHtml();
+    toast("Vendor unassigned - the ticket is back to Ready for Assignment","ok");
+  }catch(e){
+    console.warn("[Get-Rescue] unassignVendor failed for invite", inviteId, e);
+    if(btn){ btn.disabled=false; btn.textContent="Unassign"; btn.removeAttribute("data-armed"); }
+    toast((e&&e.message)||"Could not unassign","err");
+  }
+}
 async function reinviteVendor(inviteId, btn){
   if(!inviteId) return;
   if(btn){ btn.disabled=true; btn.textContent="Sending…"; }
   try{
+    /* The timeout this re-invite is about to reset goes into the history first -
+       Task Tracker #19. Timed out at the moment the clock ran out. */
+    const oldInv=(state.inviteStatuses||[]).find(function(x){ return String(x.ID)===String(inviteId); });
+    if(oldInv && inviteStatusFor(oldInv).label==="Timed Out"){
+      const sent=inviteStartedAtDate(oldInv);
+      await appendInviteHistory(oldInv, "Timed out - no response within "+Math.round(INVITE_TIMEOUT_MS/60000)+" minutes", sent ? new Date(sent.getTime()+INVITE_TIMEOUT_MS) : null);
+    }
     await apiUpdateReport(CONFIG.invitesReport, inviteId, { Invited_At: fmtDateTime(new Date()) });
     /* Back to RSP IRA if the timeout released the ticket - 2026-10-23. The
        vendor app only lists RSP IRA invites, so without this a re-sent invite
@@ -16975,7 +17635,7 @@ async function reinviteVendor(inviteId, btn){
     // Zoho actually stored rather than what we hoped it stored.
     await loadInviteStatuses(state.recordId);
     const host=$("assignInviteStatus"); if(host) host.innerHTML=assignInviteStatusHtml();
-    toast("Invite sent again — the vendor has 2 minutes","ok");
+    toast("Invite sent again — the vendor has "+Math.round(INVITE_TIMEOUT_MS/60000)+" minutes","ok");
   }catch(e){
     console.warn("[Get-Rescue] reinviteVendor failed for invite", inviteId, e);
     if(btn){ btn.disabled=false; btn.textContent="Re-invite"; }
@@ -16988,8 +17648,19 @@ async function reinviteVendor(inviteId, btn){
 $("assignInviteStatus").addEventListener("click", function(e){
   const btn = e.target.closest("[data-reinvite]");
   if(btn) reinviteVendor(btn.getAttribute("data-reinvite"), btn);
+  /* Unassign: the first click arms it, a second within 6 seconds confirms (#51). */
+  const ub = e.target.closest("[data-unassign]");
+  if(ub){
+    if(ub.getAttribute("data-armed")!=="1"){
+      ub.setAttribute("data-armed","1"); ub.textContent="Confirm unassign?";
+      setTimeout(function(){ if(ub.isConnected && !ub.disabled){ ub.removeAttribute("data-armed"); ub.textContent="Unassign"; } }, 6000);
+      return;
+    }
+    unassignVendor(ub.getAttribute("data-unassign"), ub);
+  }
 });
 $("wizLinkCall").onclick=linkCallToTicket;
+$("wizRefresh").onclick=refreshOpenTicket;   // Task Tracker #31
 $("inviteAuditBtn").onclick=loadInviteAudit;
 $("inviteAuditBack").onclick=function(){ showView("dashboard"); };
 $("inviteAuditRefresh").onclick=function(){ INVITE_AUDIT_ROWS=null; loadInviteAudit(); };

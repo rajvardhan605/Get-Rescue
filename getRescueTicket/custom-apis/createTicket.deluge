@@ -171,6 +171,17 @@ string createTicket(string customerName, string mobile, string email, string veh
 		issueLongIds = List();
 		unmatchedIssues = "";
 		isTow = false;
+		/* Old and new issue names - Task Tracker #70 (2026-10-29). The client is renaming FBT,
+		   MT and zero degree in the issue master. A name sent in either form finds the issue,
+		   so WhatsApp and web tickets keep working whichever name the sender still uses.
+		   Only tried after the exact match below has failed. */
+		issueAliases = Map();
+		issueAliases.put("fbt","flat bed towing");
+		issueAliases.put("flat bed towing","fbt");
+		issueAliases.put("mt","wheel lift towing");
+		issueAliases.put("wheel lift towing","mt");
+		issueAliases.put("zero degree","zero degree towing");
+		issueAliases.put("zero degree towing","zero degree");
 		if(hasIssue)
 		{
 			issueNameList = issue.toList(",");
@@ -212,6 +223,30 @@ string createTicket(string customerName, string mobile, string email, string veh
 									issueLongIds.add(issueRec.ID.toString().toLong());
 									issueMatched = true;
 									matchedIssueType = ifnull(issueRec.Issue_Type,"").toString().toLowerCase();
+								}
+							}
+						}
+					}
+					if(issueMatched == false)
+					{
+						aliasWanted = "";
+						if(issueAliases.containKey(issueWanted))
+						{
+							aliasWanted = issueAliases.get(issueWanted);
+						}
+						if(aliasWanted != "")
+						{
+							for each aliasRec in Vehicle_Issue[ID != 0]
+							{
+								if(issueMatched == false)
+								{
+									aliasNameText = ifnull(aliasRec.Issue_Name,"").toString().trim().toLowerCase();
+									if(aliasNameText == aliasWanted)
+									{
+										issueLongIds.add(aliasRec.ID.toString().toLong());
+										issueMatched = true;
+										matchedIssueType = ifnull(aliasRec.Issue_Type,"").toString().toLowerCase();
+									}
 								}
 							}
 						}

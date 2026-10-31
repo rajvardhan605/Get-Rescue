@@ -290,12 +290,13 @@ function computeStats(tickets, range){
     return inRange(completionTime(r), range);
   });
   const completed = completedList.length;
-  const cancelled = tickets.filter(function(r){
+  const cancelledList = tickets.filter(function(r){
     const st=String(r.Status||"").trim().toUpperCase();
     const cs=String(r.Closure_Status||"").trim();
-    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Billable")) return false;
+    if(!(st==="RSP CANCELLED" || cs==="Cancelled" || cs==="Cancelled - Not Billable" || cs==="Cancelled - Billable")) return false;   // #58: new name accepted too
     return inRange(cancellationTime(r), range);
-  }).length;
+  });
+  const cancelled = cancelledList.length;
   const notConverted = tickets.filter(function(r){
     if(String(r.Closure_Status||"").trim()!=="Not Converted") return false;
     return inRange(closureTime(r), range);
@@ -304,13 +305,32 @@ function computeStats(tickets, range){
   // "ON DEMAND" is a plain sentinel string on Client (not a Lookup id for
   // that special walk-in client) — same check getRescueTicket's own
   // onDemandInvoicing()/clientDisplayName() already use.
-  const isOnDemand=function(r){ return String(r.Client||"").trim().toUpperCase()==="ON DEMAND"; };
+  /* Client is a Lookup, so it arrives as {ID, display_value} - comparing the raw value
+     to "ON DEMAND" never matched and on-demand revenue always read 0 (Task Tracker
+     #81.3, 2026-10-27). Reads the display text, the same way the vendor app's
+     isOnDemandTicket() does; a plain string still works as before. */
+  const isOnDemand=function(r){
+    const raw = r.Client;
+    const txt = (raw && typeof raw==="object") ? (raw.display_value || raw.zc_display_value || raw.value || "") : (raw==null ? "" : raw);
+    return String(txt).trim().toUpperCase()==="ON DEMAND";
+  };
   const sumFee=function(list){ return list.reduce(function(acc,r){ return acc+(Number(r.Total_Service_Fee)||0); }, 0); };
   /* Revenue follows COMPLETED tickets, not created ones - money is earned when
      the job finishes. Uses completedList above so the two figures can never
      disagree about which tickets counted. */
-  const revRSR = sumFee(completedList.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW"; }));
-  const revTOW = sumFee(completedList.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; }));
+  /* Completed AND cancelled - Task Tracker #81.3 ("total service fee for all completed
+     and cancelled cases"). A ticket in both lists (vendor closed, agent then marked it
+     cancelled) is counted once. */
+  const revSeen = {};
+  const revBase = completedList.concat(cancelledList).filter(function(r){ const k=String(r.ID); if(revSeen[k]) return false; revSeen[k]=true; return true; });
+  const revRSR = sumFee(revBase.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()!=="TOW"; }));
+  const revTOW = sumFee(revBase.filter(function(r){ return isOnDemand(r) && String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; }));
+  /* Completed tickets split four ways - Task Tracker #81.2. */
+  const isTowT = function(r){ return String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW"; };
+  const companyCompleted = completedList.filter(function(r){ return !isOnDemand(r); }).length;
+  const onDemandCompleted = completedList.filter(isOnDemand).length;
+  const towCompleted = completedList.filter(isTowT).length;
+  const repairCompleted = completedList.filter(function(r){ return !isTowT(r); }).length;
 
   const withBoth = mine.map(function(r){
     const created=parseAnyDateTime(r.Added_Time);
@@ -414,8 +434,16 @@ function computeStats(tickets, range){
 
   const slaResponseMins = avgSpanMins(completedList, function(r){ return r.Added_Time; }, acceptTimeOf);
   const slaServiceMins  = avgSpanMins(completedList, acceptTimeOf, function(r){ return r.RSP_Completion_Time || completionTime(r); });
+  /* Task Tracker #81.5 (2026-10-27). Response = Created -> Confirmed (Confirmation_Time is
+     stamped when the ticket becomes Ready / Scheduled). Assignment = Ready for
+     Assignment -> Accepted, i.e. Confirmation_Time -> accept time; tickets booked for
+     LATER are left out because they wait for their slot on purpose. The two older
+     figures above are still computed, just no longer shown. */
+  const slaConfirmMins = avgSpanMins(completedList, function(r){ return r.Added_Time; }, function(r){ return r.Confirmation_Time; });
+  const slaAssignMins  = avgSpanMins(completedList.filter(function(r){ return String(r.Time_of_service||"").toUpperCase()!=="LATER"; }), function(r){ return r.Confirmation_Time; }, acceptTimeOf);
 
-  return { newCount, completed, cancelled, notConverted, revRSR, revTOW, avgAssignMins, slaResponseMins, slaServiceMins, billed, collected, outstanding, modeRows };
+  return { newCount, completed, cancelled, notConverted, revRSR, revTOW, avgAssignMins, slaResponseMins, slaServiceMins, billed, collected, outstanding, modeRows,
+           companyCompleted, onDemandCompleted, towCompleted, repairCompleted, slaConfirmMins, slaAssignMins };
 }
 
 const ICON_TICKET='<svg viewBox="0 0 24 24" fill="none"><path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
@@ -438,6 +466,9 @@ function hoursMins(mins){
   return rem ? (h+"h "+rem+"m") : (h+"h");
 }
 
+/* Collections sections hidden - Task Tracker #81.4 (2026-10-27, "COLLECTIONS section
+   can be removed completely"). Still computed; true brings both sections back. */
+const SHOW_COLLECTIONS = false;
 function render(stats, callStats){
   const NA = "Not available";
   /* callStats === null means Call_Log itself could not be read, so the tiles
@@ -461,6 +492,10 @@ function render(stats, callStats){
       ${statCard(ICON_TICKET, stats.completed, "Completed Tickets")}
       ${statCard(ICON_TICKET, stats.cancelled, "Cancelled Tickets")}
       ${statCard(ICON_TICKET, stats.notConverted, "Not Converted Tickets")}
+      ${statCard(ICON_TICKET, stats.companyCompleted, "Company Tickets (completed)")}
+      ${statCard(ICON_TICKET, stats.onDemandCompleted, "On-Demand Tickets (completed)")}
+      ${statCard(ICON_TICKET, stats.towCompleted, "TOW Tickets (completed)")}
+      ${statCard(ICON_TICKET, stats.repairCompleted, "Repair Tickets (completed)")}
     </div>
     <div class="section-title">Revenue &amp; Efficiency</div>
     <div class="grid">
@@ -468,7 +503,7 @@ function render(stats, callStats){
       ${statCard(ICON_MONEY, money(stats.revTOW), "On-Demand Revgen (TOW)")}
       ${stats.avgAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Time (Creation to Assignment)") : statCard(ICON_CLOCK, stats.avgAssignMins+" min", "Avg Time (Creation to Assignment)")}
     </div>
-    <div class="section-title">Collections</div>
+    ${SHOW_COLLECTIONS ? `<div class="section-title">Collections</div>
     <div class="grid">
       ${statCard(ICON_MONEY, money(stats.billed), "Total Billed")}
       ${statCard(ICON_MONEY, money(stats.collected), "Collected")}
@@ -479,11 +514,11 @@ function render(stats, callStats){
       ${stats.modeRows.length
         ? stats.modeRows.map(function(m){ return statCard(ICON_MONEY, money(m.amount), m.mode); }).join("")
         : statCard(ICON_MONEY, money(0), "No collections in this period")}
-    </div>
+    </div>` : ""}
     <div class="section-title">SLA Adherence</div>
     <div class="grid">
-      ${stats.slaResponseMins==null ? statCard(ICON_CLOCK, "—", "Avg Response Time (Created → Accepted)") : statCard(ICON_CLOCK, hoursMins(stats.slaResponseMins), "Avg Response Time (Created → Accepted)")}
-      ${stats.slaServiceMins==null ? statCard(ICON_CLOCK, "—", "Avg Service Time (Accepted → Completed)") : statCard(ICON_CLOCK, hoursMins(stats.slaServiceMins), "Avg Service Time (Accepted → Completed)")}
+      ${stats.slaConfirmMins==null ? statCard(ICON_CLOCK, "—", "Avg Response Time (Created → Confirmed)") : statCard(ICON_CLOCK, hoursMins(stats.slaConfirmMins), "Avg Response Time (Created → Confirmed)")}
+      ${stats.slaAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Assignment Time (Ready → Accepted)") : statCard(ICON_CLOCK, hoursMins(stats.slaAssignMins), "Avg Assignment Time (Ready → Accepted)")}
     </div>
   `;
 }
