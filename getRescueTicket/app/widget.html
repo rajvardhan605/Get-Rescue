@@ -1359,6 +1359,24 @@ function leadSourceForSave(r){
   const existing = String(readVal(r, "Lead_Source") || "").trim();
   return existing || "Call";
 }
+/* Agent-run status flow - Task Tracker 82.2 / 82.5 (2026-11-02). Before this, an agent-run ticket
+   never reached REMAINING FEE DUE (each page wrote its OWN status, one page behind), so Save Payment
+   could never close it. Now a page's Save moves the ticket to the NEXT page's status once that page's
+   own data is filled. agentStepDue() = "the agent runs this ticket and it is still at this page":
+   required checks apply only then, so going back to an earlier page and saving just saves. */
+function fieldFilled(v){ return v!=null && String(v).trim()!==""; }
+function agentStepDue(r, stageStatuses){ return acceptanceIsAgentManual(r||{}) && statusStillEarly(r||{}, stageStatuses); }
+/* 82.2 #3 / 82.5 #5: the ticket closes only once the balance is received - nothing owed, or Payment
+   Received = Yes and (Payment Gateway, or another method with its receipt photo). */
+function agentPaymentClosesTicket(r){
+  if(!r) return false;
+  if(!(Number(r.Remaining_Fee)>0)) return true;
+  if(r.Payment_received!=="Yes") return false;
+  if(r.Payment_Method_Final==="Payment Gateway") return true;
+  if(!fieldFilled(r.Payment_Method_Final)) return false;
+  const pending = (typeof state!=="undefined" && state && state.files) ? state.files.Upload_Photo_of_receipt : null;
+  return !!pending || fileCountFor(r.Upload_Photo_of_receipt) > 0;
+}
 function statusStillEarly(r, stageStatuses){
   const cur=String(r.Status||"").trim().toUpperCase();
   if(!cur) return true;
@@ -2302,6 +2320,8 @@ const STAGES = [
     // payment regardless of what is on screen here.
     { n:"Booking_Fee_Transaction_ID", l:"BF Transaction ID", t:"text", row:"rate5",
       when:(s)=>!!s.Payment_Method && s.Payment_Method!=="Cash", closureAlways:true },   // closure page shows it even for Cash (2026-10-31)
+    // #97 (2026-11-02): the bank / UPI reference paymentWebhook saves for an online booking-fee payment. Display only.
+    { n:"__BFBankReferenceDisplay", l:"BF Bank Reference (UTR)", t:"computed", closureShow:true, when:(s)=>fieldFilled(s.BF_Bank_Reference), compute:(r)=>r.BF_Bank_Reference||"" },
     /* Task Tracker item 8, "time of receiving booking fee" - 2026-10-13. Stamped
        by this step's own extra() hook the moment the fee goes PAID, and never
        displayed until now. Read-only: it records when something happened. */
@@ -2948,8 +2968,11 @@ const STAGES = [
       const cur=String(r.Status||"").trim().toUpperCase();
       if(cur!=="RSP ON THE WAY" && cur!=="RSP CANCELLED") return r.Status;
       if(acceptanceIsAgentManual(r) && r.Cancellation_Time) return "RSP CANCELLED";
+      // 82.2 #1 / 82.5 #1 (2026-11-02): Reach Time filled -> the next page's status.
+      if(acceptanceIsAgentManual(r) && cur==="RSP ON THE WAY" && fieldFilled(r.Reach_Time)) return "WORK IN PROGRESS";
       return r.Status;
     },
+    nextStepKey:(r)=> (acceptanceIsAgentManual(r) && fieldFilled(r.Cancellation_Time)) ? "agentClosure" : "",   // cancelled -> Closure page
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3080,7 +3103,9 @@ const STAGES = [
     // Service_Acceptance/ETA fields (client soft-test feedback: "REACH Page
     // needs to display REACH BDL Time") — was hidden entirely outside
     // Agent-manual mode; now always shown, readonly() gates editing instead.
-    { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
+    { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime",
+      req:(s)=>agentStepDue(s, ["RSP ON THE WAY"]) && !fieldFilled(s.Cancellation_Time),   // 82.2 #1 / 82.5 #1: Reach Time or Cancellation Time
+      hint:(s)=> agentStepDue(s, ["RSP ON THE WAY"]) ? "Or fill Cancellation Time if the vendor cancelled." : "" },
     { n:"Distance_Reach_To_Breakdown", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true },   // 82 #2 / 82.1 #2 - saved value kept
     /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (RSR) - 2026-10-13.
        Written by the field apps at Reach since September; the closure page had
@@ -3155,7 +3180,12 @@ const STAGES = [
     // guard means the agent merely opening/saving this page can never
     // prematurely advance Status ahead of what actually happened.
     statuses:["WORK IN PROGRESS"],
-    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["RSP ON THE WAY"])) ? "WORK IN PROGRESS" : r.Status,
+    status:(r)=>{
+      if(!acceptanceIsAgentManual(r)) return r.Status;
+      // 82.2 #2 (2026-11-02): done (or CX reject) -> Final Payment. The closure page shows CX REJECT from the reason.
+      if(statusStillEarly(r, ["RSP ON THE WAY","WORK IN PROGRESS"]) && fieldFilled(r.RSP_Completion_Time) && fieldFilled(r.Issue_Resolved)) return "REMAINING FEE DUE";
+      return statusStillEarly(r, ["RSP ON THE WAY"]) ? "WORK IN PROGRESS" : r.Status;
+    },
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3173,7 +3203,7 @@ const STAGES = [
     // "Vendor Accepting via App" mode, same principle as those two stages
     // own gates.
     fields:[
-    { n:"Issue_Resolved", l:"Issue Resolved?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"Issue_Resolved", l:"Issue Resolved?", t:"radio", o:["Yes","No"], readonly:(s)=>!acceptanceIsAgentManual(s), req:(s)=>agentStepDue(s, ["RSP ON THE WAY","WORK IN PROGRESS"]) },   // 82.2 #2
     { n:"Unresolved_Note", l:"Issue Not Resolved — Notes", t:"textarea", when:(s)=>!!s.Unresolved_Note, full:true, readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Image_Upload3", l:"Pre-service Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
     { n:"Image_Upload4", l:"Post-service Photo", t:"file", readonly:(s)=>!acceptanceIsAgentManual(s) },
@@ -3188,7 +3218,7 @@ const STAGES = [
     // reach Zoho unvalidated, rejected with "Enter a valid date format". A
     // real datetime-local picker only ever produces an unambiguous ISO value
     // — see toDatetimeLocalValue()'s own comment.
-    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s), req:(s)=>agentStepDue(s, ["RSP ON THE WAY","WORK IN PROGRESS"]) },   // 82.2 #2
     // Office_To_Mechanic/Mechanic_To_Breakdown/Breakdown_To_Office/
     // Roundtrip_Distance moved to Final Closure's own "Distance & ETA
     // Metrics" group 2026-08-04 (per user request) — see DISTANCE_METRICS_FIELDS.
@@ -3323,8 +3353,11 @@ const STAGES = [
       const cur=String(r.Status||"").trim().toUpperCase();
       if(cur!=="RSP ON THE WAY" && cur!=="RSP CANCELLED") return r.Status;
       if(acceptanceIsAgentManual(r) && r.Cancellation_Time) return "RSP CANCELLED";
+      // 82.2 #1 / 82.5 #1 (2026-11-02): Reach Time filled -> the next page's status.
+      if(acceptanceIsAgentManual(r) && cur==="RSP ON THE WAY" && fieldFilled(r.Reach_Time)) return "LOADING";
       return r.Status;
     },
+    nextStepKey:(r)=> (acceptanceIsAgentManual(r) && fieldFilled(r.Cancellation_Time)) ? "agentClosure" : "",   // cancelled -> Closure page
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3417,7 +3450,9 @@ const STAGES = [
     // Service_Acceptance/ETA fields (client soft-test feedback: "REACH Page
     // needs to display REACH BDL Time") — was hidden entirely outside
     // Agent-manual mode; now always shown, readonly() gates editing instead.
-    { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime" },
+    { n:"Reach_Time", l:"Reach Time", readonly:(s)=>!acceptanceIsAgentManual(s), t:"datetime",
+      req:(s)=>agentStepDue(s, ["RSP ON THE WAY"]) && !fieldFilled(s.Cancellation_Time),   // 82.2 #1 / 82.5 #1: Reach Time or Cancellation Time
+      hint:(s)=> agentStepDue(s, ["RSP ON THE WAY"]) ? "Or fill Cancellation Time if the vendor cancelled." : "" },
     { n:"Distance_Reach_To_Breakdown_TOW", l:"Reach Location → Breakdown (km)", t:"number", when:acceptanceIsAgentManual, wizardHide:true, closureHide:true },   // 82.3 #2 / 82.4 #2 - saved value kept
     /* Task Tracker item 19, "VENDOR REACH BDL LOCATION" (TOW) - 2026-10-13.
        Written by the field apps at Reach since September; the closure page had
@@ -3459,7 +3494,16 @@ const STAGES = [
     // ("RSP ON THE WAY", set at Accept) instead of this stage's own output,
     // plus the same acceptanceIsAgentManual(r) gate.
     statuses:["LOADING"],
-    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["RSP ON THE WAY"])) ? "LOADING" : r.Status,
+    status:(r)=>{
+      if(!acceptanceIsAgentManual(r)) return r.Status;
+      // 82.5 #2 (2026-11-02): CX reject with its completion time -> Final Payment; picked up -> At Drop.
+      if(statusStillEarly(r, ["RSP ON THE WAY","LOADING"])){
+        if(fieldFilled(r.Rejection_Reason)){ if(fieldFilled(r.RSP_Completion_Time)) return "REMAINING FEE DUE"; }
+        else if(fieldFilled(r.Pickup_Time)) return "TO DROP LOCATION";
+      }
+      return statusStillEarly(r, ["RSP ON THE WAY"]) ? "LOADING" : r.Status;
+    },
+    nextStepKey:(r)=> (acceptanceIsAgentManual(r) && fieldFilled(r.Rejection_Reason)) ? "payment" : "",   // CX reject -> Final Payment
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3491,7 +3535,11 @@ const STAGES = [
     // stamped automatically by the vendor/driver's own vehiclePicked() action
     // at this exact step (confirmed live write point in vendorTicket) —
     // Agent-entering-mode only, same reasoning as this stage's own siblings above.
-    { n:"Pickup_Time", l:"Vehicle Picked Up Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) }
+    { n:"Pickup_Time", l:"Vehicle Picked Up Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s), req:(s)=>agentStepDue(s, ["RSP ON THE WAY","LOADING"]) && !fieldFilled(s.Rejection_Reason) },   // 82.5 #2
+    /* 82.3 #9 (2026-11-02): a CX reject at Loading ends the job here, so its Completion Time is entered
+       here; shown only once a CX Reject Reason is chosen. The vendor apps stamp the same field. */
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s),
+      when:(s)=>fieldFilled(s.Rejection_Reason), req:(s)=>agentStepDue(s, ["RSP ON THE WAY","LOADING"]) && fieldFilled(s.Rejection_Reason) }
   ]},
   { key:"wipReachedTow", branch:"tow", bucket:2, short:"At Drop", title:"Reached Drop Location",
     desc:"Odometer and drop-location proof.", save:"Save",
@@ -3502,7 +3550,11 @@ const STAGES = [
     // instead of this stage's own output, plus the same
     // acceptanceIsAgentManual(r) gate.
     statuses:["TO DROP LOCATION"],
-    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["LOADING"])) ? "TO DROP LOCATION" : r.Status,
+    status:(r)=>{
+      if(!acceptanceIsAgentManual(r)) return r.Status;
+      if(statusStillEarly(r, ["LOADING","TO DROP LOCATION"]) && fieldFilled(r.Drop_Location_Arrival_Time)) return "UNLOADING";   // 82.5 #3
+      return statusStillEarly(r, ["LOADING"]) ? "TO DROP LOCATION" : r.Status;
+    },
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3542,7 +3594,7 @@ const STAGES = [
     // RSP_Completion_Time's own comment just above for the full rationale —
     // free-form text lets an ambiguous date string reach Zoho unvalidated and
     // get rejected with "Enter a valid date format"). Same fix applied here.
-    { n:"Drop_Location_Arrival_Time", l:"Drop Arrival Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) },
+    { n:"Drop_Location_Arrival_Time", l:"Drop Arrival Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s), req:(s)=>agentStepDue(s, ["LOADING","TO DROP LOCATION"]) },   // 82.5 #3
     // "RSP_Drop_Location_Lat"/"Lon" removed here 2026-08-04 (user request) —
     // that pair was never a confirmed field (guessed name, Decimal type, same
     // "exceeded maximum digits" risk RSP_Start_Latitude/Longitude was
@@ -3609,7 +3661,11 @@ const STAGES = [
     // previous stage) instead of this stage's own output, plus the same
     // acceptanceIsAgentManual(r) gate.
     statuses:["UNLOADING"],
-    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["TO DROP LOCATION"])) ? "UNLOADING" : r.Status,
+    status:(r)=>{
+      if(!acceptanceIsAgentManual(r)) return r.Status;
+      if(statusStillEarly(r, ["TO DROP LOCATION","UNLOADING"]) && fieldFilled(r.RSP_Completion_Time)) return "REMAINING FEE DUE";   // 82.5 #4
+      return statusStillEarly(r, ["TO DROP LOCATION"]) ? "UNLOADING" : r.Status;
+    },
     // viewOnly REMOVED 2026-08-07 (explicit user request: "show all the
     // field editable in every steps so agent enter details") — see
     // `acceptance`'s own matching 2026-08-07 comment for the original
@@ -3646,7 +3702,7 @@ const STAGES = [
     // reach Zoho unvalidated, rejected with "Enter a valid date format". A
     // real datetime-local picker only ever produces an unambiguous ISO value
     // — see toDatetimeLocalValue()'s own comment.
-    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s) }
+    { n:"RSP_Completion_Time", l:"Completion Time", t:"datetime", readonly:(s)=>!acceptanceIsAgentManual(s), req:(s)=>agentStepDue(s, ["TO DROP LOCATION","UNLOADING"]) }   // 82.5 #4
   ]},
 
   /* ---- shared late stages ---- */
@@ -3669,7 +3725,10 @@ const STAGES = [
        vendor-side stage already carries this half of the guard; payment did not,
        so Save here closed a vendor-run job out from under the vendor. When the
        vendor runs it, their own app writes RSP CLOSED - this never needed to. */
-    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["REMAINING FEE DUE"])) ? "RSP CLOSED" : r.Status,
+    status:(r)=> (acceptanceIsAgentManual(r) && statusStillEarly(r, ["REMAINING FEE DUE"]) && agentPaymentClosesTicket(r)) ? "RSP CLOSED" : r.Status,   // 82.2 #3 / 82.5 #5: only once paid
+    // Not paid yet: saved, back to the dashboard (same as any step whose required action is pending).
+    canAdvance:(r)=> !acceptanceIsAgentManual(r) || !statusStillEarly(r, ["REMAINING FEE DUE"]) || agentPaymentClosesTicket(r),
+    blockedMessage:"Saved. The ticket closes (RSP CLOSED) when Payment Received is Yes \u2014 with the receipt photo unless paid by Payment Gateway.",
     // Remaining_Fee_Receipt_Time / RSP_Closure_Time (2026-09-07, user-
     // provided LOCATIONS-DISTANCES-DATETIME spec, "#14"/"#15") — both share
     // the exact same trigger per spec (VENDOR/AGENT clicking "PAYMENT
@@ -3690,6 +3749,7 @@ const STAGES = [
          stage status now carries. */
       if(!acceptanceIsAgentManual(r)) return {};
       if(!statusStillEarly(r, ["REMAINING FEE DUE"])) return {};
+      if(!agentPaymentClosesTicket(r)) return {};   // 82.2 #3: the closure time is the moment it is paid
       if(r[closureField]) return {};
       const stampedAt = fmtDateTime(new Date());
       const out = { Remaining_Fee_Receipt_Time: stampedAt };
@@ -4019,7 +4079,11 @@ const STAGES = [
     // 82 #6 / 82.1 #6 (2026-10-31): the shared field showed the booking-fee value here. Hidden, saved as
     // before; the RF status below is worked out from the remaining-fee payment itself.
     { n:"Payment_Status", l:"Payment Status", t:"text", readonly:true, wizardHide:true, closureHide:true },
-    { n:"__RFPaymentStatus", l:"RF Payment Status", t:"computed", closureShow:true, compute:rfPaymentStatusText, emptyHint:"—" }
+    { n:"__RFPaymentStatus", l:"RF Payment Status", t:"computed", closureShow:true, compute:rfPaymentStatusText, emptyHint:"—" },
+    // #97 (2026-11-02): the Zoho Payments Payment ID and the bank / UPI reference of an online remaining-fee
+    // payment, both saved by paymentWebhook. The Payment ID was saved before but never shown. Display only.
+    { n:"__RFTransactionIdDisplay", l:"RF Transaction ID (Zoho Payments)", t:"computed", closureShow:true, when:(s)=>fieldFilled(s.Remaining_Fee_Transaction_ID), compute:(r)=>r.Remaining_Fee_Transaction_ID||"" },
+    { n:"__RFBankReferenceDisplay", l:"RF Bank Reference (UTR)", t:"computed", closureShow:true, when:(s)=>fieldFilled(s.RF_Bank_Reference), compute:(r)=>r.RF_Bank_Reference||"" }
   ]},
   /* the old "closure" stage (branch:"final", __summary + Remarks) was removed
      2026-07-30 — ticket closure stopped being the last step of this linear
@@ -14308,6 +14372,7 @@ const RERENDER=["Time_of_service","Vehicle","Client","Preferred_Vendor",
   // step, so Booking_Fee's new isReadonly() check wouldn't visually take
   // effect until the agent navigated away and back.
   "Payment_Status",
+  "Rejection_Reason",   // 82.3 #9 (2026-11-02): shows Loading's Completion Time as soon as a CX reason is picked
   // Added 2026-08-07 — flipping Acceptance_Mode to "Agent Entering on Behalf
   // of Vendor" needs an immediate re-render so renderWizard()'s own
   // seedAcceptanceVendorFields() call actually fires and fills in the vendor
@@ -14404,7 +14469,7 @@ function agentClosureEditableFieldNames(){
    written over a real value, and nothing is written unless it actually
    changed. */
 const PAYMENT_POLL_STEPS = ["quote","payment"];
-const PAYMENT_STATUS_FIELDS = ["Payment_Status","Payment_received","Booking_Fee_Transaction_ID","Remaining_Fee_Transaction_ID","Zoho_Payment_URL","Zoho_Payment_URL_Remaining"];
+const PAYMENT_STATUS_FIELDS = ["Payment_Status","Payment_received","Booking_Fee_Transaction_ID","Remaining_Fee_Transaction_ID","Zoho_Payment_URL","Zoho_Payment_URL_Remaining","BF_Bank_Reference","RF_Bank_Reference"];   // #97: refresh the references too
 function stopAgentClosurePoll(){ if(AGENT_CLOSURE_POLL_TIMER){ clearInterval(AGENT_CLOSURE_POLL_TIMER); AGENT_CLOSURE_POLL_TIMER=null; } }
 function startAgentClosurePollIfNeeded(){
   stopAgentClosurePoll(); // never let two timers stack across re-renders
@@ -15842,6 +15907,8 @@ async function saveFieldEditor(){
         Object.assign(payload, originStage.extra(state.record));
       }
       if(Object.keys(payload).length) await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
+      // #63 (2026-11-02): edits made from the closure page pop-up are logged like any page Save.
+      if(Object.keys(payload).length) logTaskEdits(state.recordId, payload).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });
     }
     // rerenderCurrentView() (2026-08-07, was a hardcoded renderClosure() call)
     // — the closure summary this popup edits is now ALSO reachable as the
@@ -16085,6 +16152,25 @@ async function logTaskEdits(recordId, payload){
 function refreshTaskEditSnapshot(payload){
   if(!TASK_EDIT_SNAPSHOT || !payload) return;
   try{ Object.keys(payload).forEach(function(nm){ TASK_EDIT_SNAPSHOT[nm]=payload[nm]; }); }catch(e){}
+}
+/* Task Tracker #63, option 1 (2026-11-02). One audit row for an ACTION rather than a field edit
+   (ticket created, vendor re-invited). Same form and the same best-effort rule as logTaskEdits. */
+async function logTaskAction(recordId, label, was, now){
+  try{
+    const fn = resolve("addRecords");
+    if(!fn || !recordId) return;
+    await fn({ app_name:CONFIG.appName, form_name:TASK_EDIT_LOG_FORM, payload:{ data:{
+      RSID: recordId, Field_Label: label, Old_Value: editLogClip(was||""), New_Value: editLogClip(now||""),
+      Changed_By: LOGIN_EMAIL || "", Changed_At: fmtDateTime(new Date())
+    } } });
+  }catch(e){ console.warn("[Get-Rescue] logTaskAction: audit row \""+label+"\" not written (non-blocking)", e); }
+}
+/* Edits made by an action that read the ticket fresh first (unassign / re-invite): the "before" is
+   that fresh copy, not the snapshot taken when the ticket was opened - the vendor may have moved
+   it since. Only the fields in `payload` are re-based. */
+function logTaskEditsSince(recordId, payload, freshRec){
+  try{ if(TASK_EDIT_SNAPSHOT && freshRec) Object.keys(payload).forEach(function(k){ TASK_EDIT_SNAPSHOT[k]=freshRec[k]; }); }catch(e){}
+  return logTaskEdits(recordId, payload);
 }
 /* Read side. Returns [] on any failure, including the form not existing. */
 /* Filled when a ticket opens, read by the __TaskEditLog htmlblock - the same
@@ -16422,6 +16508,8 @@ async function saveStep(advance){
          edit, so the values just saved become the baseline and the NEXT save is
          what gets audited. */
       snapshotTaskForEditLog(state.record);
+      // #63 (2026-11-02): the creation itself is recorded, once.
+      logTaskAction(id, "Ticket created", "", [readVal(state.record, CONFIG.nameField), state.record.Phone_Number1].filter(function(x){ return x!=null && String(x).trim()!==""; }).join(" \u00b7 ")).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });
       /* LOCK THE TICKET WE JUST CREATED — 2026-10-03, client-reported:
          "while CREATING a new ticket, when the agent reaches the second page
          (booking fee page), other agents are still allowed to open and edit
@@ -16601,7 +16689,10 @@ async function saveStep(advance){
       toast(msg || (vendorDrivenSave ? "Saved. The vendor is handling this case in their own app \u2014 reopen it from the dashboard to follow their progress." : "Saved — required action still pending"),"ok");
       return backToDash();
     } else if(advance && state.stepIndex<state.path.length-1){
-      state.stepIndex++;
+      // nextStepKey - 82.2 / 82.5 (2026-11-02): cancel -> Closure, CX reject at Loading -> Final Payment.
+      const jumpKey = typeof step.nextStepKey==="function" ? step.nextStepKey(state.record) : "";
+      const jumpIdx = jumpKey ? state.path.findIndex(function(x){ return x.key===jumpKey; }) : -1;
+      if(jumpIdx>state.stepIndex) state.stepIndex=jumpIdx; else state.stepIndex++;
       if(state.stepIndex>state.maxStepIndex) state.maxStepIndex=state.stepIndex; // unlocks the next step now that this one's required fields are saved
       renderWizard(); scrollToTop();
     }
@@ -16668,7 +16759,12 @@ async function cancelWizard(){
   // "LOCATION REQUEST"/"SERVICE FEE QUOTE" if a required action wasn't done)
   // so cancelling isn't silently different from saving without completing it.
   if(state.recordId){
-    try{ collectStep(false); setPath(); await saveWithCoordFallback(buildPayload(state.path[state.stepIndex]), (p)=>updateTicketTolerant(state.recordId,p)); }
+    try{
+      collectStep(false); setPath();
+      const stopPayload=buildPayload(state.path[state.stepIndex]);
+      await saveWithCoordFallback(stopPayload, (p)=>updateTicketTolerant(state.recordId,p));
+      logTaskEdits(state.recordId, stopPayload).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });   // #63: logged like Save
+    }
     catch(e){ console.warn("cancel: best-effort save failed", e); }
   }
   backToDash();
@@ -17597,6 +17693,8 @@ async function unassignVendor(inviteId, btn){
       state.record[CONFIG.stageField]="READY FOR ASSIGNMENT";
       ["Assigned_Vendor","Assigned_Technician","Vendor_Email","Vendor_Email1","Vendor_Email2","Assigned_Technician_Email","Technician_Email","Technician_Email1","Technician_Emails"].forEach(function(k){ state.record[k]=""; });
     }
+    // #63 (2026-11-02): status and vendor cleared by Unassign, logged against the fresh copy read above.
+    logTaskEditsSince(state.recordId, { [CONFIG.stageField]:"READY FOR ASSIGNMENT", Assigned_Vendor:"", Assigned_Technician:"" }, fresh).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });
     INVITE_AUDIT_ROWS=null;
     await loadInviteStatuses(state.recordId);
     if(typeof pruneRejectedVendorsFromPick==="function") pruneRejectedVendorsFromPick();
@@ -17629,12 +17727,14 @@ async function reinviteVendor(inviteId, btn){
     if(freshTicket && freshTicketSt===INVITE_RELEASE_TO){
       await updateTicket(state.recordId, { [CONFIG.stageField]: "RSP IRA (INVITE RESPONSE AWAITED)" });
       if(state.record) state.record[CONFIG.stageField] = "RSP IRA (INVITE RESPONSE AWAITED)";
+      logTaskEditsSince(state.recordId, { [CONFIG.stageField]:"RSP IRA (INVITE RESPONSE AWAITED)" }, freshTicket).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });   // #63
       console.log("[Get-Rescue] reinviteVendor: ticket", state.recordId, "READY FOR ASSIGNMENT -> RSP IRA (invite re-sent)");
     }
     // Re-read rather than patching the cached row, so the panel shows what
     // Zoho actually stored rather than what we hoped it stored.
     await loadInviteStatuses(state.recordId);
     const host=$("assignInviteStatus"); if(host) host.innerHTML=assignInviteStatusHtml();
+    logTaskAction(state.recordId, "Vendor re-invited", "", editLogText(oldInv && oldInv.Vendor)).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });   // #63
     toast("Invite sent again — the vendor has "+Math.round(INVITE_TIMEOUT_MS/60000)+" minutes","ok");
   }catch(e){
     console.warn("[Get-Rescue] reinviteVendor failed for invite", inviteId, e);

@@ -329,6 +329,73 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 			}
 		}
 		info "  structural read - reference_id=[" + refIdText + "] | payment_id=[" + txnId + "] | recordId found=" + foundRecordId + " | recordId=" + resolvedRecordId;
+		// BANK / UPI REFERENCE (UTR) - Task Tracker #97, 2026-11-02. The Payment ID above is Zoho
+		// Payments' own id. A payment can also carry the bank / UPI reference the customer sees. Its key
+		// is not yet confirmed from a live delivery, so the usual names are tried, and every payment's
+		// own field names are logged - the first real payment shows exactly what Zoho sends.
+		// Read only; it is saved on its own AFTER the payment write (see below).
+		bankRef = "";
+		bankRefKeys = List();
+		bankRefKeys.add("bank_reference_number");
+		bankRefKeys.add("bank_reference_id");
+		bankRefKeys.add("bank_ref_no");
+		bankRefKeys.add("utr");
+		bankRefKeys.add("utr_number");
+		bankRefKeys.add("rrn");
+		refSources = List();
+		if(paymentMap != null)
+		{
+			refSources.add(paymentMap);
+		}
+		try
+		{
+			if(paymentMap != null)
+			{
+				info "  #97 payment fields: " + paymentMap.keys().toString();
+			}
+			refPayList = List();
+			if(paymentMap != null)
+			{
+				if(paymentMap.get("payments") != null)
+				{
+					refPayList = paymentMap.get("payments").toList();
+				}
+			}
+			for each refPay in refPayList
+			{
+				refSources.add(refPay);
+				info "  #97 payment entry fields: " + refPay.keys().toString();
+				if(refPay.get("payment_method") != null)
+				{
+					refSources.add(refPay.get("payment_method"));
+				}
+			}
+		}
+		catch (refListEx)
+		{
+			info "  #97 payments could not be listed for a bank reference - skipping: " + refListEx.toString();
+		}
+		for each refSrc in refSources
+		{
+			try
+			{
+				for each refKey in bankRefKeys
+				{
+					if(bankRef == "")
+					{
+						if(refSrc.get(refKey) != null)
+						{
+							bankRef = refSrc.get(refKey).toString().trim();
+						}
+					}
+				}
+			}
+			catch (refKeyEx)
+			{
+				info "  #97 one payment node could not be read for a bank reference - skipping it: " + refKeyEx.toString();
+			}
+		}
+		info "  #97 bank reference=[" + bankRef + "]";
 
 		// Fee type comes from reference_id when the structural read found one
 		// (that is the field the app puts the -BF / -RF suffix on), falling back
@@ -715,6 +782,32 @@ string paymentWebhook(string event_type, string event_id, map event_object, stri
 			return "{\"code\": \"SUCCESS\", \"result\": \"FAILURE_LOGGED\", \"updated\": true, \"fee\": \"" + feeLabelEarly + "\", \"recordId\": \"" + resolvedRecordId + "\", \"transaction_id\": \"" + txnId + "\", \"written_via\": \"" + writePathFail + "\", \"message\": \"A FAILED " + feeLabelEarly + " payment attempt was appended to this ticket's Payment Failures log. No payment fields were changed.\"}";
 		}
 
+		// #97 - saved on its own, after the payment fields are already written, so a problem here can
+		// never cost the payment. Nothing is written when Zoho sent no bank reference.
+		if(bankRef != "")
+		{
+			try
+			{
+				refRec = Create_Case[ID == resolvedRecordId];
+				if(isBookingFee)
+				{
+					refRec.BF_Bank_Reference = bankRef;
+				}
+				if(isRemainingFee)
+				{
+					refRec.RF_Bank_Reference = bankRef;
+				}
+				info "paymentWebhook - #97 bank reference [" + bankRef + "] saved on record " + resolvedRecordId;
+			}
+			catch (refWriteEx)
+			{
+				info "paymentWebhook - #97 bank reference could not be saved (the payment itself is already written): " + refWriteEx.toString();
+			}
+		}
+		else
+		{
+			info "paymentWebhook - #97 no bank / UPI reference in this payment's data - see the #97 field lists above for what Zoho sent.";
+		}
 		feeLabel = "Remaining Fee";
 		if(isBookingFee)
 		{

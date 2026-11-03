@@ -1350,6 +1350,16 @@ async function ensureVehicleNamesForLoadedTickets(){
 
    Fails soft: any problem leaves VEHICLE_NAMES as it was, which means vehicles
    keep showing their raw id exactly as they do today. Never worse. */
+/* getVehicleNames answer -> {code, vehicles}, whichever wrapper Zoho put round it (2026-11-02):
+   the object itself, or inside `result` / `data`, as an object or as JSON text. */
+function unwrapVehicleNamesResponse(x){
+  for(let i=0;i<3 && x;i++){
+    if(typeof x==="string"){ try{ x=JSON.parse(x); }catch(e){ return null; } continue; }
+    if(x.code==="SUCCESS" || x.code==="ERROR" || Array.isArray(x.vehicles)) return x;
+    if(x.result!=null) x=x.result; else if(x.data!=null) x=x.data; else return x;
+  }
+  return x;
+}
 async function loadVehicleNamesViaCustomApi(){
   const fn=resolve("invokeCustomApi");
   VEHICLE_DIAG.apiCalled=true;
@@ -1422,6 +1432,10 @@ async function loadVehicleNamesViaCustomApi(){
       try{ data=JSON.parse(data.result); }
       catch(e){ lastWhy=label+": result was not JSON"; continue; }
     }
+    // 2026-11-02: the result can also arrive already parsed, as an object.
+    data=unwrapVehicleNamesResponse(data);
+    // The API itself answered with an error: other call shapes would only be refused (401/405).
+    if(data && data.code==="ERROR"){ lastWhy=label+": "+String(data.message||"getVehicleNames returned an error"); break; }
     if(!data || data.code!=="SUCCESS" || !Array.isArray(data.vehicles)){
       lastWhy=label+": "+((data&&(data.message||data.code)) ? String(data.message||("code "+data.code)) : "no vehicles returned");
       console.warn("[Get-Rescue] getVehicleNames shape", label, "returned no vehicles —", lastWhy, res);
@@ -1766,6 +1780,21 @@ function unlockNotifSound(){
   }catch(e){}
 }
 document.addEventListener("click", unlockNotifSound);
+/* Sound on from ANY first touch or key - 2026-11-02, user request (no "turn on the sound" banner).
+   pointerdown / pointerup / touchend / keydown all count as the gesture browsers require, so the
+   vendor's first ordinary tap (a ticket, the Online toggle, a scroll-tap) switches the sound on.
+   Capture phase, never stops the tap itself. The banner, if one is up, goes once sound runs. */
+function soundGestureUnlock(){
+  unlockNotifSound();
+  setTimeout(function(){
+    try{
+      const ctx = NOTIF_SOUND_STATE.ctx;
+      const b = document.getElementById("alertArmBanner");
+      if(b && ctx && ctx.state==="running") b.remove();
+    }catch(e){}
+  }, 250);
+}
+["pointerdown","pointerup","touchend","keydown","click"].forEach(function(ev){ document.addEventListener(ev, soundGestureUnlock, true); });
 // Three quick square-wave beeps, generated on the fly via a Web Audio
 // oscillator — no audio file to bundle or host. Deliberately different from
 // vendorTicket's/driverTicket's own tone (2026-09-10, client soft-test
@@ -1864,9 +1893,13 @@ function showAlertArmBanner(){
     document.body.appendChild(b);
   }catch(e){}
 }
-setTimeout(showAlertArmBanner, 1500);
+/* No banner on open any more (2026-11-02). Try to start sound at load instead - some app WebViews
+   allow it with no tap; elsewhere this just leaves it waiting for the first touch. The banner is
+   now shown only by notifyNewCases(), when a ticket arrives and sound is still blocked. */
+setTimeout(unlockNotifSound, 500);
 function notifyNewCases(list){
   if(!list.length) return;
+  showAlertArmBanner();   // only if sound is still blocked - it returns at once when sound is on (2026-11-02)
   startBuzzer();   // was a single playNotifSound() - Task Tracker #9 / #15.2
   list.slice(0,5).forEach(showNewCaseNotification);
   if(list.length>5) toast((list.length-5)+" more new case(s) also arrived","ok");
@@ -1952,7 +1985,8 @@ function renderVehicleDiagNote(){
   const note=document.createElement("div");
   note.style.cssText="margin:10px 2px 0;font-family:var(--f-mono);font-size:10px;line-height:1.5;color:var(--muted);opacity:.85";
   note.textContent="Vehicle names unresolved — "+bits.join(" · ");
-  host.appendChild(note);
+  // Off the screen - 2026-11-02, user request (it showed API error text to vendors). Console only.
+  console.warn("[GR] "+note.textContent);
 }
 function renderDashboard(){
   $("ticketCount").textContent=state.tickets.length;
