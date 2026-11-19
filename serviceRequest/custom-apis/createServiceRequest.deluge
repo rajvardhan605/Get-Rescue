@@ -41,11 +41,24 @@ string createServiceRequest(string customerName, string phone, string whatsappNu
 			// has repeatedly confirmed a Lookup ID arriving from a widget
 			// as a STRING param reads back as TEXT, not NUMBER, and fails
 			// Zoho's own type checker against a Number field without it.
-			vehicleToUse = vehicle_master[ID == vehicleId.trim().toLong()];
-			if(vehicleToUse == null)
+			// 2026-11-03: no longer checked against the vehicle_master form. That form holds an older
+			// copy of the vehicles (702 records whose ids are NOT in Vehicle_Master_Report), so it
+			// accepted old ids that Create_Case.Vehicle then dropped (RSID444003 / RSID431097 saved
+			// with no vehicle), and it would reject the correct ids getVehicleOptions now returns
+			// from Vehicle_Master_Report. The id the widget sends is saved as it is.
+			vehicleIdLong = 0;
+			try
+			{
+				vehicleIdLong = vehicleId.trim().toLong();
+			}
+			catch (vehicleIdEx)
+			{
+				vehicleIdLong = 0;
+			}
+			if(vehicleIdLong <= 0)
 			{
 				result.put("code", "ERROR");
-				result.put("message", "Selected vehicle not found - check Vehicle_Master_Report in Zoho.");
+				result.put("message", "Selected vehicle is not valid - please choose it again.");
 				returnstring = result.toString();
 			}
 			else
@@ -120,6 +133,9 @@ string createServiceRequest(string customerName, string phone, string whatsappNu
 				// This note sits OUTSIDE the insert block on purpose: Deluge parses everything
 				// between the square brackets as field assignments, so a // line in there is a
 				// syntax error - reported against the enclosing try, not against itself.
+				// Client = ON DEMAND - 2026-11-03. This insert never set Client, so every website ticket
+				// arrived with Client blank (RSID444003). 448881000000139597 is the ON DEMAND record in
+				// Client_Report - the same value the agent app saves when an agent picks ON DEMAND.
 				newId = insert into Create_Case
 				[
 					Customer_Name = customerName.trim()
@@ -127,15 +143,15 @@ string createServiceRequest(string customerName, string phone, string whatsappNu
 					Phone_Number = phone.trim()
 					Alternate_Phone_Number = ifnull(whatsappNumber,"").trim()
 					Email = ifnull(email,"").trim()
-					Vehicle = vehicleToUse.ID
+					Vehicle = vehicleIdLong
 					Vehicle_Registration_Number = ifnull(vehicleRegNumber,"").trim()
 					Vehicle_Issue = issueLongIds
 					Vehicle_Status = "ONROAD"
 					Service_Type = serviceType
 					Time_of_service = timeOfServiceResolved
 					Computed_Service_Time = ifnull(computedServiceTime,"")
-					Remarks = remarksLines
 					Lead_Source = "Website"
+					Client = "448881000000139597"
 					Status = "NEW"
 				];
 

@@ -289,6 +289,9 @@ const CONFIG = {
 // on every device. Do not re-add without checking which request is current.
 const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE"];
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+// Client's lists - Task Tracker #33 / #34 (2026-11-12). REJECT_REASONS above stays the invite-reject list.
+const RSP_CANCEL_REASONS = ["Customer vehicle started","Customer change of plans","Taking more time than promised ETA","Customer not answering call"];
+const CX_REJECT_REASONS = ["Customer vehicle started","Customer change of plans","Other Mechanic/Driver has reached","Customer not answering call"];
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates.
@@ -365,6 +368,20 @@ async function assertJobStillMine(id){
   throw new Error("This job has been reassigned by the office - nothing was saved.");
 }
 async function apiUpdate(id, data){ await assertJobStillMine(id); return apiUpdateReport(CONFIG.reportName, id, data); }
+/* RSID619082 / #113 #117 #118 (2026-11-19). The ticket copy in state.current is the one loaded when the
+   job was opened, so the Reach GPS saved later in the same session was not in it, and Cx Reject / Vehicle
+   Picked / Reached Drop measured from the agent's breakdown pin instead. When this copy has no Reach GPS,
+   read it from Zoho first. Any failure leaves the copy as it was (the old fallback still applies). */
+async function ensureReachGps(r){
+  if(!r || !r.ID) return;
+  if(parseCoord(r.Reach_Location_Lat)!=null && parseCoord(r.Reach_Location_Lon)!=null) return;
+  try{
+    const rows = await apiGetReport(CONFIG.reportName, "ID == " + r.ID, 200);
+    const fresh = rows && rows.length ? rows[0] : null;
+    const lat = fresh ? parseCoord(fresh.Reach_Location_Lat) : null, lon = fresh ? parseCoord(fresh.Reach_Location_Lon) : null;
+    if(lat!=null && lon!=null){ r.Reach_Location_Lat=lat; r.Reach_Location_Lon=lon; }
+  }catch(e){ console.warn("[GR-Driver] ensureReachGps: could not read the Reach GPS - the breakdown location is used as before", e); }
+}
 async function apiUpdateReport(report, id, data){
   const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
   const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
@@ -2291,7 +2308,7 @@ function renderReachScreen(){
     <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
       ${photoFieldHtml("Image_Upload5","Cancel Photo",1,1)}
       <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+        <select id="cancelReason"><option value="">— select —</option>${RSP_CANCEL_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
@@ -2335,6 +2352,7 @@ async function markReached(){
       if(reachDist) payload.Distance_Reach_To_Breakdown_TOW=reachDist.distanceKm;
     }
     await apiUpdate(r.ID, payload);
+    if(reachPos){ r.Reach_Location_Lat=reachPos.lat; r.Reach_Location_Lon=reachPos.lon; }   // RSID619082 (2026-11-19): Loading / Drop read it from this copy
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
     // WhatsApp "Reach Time" message (2026-09-06, RESCUE Towing Service
@@ -2433,7 +2451,7 @@ function renderLoadingScreen(){
     ${dropReady?"":'<div class="empty-state" style="padding:10px"><p style="font-size:12px">Waiting on a drop location before this can be confirmed.</p></div>'}
     <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
       <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+        <select id="cxRejectReason"><option value="">— select —</option>${CX_REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
@@ -2478,6 +2496,7 @@ async function vehiclePicked(){
        The live fix stays as the fallback, so a case where Reach was never
        recorded behaves exactly as it does today. Pickup_Location_Lat/Lon below
        is untouched and still records the live position. */
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const reachLat=parseCoord(r.Reach_Location_Lat), reachLon=parseCoord(r.Reach_Location_Lon);
     const bLat = (reachLat!=null) ? reachLat : (pos?pos.lat:Number(r.Latitude));
     const bLon = (reachLon!=null) ? reachLon : (pos?pos.lon:Number(r.Longitude));
@@ -2519,6 +2538,7 @@ async function confirmCxRejectLoading(){
     // precise match to that SAME original intent, not a change of intent.
     // Falls back to the static breakdown C only if E isn't populated (e.g. a
     // ticket that reached before this field existed).
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
     const rtLat = eLat!=null ? eLat : Number(r.Latitude), rtLon = eLon!=null ? eLon : Number(r.Longitude);
     const legs = await calc4PointRoundtrip(rtLat,rtLon,null,null,travelModeFor(r));
@@ -2580,6 +2600,7 @@ async function reachedDrop(){
     // static C/A only when the live/stored point isn't available (e.g. a
     // ticket that reached before Reach_Location_Lat/Lon existed, or GPS
     // denied here), so this never simply breaks on older/incomplete data.
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
     const bLat = eLat!=null ? eLat : Number(r.Latitude), bLon = eLon!=null ? eLon : Number(r.Longitude);
     const pos=await requireLocation();
@@ -2791,8 +2812,9 @@ function renderPaymentScreen(){
      bug, not a display one: getRescueTicket cashCollectedForTicket() deducts the
      Remaining Fee from the vendor payout whenever this field reads "Cash", so a
      mislabelled gateway payment underpays the vendor by money they never held. */
-  const PAY_METHOD_OPTIONS=["Cash","UPI","Card","Net Banking","Payment Gateway"];
+  const PAY_METHOD_OPTIONS=["Cash","Payment Gateway"];   // #36 (2026-11-12): the client's list for the field apps
   const storedPayMethod=String(r.Payment_Method_Final||"").trim();
+  if(storedPayMethod && PAY_METHOD_OPTIONS.indexOf(storedPayMethod)<0) PAY_METHOD_OPTIONS.push(storedPayMethod);   // a method saved earlier still shows
   const selectedPayMethod=PAY_METHOD_OPTIONS.indexOf(storedPayMethod)>=0?storedPayMethod:"";
   /* No method is pre-selected (2026-09-25, user request): Cash used to be the
      pre-picked option, so a vendor who never touched the dropdown recorded Cash

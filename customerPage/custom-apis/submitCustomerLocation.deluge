@@ -28,7 +28,7 @@ string submitCustomerLocation(string recordId, string locationType, string lat, 
 		// one, issued for the Creator scope.
 		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
 		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
-		ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+		ZC_REFRESH_TOKEN = "1000.d2f6cd9b1791fa37a9186de30fb92110.8722433e62d21b551cdfa178b8113ad5";
 		// Report, not form - the Data API addresses records through a report.
 		// Agent_Ticket_Report is the same report the whole app already reads and
 		// updates Create_Case through (see getRescueTicket CONFIG.reportName).

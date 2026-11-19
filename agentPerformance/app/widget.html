@@ -309,8 +309,14 @@ function computeStats(tickets, range){
      to "ON DEMAND" never matched and on-demand revenue always read 0 (Task Tracker
      #81.3, 2026-10-27). Reads the display text, the same way the vendor app's
      isOnDemandTicket() does; a plain string still works as before. */
+  /* Task Tracker #81 (2026-11-12): the ticket can also carry the ON DEMAND client as its bare record id
+     (the agent app resolves it the same way - clientDisplayName()), and that never matched, so on-demand
+     revenue stayed at 0. 448881000000139597 is the ON DEMAND record in Client_Report. */
+  const ON_DEMAND_CLIENT_ID = "448881000000139597";
   const isOnDemand=function(r){
     const raw = r.Client;
+    const rawId = (raw && typeof raw==="object") ? (raw.ID || raw.id || "") : raw;
+    if(String(rawId==null ? "" : rawId).trim()===ON_DEMAND_CLIENT_ID) return true;
     const txt = (raw && typeof raw==="object") ? (raw.display_value || raw.zc_display_value || raw.value || "") : (raw==null ? "" : raw);
     return String(txt).trim().toUpperCase()==="ON DEMAND";
   };
@@ -501,7 +507,6 @@ function render(stats, callStats){
     <div class="grid">
       ${statCard(ICON_MONEY, money(stats.revRSR), "On-Demand Revgen (RSR)")}
       ${statCard(ICON_MONEY, money(stats.revTOW), "On-Demand Revgen (TOW)")}
-      ${stats.avgAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Time (Creation to Assignment)") : statCard(ICON_CLOCK, stats.avgAssignMins+" min", "Avg Time (Creation to Assignment)")}
     </div>
     ${SHOW_COLLECTIONS ? `<div class="section-title">Collections</div>
     <div class="grid">
@@ -519,6 +524,7 @@ function render(stats, callStats){
     <div class="grid">
       ${stats.slaConfirmMins==null ? statCard(ICON_CLOCK, "—", "Avg Response Time (Created → Confirmed)") : statCard(ICON_CLOCK, hoursMins(stats.slaConfirmMins), "Avg Response Time (Created → Confirmed)")}
       ${stats.slaAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Assignment Time (Ready → Accepted)") : statCard(ICON_CLOCK, hoursMins(stats.slaAssignMins), "Avg Assignment Time (Ready → Accepted)")}
+      ${stats.avgAssignMins==null ? statCard(ICON_CLOCK, "—", "Avg Time (Creation to Assignment)") : statCard(ICON_CLOCK, stats.avgAssignMins+" min", "Avg Time (Creation to Assignment)")}
     </div>
   `;
 }

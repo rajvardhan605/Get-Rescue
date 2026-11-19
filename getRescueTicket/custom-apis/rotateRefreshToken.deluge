@@ -1,0 +1,103 @@
+string rotateRefreshToken(string code)
+{
+	try
+	{
+		// rotateRefreshToken - 2026-11-03. Swaps in a new Creator refresh token from ONE place.
+		//
+		// HOW TO USE: Zoho API Console -> Self Client -> Generate Code (scope
+		// ZohoCreator.report.ALL,ZohoCreator.form.ALL,ZohoPay.payments.ALL, 10 minutes), then call
+		// this API with that code within the 10 minutes. It exchanges the code for a refresh token
+		// and saves it in OAuth_Settings (Service = CREATOR). Every script that gets its token from
+		// thisapp.getCreatorAccessToken() uses the new one straight away.
+		//
+		// Why a code is needed at all: Zoho only issues a refresh token after a person approves it
+		// on the Self Client page. No script can create one from the client id and secret alone.
+		//
+		// SECURITY: Public Key or OAuth authentication both work. A public key is acceptable here:
+		// the only input that does anything is a code generated inside this Zoho account's own Self
+		// Client, so a stranger calling it just gets an error. Keep the URL private all the same.
+		// It never returns the token itself - only SUCCESS, the scopes and the last 4 characters.
+		// Never give any portal profile access to the OAuth_Settings form.
+		CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		codeText = ifnull(code,"").trim();
+		if(codeText == "")
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"No code was sent. Generate one on the Self Client page (Generate Code) and pass it as the code parameter within its expiry time.\"}";
+		}
+		if(codeText.contains("$"))
+		{
+			return "{\"code\": \"ERROR\", \"message\": \"The code still holds a placeholder. Send the real code from the Self Client page.\"}";
+		}
+		info "rotateRefreshToken - exchanging a Self Client code at " + zoho.currenttime;
+		tokenResp = invokeurl
+		[
+			url :"https://accounts.zoho.in/oauth/v2/token?grant_type=authorization_code&client_id=" + CLIENT_ID + "&client_secret=" + CLIENT_SECRET + "&code=" + codeText
+			type :POST
+		];
+		newRefresh = tokenResp.get("refresh_token");
+		if(newRefresh == null)
+		{
+			errText = "";
+			if(tokenResp.get("error") != null)
+			{
+				errText = tokenResp.get("error").toString();
+			}
+			info "rotateRefreshToken - Zoho issued no refresh token. error = [" + errText + "]";
+			return "{\"code\": \"ERROR\", \"zoho_error\": \"" + errText.replaceAll("\"","'") + "\", \"message\": \"Zoho did not issue a refresh token. invalid_code means the code expired or was already used - generate a new one and call this again straight away. Nothing was changed; the old token is still in place.\"}";
+		}
+		newRefreshText = newRefresh.toString().trim();
+		scopeText = "";
+		if(tokenResp.get("scope") != null)
+		{
+			scopeText = tokenResp.get("scope").toString();
+		}
+		// The same answer carries a fresh access token (valid 1 hour) - stored too, so the next
+		// call by any script needs no extra token request.
+		accessText = "";
+		if(tokenResp.get("access_token") != null)
+		{
+			accessText = tokenResp.get("access_token").toString().trim();
+		}
+		recId = 0;
+		for each settingRec in OAuth_Settings[Service == "CREATOR"]
+		{
+			if(recId == 0)
+			{
+				recId = settingRec.ID;
+			}
+		}
+		if(recId == 0)
+		{
+			newRow = insert into OAuth_Settings
+			[
+				Added_User=zoho.loginuser
+				Service="CREATOR"
+				Refresh_Token=newRefreshText
+				Access_Token=accessText
+				Access_Token_Expires_At=zoho.currenttime.addHour(1)
+			];
+			info "rotateRefreshToken - created the OAuth_Settings row " + newRow;
+		}
+		else
+		{
+			upd = OAuth_Settings[ID == recId];
+			upd.Refresh_Token = newRefreshText;
+			upd.Access_Token = accessText;
+			upd.Access_Token_Expires_At = zoho.currenttime.addHour(1);
+			info "rotateRefreshToken - updated the OAuth_Settings row " + recId;
+		}
+		tail = newRefreshText;
+		if(tail.length() > 4)
+		{
+			tail = tail.subText(tail.length() - 4);
+		}
+		return "{\"code\": \"SUCCESS\", \"saved\": true, \"scope\": \"" + scopeText + "\", \"token_ends_with\": \"" + tail + "\", \"message\": \"New refresh token saved in OAuth_Settings. Scripts using thisapp.getCreatorAccessToken() use it from now on.\"}";
+	}
+	catch (e)
+	{
+		info "rotateRefreshToken threw: " + e.toString();
+		return "{\"code\": \"ERROR\", \"message\": \"rotateRefreshToken threw an exception - see this Custom API's execution log. Nothing was changed if the error came before the save.\"}";
+	}
+	return "{\"code\": \"ERROR\", \"message\": \"No result.\"}";
+}

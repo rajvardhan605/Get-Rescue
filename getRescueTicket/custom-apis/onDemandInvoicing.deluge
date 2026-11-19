@@ -69,7 +69,7 @@ invoiceURL="";
 		// directly visible in the Custom API's own execution log. Remove
 		// once resolved — see the "remove logs" entry earlier the same day
 		// for why this file is normally log-free.
-		info "onDemandInvoicing received — recordId=" + recordId + " | referenceNumber=" + referenceNumber + " | applyTax=" + applyTax + " | serviceCharges=" + serviceCharges + " | cgst=" + cgst + " | sgst=" + sgst;
+		info "onDemandInvoicing received — recordId=" + recordId + " | referenceNumber=" + referenceNumber + " | applyTax=" + applyTax + " | serviceCharges=" + serviceCharges + " | cgst=" + cgst + " | sgst=" + sgst + " | totalAmount=" + totalAmount + " | roundOff=" + roundOff;   // 2026-11-18: round off logged too
 		referenceNumberResolved = referenceNumber;
 		if(referenceNumberResolved == null)
 		{
@@ -115,6 +115,61 @@ invoiceURL="";
 		if(roundOff != null)
 		{
 			roundOffAmt = roundOff.toString();
+		}
+		/* Round off not showing on the invoice - 2026-11-18. When roundOff arrives blank (not sent, or the
+		   parameter not registered on this Custom API - the trap described at the top of this file), it is
+		   worked out here from the values that do arrive: totalAmount - serviceCharges - cgst - sgst, to 2
+		   places - the same formula as the widget's computeGstBreakup(). A roundOff that arrives is used
+		   exactly as before. Any parsing problem leaves "0", which is what this sent before. */
+		if(roundOffAmt.trim() == "")
+		{
+			roundOffAmt = "0";
+		}
+		roundOffArrived = false;
+		if(roundOff != null)
+		{
+			if(roundOff.toString().trim() != "")
+			{
+				roundOffArrived = true;
+			}
+		}
+		totalText = "";
+		if(totalAmount != null)
+		{
+			totalText = totalAmount.toString().trim();
+		}
+		if(roundOffArrived == false)
+		{
+			if(totalText != "")
+			{
+				try
+				{
+					cgstForRound = 0.0;
+					if(cgst != null)
+					{
+						if(cgst.toString().trim() != "")
+						{
+							cgstForRound = cgst.toString().toDecimal();
+						}
+					}
+					sgstForRound = 0.0;
+					if(sgst != null)
+					{
+						if(sgst.toString().trim() != "")
+						{
+							sgstForRound = sgst.toString().toDecimal();
+						}
+					}
+					computedRound = (totalText.toDecimal() - serviceChargesAmt - cgstForRound - sgstForRound).round(2);
+					roundOffAmt = computedRound.toString();
+					info "onDemandInvoicing - roundOff arrived blank, worked out as " + roundOffAmt + " (totalAmount " + totalText + " - serviceCharges " + serviceChargesAmt + " - cgst " + cgstForRound + " - sgst " + sgstForRound + ")";
+				}
+				catch (roundEx)
+				{
+					roundOffAmt = "0";
+					info "onDemandInvoicing - roundOff could not be worked out, 0 sent as before: " + roundEx.toString();
+				}
+			}
 		}
 
 		descriptionText = serviceLabel;
@@ -360,6 +415,28 @@ invoiceURL="";
 				customFieldCount = customFieldCount + 1;
 			}
 		}
+		/* Customer phone - 2026-11-18. cf_phone is the invoice custom field the user created in Zoho Books.
+		   customerPhone is the ticket's phone exactly as already sent for the Books contact above; the bare
+		   10 digits (customerPhoneDigits) only when that is blank. Nothing sent when both are empty. It is
+		   picked up by the custom_fields array below like every other cf_ key, and the last fallback
+		   removes it, so the invoice is still created if Books ever refuses it. */
+		phoneForInvoice = "";
+		if(customerPhone != null)
+		{
+			phoneForInvoice = customerPhone.trim();
+		}
+		if(phoneForInvoice == "")
+		{
+			if(customerPhoneDigits != null)
+			{
+				phoneForInvoice = customerPhoneDigits.trim();
+			}
+		}
+		if(phoneForInvoice != "")
+		{
+			invoiceMap.put("cf_phone",phoneForInvoice);
+			customFieldCount = customFieldCount + 1;
+		}
 		// GST No — the client's sample prints a literal "NA" for a customer with no
 		// GSTIN, while Zoho Books renders an absent GSTIN as an empty space with no
 		// placeholder of any kind. So this is its own field and is ALWAYS sent,
@@ -498,6 +575,7 @@ invoiceURL="";
 				invoiceMap.remove("cf_service_description");
 				invoiceMap.remove("cf_mode");
 				invoiceMap.remove("cf_gst_no");
+				invoiceMap.remove("cf_phone");   // 2026-11-18: the invoice itself always comes first
 				invoiceMap.remove("custom_fields");
 				customFieldCount = 0;
 				jsonPayload = invoiceMap.toString();
@@ -571,6 +649,16 @@ invoiceURL="";
 		catch (cfDiagEx)
 		{
 			info "onDemandInvoicing - could not read back the custom fields (diagnostic only, the invoice itself is fine): " + cfDiagEx.toString();
+		}
+		/* Round off as Books stored it - 2026-11-18, diagnostic only (own try, can never fail the invoice).
+		   Books keeps the round off as the invoice's adjustment; a 0 adjustment is not printed on the invoice. */
+		try
+		{
+			info "onDemandInvoicing - round off sent " + roundOffAmt + "; Books stored adjustment=" + ifnull(invoiceRec.get("adjustment"),"(none)") + " (" + ifnull(invoiceRec.get("adjustment_description"),"") + "), sub total=" + ifnull(invoiceRec.get("sub_total"),"") + ", tax=" + ifnull(invoiceRec.get("tax_total"),"") + ", total=" + ifnull(invoiceRec.get("total"),"");
+		}
+		catch (adjDiagEx)
+		{
+			info "onDemandInvoicing - could not read back the adjustment (diagnostic only): " + adjDiagEx.toString();
 		}
 		invoice_pdf_url = "https://books.zoho.in/invoices/" + invoice_id + "?organization_id=" + organization_id;
 
@@ -770,7 +858,7 @@ invoiceURL="";
 		// (standard OAuth2 behavior, not specific to Zoho).
 		zoho_payments_client_id = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
 		zoho_payments_client_secret = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
-		zoho_payments_refresh_token = "1000.7b9a45adfe6300ed5fb43cf9d29eef7b.65c3a6df18bedb83f887bf1f4fbc44d6";
+		zoho_payments_refresh_token = "1000.d2f6cd9b1791fa37a9186de30fb92110.8722433e62d21b551cdfa178b8113ad5";
 		zoho_payments_account_id = "60078772586";
 		zoho_payments_base_url = "https://payments.zoho.in/api/v1";
 		// return_url fixed (explicit user decision, 2026-09-10: "return url

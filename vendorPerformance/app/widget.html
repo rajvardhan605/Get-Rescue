@@ -58,6 +58,15 @@ select#filterRange{font-family:var(--f-disp);font-weight:700;font-size:13.5px;pa
 .out-pill.rej{background:var(--stop-soft);color:var(--stop)}
 .out-pill.to{background:var(--wait-soft);color:var(--wait)}
 .out-empty{font-size:12.5px;opacity:.7;margin-top:10px}
+/* 2026-11-19: the list folds away (closed by default) and scrolls inside itself, so a long list
+   no longer pushes the % Percentage section far down the page. */
+.out-fold>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.out-fold>summary::-webkit-details-marker{display:none}
+.out-fold>summary .out-toggle{font-family:var(--f-mono);font-size:11px;font-weight:700;color:var(--signal);white-space:nowrap}
+.out-fold>summary .out-toggle::after{content:"Show \25BE"}
+.out-fold[open]>summary .out-toggle::after{content:"Hide \25B4"}
+.out-fold .out-wrap{max-height:360px;overflow:auto}
+.out-fold .out-table thead th{position:sticky;top:0;z-index:1}
 </style>
 </head>
 <body>
@@ -216,23 +225,51 @@ async function loadVendorTicketsViaCustomApi(vendorId){
    or failed). The page then behaves exactly as it did before this list existed:
    the count card keeps its Task_Rejections figure and the list says why it is
    missing. */
+/* Why the list is missing, shown under it - Task Tracker #6 (2026-11-12). The vendor reports by
+   screenshot, so the cause (Custom API not created, not allowed for the Vendor profile, ...) has to be
+   on screen, not only in the console. */
+let OUTCOMES_FAIL_REASON = "";
 async function loadInviteOutcomesViaCustomApi(vendorId){
   const fn=resolve("invokeCustomApi");
-  if(!fn){ console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: invokeCustomApi unavailable - list not shown."); return null; }
+  if(!fn){ OUTCOMES_FAIL_REASON="Custom API calls are not available on this page."; console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: invokeCustomApi unavailable - list not shown."); return null; }
   try{
-    const res=await fn({ api_name:"getMyInviteOutcomes", workspace_name:"getrescued", http_method:"POST", content_type:"application/json", payload:{ vendorId:String(vendorId||"") } });
+    /* #6 (2026-11-17): a Custom API's method is fixed where it is registered in Zoho, not by the caller.
+       POST (the original call) is tried first, so a POST registration behaves exactly as before; if Zoho
+       refuses it, the same API is tried as GET with no payload. The API then identifies the vendor from
+       the login email alone (zoho.loginuser -> Vendors.Email), which is how it decides anyway. */
+    /* "Answered" = the API's own reply (code SUCCESS or ERROR). Anything else - a throw, or a Zoho-level
+       refusal such as {code:9410} for a wrong method/Content-Type - means this call shape was not accepted. */
+    const answered=function(r){
+      let d=r;
+      if(d && typeof d.result==="string"){ try{ d=JSON.parse(d.result); }catch(e){ return false; } }
+      return !!(d && (d.code==="SUCCESS" || d.code==="ERROR"));
+    };
+    let res=null, postErr=null;
+    try{
+      res=await fn({ api_name:"getMyInviteOutcomes", workspace_name:"getrescued", http_method:"POST", content_type:"application/json", payload:{ vendorId:String(vendorId||"") } });
+    }catch(e){ postErr=e; }
+    if(postErr || !answered(res)){
+      console.warn("[GR-VendorPerf] getMyInviteOutcomes not accepted as POST - trying GET", postErr||res);
+      let getRes=null;
+      try{ getRes=await fn({ api_name:"getMyInviteOutcomes", workspace_name:"getrescued", http_method:"GET" }); }
+      catch(getErr){ console.warn("[GR-VendorPerf] getMyInviteOutcomes refused as GET too", getErr); }
+      if(answered(getRes)) res=getRes;
+      else if(postErr) throw postErr;   // neither worked: report the original POST failure, as before
+    }
     let data=res;
     if(data && typeof data.result==="string"){
       try{ data=JSON.parse(data.result); }
-      catch(e){ console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: response.result wasn't valid JSON", e, res); return null; }
+      catch(e){ OUTCOMES_FAIL_REASON="getMyInviteOutcomes returned an unreadable reply."; console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: response.result wasn't valid JSON", e, res); return null; }
     }
     if(!data || data.code!=="SUCCESS" || !Array.isArray(data.rows)){
+      OUTCOMES_FAIL_REASON="getMyInviteOutcomes: "+String((data&&data.message)||(res&&res.message)||"no rows returned");
       console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: Custom API did not return rows -", (data&&data.message)||"(no message)", res);
       return null;
     }
     console.log("[GR-VendorPerf] loadInviteOutcomesViaCustomApi: "+data.rows.length+" case(s) for vendor "+data.vendorId+" (identified by "+data.verifiedBy+").");
     return data.rows;
   }catch(e){
+    OUTCOMES_FAIL_REASON="getMyInviteOutcomes could not be called ("+String((e&&(e.message||e.responseText||e.code))||e||"unknown error").slice(0,160)+"). Check that the Custom API exists in Zoho and the Vendor portal profile may use it.";
     console.warn("[GR-VendorPerf] loadInviteOutcomesViaCustomApi failed - list not shown, count falls back to the rejection log.", e);
     return null;
   }
@@ -292,15 +329,21 @@ function outcomeWhenText(d){
 }
 function inviteOutcomesHtml(list, range){
   const title = '<div class="section-title">Rejected / Timed Out cases</div>';
-  if(list==null) return title + '<div class="out-empty">The case list is not available right now. The count above is from your rejections only.</div>';
+  if(list==null) return title + '<div class="out-empty">The case list is not available right now. The count above is from your rejections only.'+(OUTCOMES_FAIL_REASON ? '<br><span style="font-size:11px">Reason: '+esc(OUTCOMES_FAIL_REASON)+'</span>' : '')+'</div>';   // #6 (2026-11-12): the reason shows on screen
   const shown = list.filter(function(o){ return o.when && o.when.getTime()>=range.from.getTime() && o.when.getTime()<=range.to.getTime(); });
   if(!shown.length) return title + '<div class="out-empty">No rejected or timed-out cases in this period.</div>';
   const body = shown.map(function(o){
     const pill = o.result==="Rejected" ? '<span class="out-pill rej">Rejected</span>' : '<span class="out-pill to">Timed Out</span>';
     return "<tr><td class=\"case\">"+esc(o.caseId)+"</td><td class=\"when\">"+esc(outcomeWhenText(o.when))+"</td><td>"+esc(o.service||"\u2014")+"</td><td>"+esc(o.vehicle||"\u2014")+"</td><td>"+esc(o.issue||"\u2014")+"</td><td>"+pill+"</td><td>"+esc(o.reason||"\u2014")+"</td></tr>";
   }).join("");
-  return title + '<div class="out-wrap"><table class="out-table"><thead><tr><th>Case ID</th><th>Date &amp; Time</th><th>Service</th><th>Vehicle</th><th>Issue</th><th>Result</th><th>Reason</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  /* 2026-11-19: folded away by default with the count on the header; open/closed survives a period change. */
+  return '<details class="out-fold"'+(OUTCOMES_OPEN?' open':'')+'><summary><div class="section-title">Rejected / Timed Out cases ('+shown.length+')</div><span class="out-toggle"></span></summary>'
+    + '<div class="out-wrap"><table class="out-table"><thead><tr><th>Case ID</th><th>Date &amp; Time</th><th>Service</th><th>Vehicle</th><th>Issue</th><th>Result</th><th>Reason</th></tr></thead><tbody>' + body + '</tbody></table></div></details>';
 }
+let OUTCOMES_OPEN=false;
+if(document.addEventListener) document.addEventListener("toggle", function(e){
+  if(e.target && e.target.classList && e.target.classList.contains("out-fold")) OUTCOMES_OPEN=!!e.target.open;
+}, true);
 async function loadTaskRejectionsViaCustomApi(){
   const fn=resolve("invokeCustomApi");
   if(!fn){ console.warn("[GR-VendorPerf] loadTaskRejectionsViaCustomApi: invokeCustomApi unavailable — rejections stay at zero."); return []; }
@@ -587,14 +630,14 @@ function render(stats, settlement, outcomesHtml){
       <div class="card"><div class="ic">${ICON_OK}</div><div class="num">${esc(stats.completed)}</div><div class="lbl">Completed</div></div>
       <div class="card wait"><div class="ic">${ICON_WARN}</div><div class="num">${esc(stats.cancelled)}</div><div class="lbl">Cancelled</div></div>
     </div>
-    ${outcomesHtml || ""}
     <div class="section-title">% Percentage</div>
     <div class="grid">
       <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.etaMetPct))}</div><div class="lbl">Reached Inside ETA${esc(ofText(stats.etaMetCount, stats.etaTotal))}</div></div>
       <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.issuesFixedPct))}</div><div class="lbl">Issues Fixed (RSR)${esc(ofText(stats.issuesFixedCount, stats.issuesTotal))}</div></div>
       <div class="card"><div class="ic">${ICON_PCT}</div><div class="num">${esc(pctText(stats.feedbackHighPct))}</div><div class="lbl">Customer Feedback ≥ 9${esc(ofText(stats.feedbackHighCount, stats.feedbackTotal))}</div></div>
     </div>
-  `;
+    ${outcomesHtml || ""}
+  `;   /* 2026-11-19: Rejected / Timed Out list moved below % Percentage (was between Cases and %) */
 }
 function renderError(msg){ $("content").innerHTML = '<div class="state-err">'+esc(msg)+'</div>'; }
 

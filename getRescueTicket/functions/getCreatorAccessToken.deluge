@@ -1,0 +1,84 @@
+string getCreatorAccessToken()
+{
+	// getCreatorAccessToken - 2026-11-03. ONE place that hands every script a Creator Data API
+	// access token. Create it under Microservices -> Functions (Deluge), namespace thisapp.
+	// Scripts call:   accessToken = thisapp.getCreatorAccessToken();
+	// and treat "" as "no token" exactly as they treat a missing access_token today.
+	//
+	// Re-uses the stored access token until 5 minutes before it expires (tokens last 1 hour), so
+	// Zoho is asked for a new one about once an hour in total instead of on every call. That is
+	// what stops the "too many requests" refusals the shared token used to hit.
+	//
+	// The refresh token lives in OAuth_Settings (Service = CREATOR) and is replaced only by the
+	// rotateRefreshToken Custom API.
+	CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+	CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+	try
+	{
+		recId = 0;
+		refreshText = "";
+		cachedText = "";
+		cachedValid = false;
+		for each settingRec in OAuth_Settings[Service == "CREATOR"]
+		{
+			if(recId == 0)
+			{
+				recId = settingRec.ID;
+				refreshText = ifnull(settingRec.Refresh_Token,"").toString().trim();
+				cachedText = ifnull(settingRec.Access_Token,"").toString().trim();
+				expiresAt = settingRec.Access_Token_Expires_At;
+				if(cachedText != "")
+				{
+					if(expiresAt != null)
+					{
+						// valid while more than 5 minutes (300000 ms) remain
+						if(zoho.currenttime.toLong() < expiresAt.toLong() - 300000)
+						{
+							cachedValid = true;
+						}
+					}
+				}
+			}
+		}
+		if(recId == 0)
+		{
+			info "getCreatorAccessToken - no OAuth_Settings row with Service = CREATOR. Run rotateRefreshToken once with a Self Client code.";
+			return "";
+		}
+		if(cachedValid)
+		{
+			return cachedText;
+		}
+		if(refreshText == "")
+		{
+			info "getCreatorAccessToken - the CREATOR row has no refresh token. Run rotateRefreshToken with a Self Client code.";
+			return "";
+		}
+		tokenResp = invokeurl
+		[
+			url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + refreshText + "&client_id=" + CLIENT_ID + "&client_secret=" + CLIENT_SECRET + "&grant_type=refresh_token"
+			type :POST
+		];
+		newAccess = tokenResp.get("access_token");
+		if(newAccess == null)
+		{
+			errText = "";
+			if(tokenResp.get("error") != null)
+			{
+				errText = tokenResp.get("error").toString();
+			}
+			info "getCreatorAccessToken - Zoho refused the stored refresh token. error = [" + errText + "]. invalid_code means it was revoked: run rotateRefreshToken with a new Self Client code.";
+			return "";
+		}
+		newAccessText = newAccess.toString().trim();
+		upd = OAuth_Settings[ID == recId];
+		upd.Access_Token = newAccessText;
+		upd.Access_Token_Expires_At = zoho.currenttime.addHour(1);
+		return newAccessText;
+	}
+	catch (e)
+	{
+		info "getCreatorAccessToken threw: " + e.toString();
+	}
+	return "";
+}

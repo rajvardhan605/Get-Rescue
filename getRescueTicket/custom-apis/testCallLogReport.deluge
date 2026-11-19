@@ -2,7 +2,7 @@ void testCallLogReport()
 {
 	ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
 	ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
-	ZC_REFRESH_TOKEN = "1000.568bbdff83b5b398edb888ff31951dea.a5cbb7bbdd283c79ec801ebd10be426a";
+	ZC_REFRESH_TOKEN = "1000.d2f6cd9b1791fa37a9186de30fb92110.8722433e62d21b551cdfa178b8113ad5";
 	TEST_PHONE = "7210036790";
 	info "========== CALL_LOG REPORT DIAGNOSTIC ==========";
 	info "STEP 1 - what Deluge itself can see in the Call_Log FORM";

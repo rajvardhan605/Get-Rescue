@@ -3,29 +3,92 @@ string getVehicleOptions()
 	returnstring = "";
 	try
 	{
-		vehicleList = List();
-		for each veh in vehicle_master[ID != 0]
+		// getVehicleOptions - rewritten 2026-11-03. Every vehicle in Vehicle_Master_Report, for the
+		// website Service Request form. Used ONLY by the serviceRequest widget.
+		//
+		// WHY: this used to loop over the vehicle_master form, which holds an older copy of the
+		// vehicles - 702 records whose ids are NOT in Vehicle_Master_Report. The newest vehicles
+		// (OTHER FOUR WHEELER, OTHER TWO WHEELER, Nexon, Brezza, Scooty) never showed (Task Tracker
+		// #69), and the old ids were dropped by Create_Case.Vehicle, so website tickets arrived with
+		// no vehicle.
+		//
+		// It now reads Vehicle_Master_Report itself over the Creator Data API - the same report the
+		// agent app reads, with the same token and the same call getVehicleNames already makes.
+		// Answer format unchanged: {"code":"SUCCESS","vehicles":[{"id","name","category"}]}.
+		// - "id" is TEXT: a bare 18-digit number is rounded by JavaScript.
+		// - status HIDE is left out (Task Tracker #83.13).
+		ZC_CLIENT_ID = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
+		ZC_CLIENT_SECRET = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
+		ZC_REFRESH_TOKEN = "1000.d2f6cd9b1791fa37a9186de30fb92110.8722433e62d21b551cdfa178b8113ad5";
+		ZC_REPORT_URL = "https://www.zohoapis.in/creator/v2.1/data/getrescued/get-rescue/report/Vehicle_Master_Report?max_records=1000&field_config=all";
+		tokenResp = invokeurl
+		[
+			url :"https://accounts.zoho.in/oauth/v2/token?refresh_token=" + ZC_REFRESH_TOKEN + "&client_id=" + ZC_CLIENT_ID + "&client_secret=" + ZC_CLIENT_SECRET + "&grant_type=refresh_token"
+			type :POST
+		];
+		accessToken = tokenResp.get("access_token");
+		if(accessToken == null)
 		{
-			v = Map();
-			v.put("id", veh.ID);
-			vName = veh.Name;
-			if(vName == null)
-			{
-				vName = "";
-			}
-			if(vName.toString() == "")
-			{
-				vName = "Vehicle " + veh.ID;
-			}
-			v.put("name", vName);
-			vCategory = "";
-			if(veh.Category != null)
-			{
-				vCategory = veh.Category.toString();
-			}
-			v.put("category", vCategory);
-			vehicleList.add(v);
+			info "getVehicleOptions - no access_token. Raw token response: " + tokenResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Could not get an access token from the refresh token.\", \"vehicles\": []}";
 		}
+		readResp = invokeurl
+		[
+			url :ZC_REPORT_URL
+			type :GET
+			headers:{"Authorization":"Bearer " + accessToken}
+		];
+		respCode = readResp.get("code");
+		if(respCode != 3000)
+		{
+			info "getVehicleOptions - read FAILED. Raw response: " + readResp.toString();
+			return "{\"code\": \"ERROR\", \"message\": \"Reading Vehicle_Master_Report did not return code 3000.\", \"vehicles\": []}";
+		}
+		recList = List();
+		if(readResp.get("data") != null)
+		{
+			recList = readResp.get("data").toList();
+		}
+		vehicleList = List();
+		for each veh in recList
+		{
+			idText = "";
+			if(veh.get("ID") != null)
+			{
+				idText = veh.get("ID").toString().trim();
+			}
+			vStatus = "";
+			if(veh.get("status") != null)
+			{
+				vStatus = veh.get("status").toString().trim().toUpperCase();
+			}
+			if(idText != "")
+			{
+				if(vStatus != "HIDE")
+				{
+					vName = "";
+					if(veh.get("Name") != null)
+					{
+						vName = veh.get("Name").toString().trim();
+					}
+					if(vName == "")
+					{
+						vName = "Vehicle " + idText;
+					}
+					vCategory = "";
+					if(veh.get("Category") != null)
+					{
+						vCategory = veh.get("Category").toString().trim();
+					}
+					v = Map();
+					v.put("id", idText);
+					v.put("name", vName);
+					v.put("category", vCategory);
+					vehicleList.add(v);
+				}
+			}
+		}
+		info "getVehicleOptions - returning " + vehicleList.size() + " vehicle(s) from Vehicle_Master_Report.";
 		result = Map();
 		result.put("code", "SUCCESS");
 		result.put("vehicles", vehicleList);

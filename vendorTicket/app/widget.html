@@ -67,6 +67,8 @@ img,svg{max-width:100%}
 .st.wip{background:var(--signal-soft);color:var(--signal-deep)}
 .st.pay{background:var(--wait-soft);color:#a85a06}
 .st.rej{background:var(--stop-soft);color:var(--stop)}
+.tech-tag{margin-top:6px;display:inline-block;font-family:var(--f-mono);font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:3px 8px;border-radius:6px;background:var(--info-soft);color:#1d5fc0}   /* #106 */
+.tech-tag.rej{background:var(--stop-soft);color:var(--stop)}
 .svc{display:inline-flex;align-items:center;font-family:var(--f-mono);font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:5px;margin-right:6px}
 .svc.rsr{background:var(--signal-soft);color:var(--signal-deep)}
 .svc.tow{background:var(--info-soft);color:#1d5fc0}
@@ -391,6 +393,9 @@ const CONFIG = {
 // on every device. Do not re-add without checking which request is current.
 const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","WORK IN PROGRESS","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE"];
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+// Client's lists - Task Tracker #33 / #34 (2026-11-12). REJECT_REASONS above stays the invite-reject list.
+const RSP_CANCEL_REASONS = ["Customer vehicle started","Customer change of plans","Taking more time than promised ETA","Customer not answering call"];
+const CX_REJECT_REASONS = ["Customer vehicle started","Customer change of plans","Other Mechanic/Driver has reached","Customer not answering call"];
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates.
@@ -482,6 +487,20 @@ async function assertJobStillMine(id){
   throw new Error("This job has been reassigned by the office - nothing was saved.");
 }
 async function apiUpdate(id, data){ await assertJobStillMine(id); return apiUpdateReport(CONFIG.reportName, id, data); }
+/* RSID619082 / #113 #117 #118 (2026-11-19). The ticket copy in state.current is the one loaded when the
+   job was opened, so the Reach GPS saved later in the same session was not in it, and Cx Reject / Vehicle
+   Picked / Reached Drop measured from the agent's breakdown pin instead. When this copy has no Reach GPS,
+   read it from Zoho first. Any failure leaves the copy as it was (the old fallback still applies). */
+async function ensureReachGps(r){
+  if(!r || !r.ID) return;
+  if(parseCoord(r.Reach_Location_Lat)!=null && parseCoord(r.Reach_Location_Lon)!=null) return;
+  try{
+    const rows = await apiGetReport(CONFIG.reportName, "ID == " + r.ID, 200);
+    const fresh = rows && rows.length ? rows[0] : null;
+    const lat = fresh ? parseCoord(fresh.Reach_Location_Lat) : null, lon = fresh ? parseCoord(fresh.Reach_Location_Lon) : null;
+    if(lat!=null && lon!=null){ r.Reach_Location_Lat=lat; r.Reach_Location_Lon=lon; }
+  }catch(e){ console.warn("[GR-Vendor] ensureReachGps: could not read the Reach GPS - the breakdown location is used as before", e); }
+}
 async function apiUpdateReport(report, id, data){
   const fn=resolve("updateRecordById") || resolve("updateRecord"); if(!fn) throw new Error("updateRecordById unavailable");
   const r=await fn({ app_name:CONFIG.appName, report_name:report, id:id, payload:{ data:data } });
@@ -2623,6 +2642,16 @@ function renderVehicleDiagNote(){
   // Off the screen - 2026-11-02, user request (it showed API error text to vendors). Console only.
   console.warn("[GR] "+note.textContent);
 }
+/* Task Tracker #106 (2026-11-12): the All Tickets card shows that a ticket was handed to a
+   technician, without opening it. The status pill is unchanged; this is an extra line. */
+function technicianTagHtml(r){
+  const techId=lookupId(r && r.Assigned_Technician);
+  if(techId==null || String(techId).trim()==="") return "";
+  if(technicianRejection(r)) return '<div class="tech-tag rej">Technician rejected - assign again or accept</div>';
+  const name=String(readVal(r,"Assigned_Technician")||"").trim();
+  const shown=(!name || /^[0-9]+$/.test(name)) ? "" : (" - "+name);
+  return '<div class="tech-tag">Assigned to technician'+esc(shown)+'</div>';
+}
 function renderDashboard(){
   $("ticketCount").textContent=state.tickets.length;
   if(!state.tickets.length){
@@ -2637,6 +2666,7 @@ function renderDashboard(){
       <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
       <h3>${svc?`<span class="svc ${svc==='TOW'?'tow':'rsr'}">${esc(svc)}</span>`:""}${esc(vehicleDisplayFor(r)||"Vehicle")}</h3>
       <div class="meta">${esc(issueNamesFor(r)||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+      ${technicianTagHtml(r)}
     </div>`;
   }).join("");
   renderVehicleDiagNote();
@@ -2735,6 +2765,36 @@ function renderTicketInfo(){
   wireTelActions();
 }
 
+/* The technician's steps, read only - Task Tracker #15.1 (2026-11-12): "the vendor can view all the steps,
+   no edit". Every step with the time the technician's app recorded it, from fields already on the ticket.
+   Display only: no buttons, no inputs, nothing is written. The ticket leaves this app at RSP CLOSED as
+   before (MY_STATUSES), which is "till the ticket is closed by the technician". */
+function technicianProgressHtml(r){
+  if(!r) return "";
+  const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
+  const v=function(f){ const x=readVal(r,f); return x==null ? "" : String(x).trim(); };
+  const steps = isTow ? [
+    ["Accepted", v("Service_Acceptance_For_Tow")],
+    ["Reached breakdown", v("Reach_Time")],
+    ["Vehicle picked up", v("Pickup_Time")],
+    ["Reached drop location", v("Drop_Location_Arrival_Time")],
+    ["Handover done", v("RSP_Completion_Time")],
+    ["Payment received", v("Remaining_Fee_Receipt_Time") || (v("Payment_received")==="Yes" ? "Yes" : "")]
+  ] : [
+    ["Accepted", v("Service_Acceptance")],
+    ["Reached breakdown", v("Reach_Time")],
+    ["Work completed", v("RSP_Completion_Time")],
+    ["Payment received", v("Remaining_Fee_Receipt_Time") || (v("Payment_received")==="Yes" ? "Yes" : "")]
+  ];
+  const cancelled=v("Cancellation_Time"), cx=v("Rejection_Reason");
+  const rows=steps.map(function(s){
+    const done=!!s[1];
+    return `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)"><span style="color:${done?"var(--ok)":"var(--muted)"}">${done?"✓":"○"} ${esc(s[0])}</span><span style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">${esc(s[1]||"—")}</span></div>`;
+  }).join("");
+  const extra = (cancelled ? `<div style="padding:6px 0;color:var(--stop)">Cancelled ${esc(cancelled)}</div>` : "")
+    + (cx ? `<div style="padding:6px 0;color:var(--stop)">Customer rejected: ${esc(cx)}</div>` : "");
+  return `<div class="card" style="margin-top:12px"><h3 style="font-family:var(--f-disp);font-weight:800;font-size:15px;margin-bottom:6px">Job progress</h3><div class="hint" style="margin-bottom:6px">Current status: ${esc(v(CONFIG.stageField)||"—")}</div>${rows}${extra}</div>`;
+}
 /* ---------- per-status, per-Service_Type action screen router ---------- */
 function technicianIsRunning(r){
   const techId=lookupId(r && r.Assigned_Technician);
@@ -2770,7 +2830,7 @@ function renderActionScreen(){
   else if(technicianIsRunning(state.current)){
     $("ascreenTitle").textContent="Assigned to Technician";
     const techName=readVal(state.current,"Assigned_Technician") || String(state.current.Assigned_Technician_Email||"").trim() || "your technician";
-    $("ascreenBody").innerHTML=`<div class="empty-state"><h3>Your technician is handling this job</h3><p>${esc(/^[0-9]+$/.test(String(techName).trim()) ? "Your technician" : techName)} runs every step from the technician app. This screen is view only.</p></div>`;
+    $("ascreenBody").innerHTML=`<div class="empty-state"><h3>Your technician is handling this job</h3><p>${esc(/^[0-9]+$/.test(String(techName).trim()) ? "Your technician" : techName)} runs every step from the technician app. This screen is view only.</p></div>`+technicianProgressHtml(state.current);   // Task Tracker #15.1 (2026-11-12): the steps, read only
   }
   else if(st==="RSP ON THE WAY"){ $("ascreenTitle").textContent="Reach Breakdown Location"; isTow?renderReachScreenTow():renderReachScreenRsr(); }
   else if(st==="WORK IN PROGRESS"){ $("ascreenTitle").textContent="Work In Progress"; renderWipScreen(); }
@@ -2871,7 +2931,8 @@ function renderAcceptScreen(){
   }
   if(lookupId(r.Assigned_Technician) && !techRej){
     $("handoffPanel").style.display="block";
-    $("fleetTechList").innerHTML='<p style="font-size:13px;color:var(--muted)">Already assigned to a technician — waiting on their response.</p>';
+    $("fleetTechList").innerHTML='<p style="font-size:13px;color:var(--muted)">Already assigned to a technician — waiting on their response. Only the technician can accept it, from the technician app.</p>';
+    const accBtn=$("acceptBtn"); if(accBtn) accBtn.style.display="none";   // Task Tracker #15 (2026-11-12): once a technician is assigned, Accept is the technician's alone. Reject stays.
   } else {
     showHandoffPanel();
   }
@@ -2940,6 +3001,8 @@ function reportMissedCase(holder){
   try{ loadDashboard(); }catch(e){}
 }
 async function acceptService(){
+  // Task Tracker #15 (2026-11-12): the button is hidden once a technician is assigned; this stops a stale screen too.
+  if(state.current && lookupId(state.current.Assigned_Technician) && !technicianRejection(state.current)){ toast("This job is assigned to your technician - only they can accept it, from the technician app.","err"); return; }
   setDisabled("acceptBtn",true);
   try{
     const pos = await requireLocation();
@@ -3182,12 +3245,17 @@ function fleetTechPhone(rec){ return fleetTechFirstMatch(rec, FLEET_TECH_PHONE_C
       of an id) — now reads the technician ids straight off this vendor's own
       Vendors_Report record (MY_TECHNICIAN_IDS, extracted in
       loadAvailability()) and fetches exactly those records by id. */
+/* Source of the "Assign to a technician" list - 2026-11-05 (Task Tracker #66 follow-up, user choice).
+   false = ONLY the Technicians form's own vendor link (vendors), which the super-admin workflow sets.
+   The Vendors form's `technicians` multi-select is a second, unsynced copy of the same relationship
+   and had drifted - it is no longer read. true restores the old behaviour exactly. */
+const USE_VENDOR_TECHNICIANS_LIST = false;
 async function showHandoffPanel(){
   $("handoffPanel").style.display="block";
   $("fleetTechList").innerHTML='<div class="spin"></div>';
   const r=state.current;
   let techs=[];
-  if(MY_TECHNICIAN_IDS.length){
+  if(USE_VENDOR_TECHNICIANS_LIST && MY_TECHNICIAN_IDS.length){
     try{
       // max_records only accepts 200/500/1000 (Zoho error 9250) — was 100.
       const criteria = "("+MY_TECHNICIAN_IDS.map(function(id){ return "ID == "+id; }).join(" || ")+")";
@@ -3209,7 +3277,8 @@ async function showHandoffPanel(){
       /* Widened 2026-10-16 - the report column reads "Vendor Name" on screen, but
          Zoho's own link name for it can be any of these. Tried in order; the
          any-column scan below catches whatever is not on this list. */
-      const candidates=["Vendor_Name","Fleet_Vendor","Vendor","Vendor_Name1","Vendor1","Vendor_Id","Fleet_Vendor_Name"];
+      // "vendors" / "vendors.vendor_name" first - 2026-11-05: the Technicians form's real vendor lookup (#66).
+      const candidates=["vendors","vendors.vendor_name","Vendor_Name","Fleet_Vendor","Vendor","Vendor_Name1","Vendor1","Vendor_Id","Fleet_Vendor_Name"];
       for(const field of candidates){
         const matched = all.filter(function(t){
           const v=t[field];
@@ -3224,7 +3293,10 @@ async function showHandoffPanel(){
           const myIds = [currentVendorRecord && currentVendorRecord.id, MY_VENDOR_ID_UNPROVEN]
             .map(function(x){ return x==null ? "" : String(x).trim(); }).filter(Boolean);
           if(vid!=null && myIds.indexOf(String(vid).trim())>=0) return true;
-          return String(readVal(t,field)||"").trim().toLowerCase()===MY_VENDOR_NAME.trim().toLowerCase();
+          // Both sides must be non-blank - 2026-11-05: a blank vendor name would otherwise match every
+          // technician whose vendor is blank, now that this is the only path.
+          const linkName=String(readVal(t,field)||"").trim().toLowerCase(), myName=String(MY_VENDOR_NAME||"").trim().toLowerCase();
+          return !!linkName && !!myName && linkName===myName;
         });
         if(matched.length){ techs=matched; console.warn("[GR-Vendor] showHandoffPanel: fallback matched", matched.length, "technician(s) via", CONFIG.fleetTechnicianReport+"."+field, "— consider switching CONFIG.vendorTechniciansField/the multi-lookup approach off if this fallback is what's actually working."); break; }
       }
@@ -3427,7 +3499,7 @@ function renderReachScreenRsr(){
     <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
       ${photoFieldHtml("Image_Upload2","Cancel Photo",1,1)}
       <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+        <select id="cancelReason"><option value="">— select —</option>${RSP_CANCEL_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
@@ -3532,7 +3604,7 @@ function renderReachScreenTow(){
     <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
       ${photoFieldHtml("Image_Upload5","Cancel Photo",1,1)}
       <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+        <select id="cancelReason"><option value="">— select —</option>${RSP_CANCEL_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
@@ -3572,6 +3644,7 @@ async function markReachedTow(){
       if(reachDist) payload.Distance_Reach_To_Breakdown_TOW=reachDist.distanceKm;
     }
     await apiUpdate(r.ID, payload);
+    if(reachPos){ r.Reach_Location_Lat=reachPos.lat; r.Reach_Location_Lon=reachPos.lon; }   // RSID619082 (2026-11-19): Loading / Drop read it from this copy
     await uploadPendingPhotos(r.ID);
     toast("Marked as reached","ok");
     // WhatsApp "Reach Time" message (2026-09-06, RESCUE Towing Service
@@ -3672,7 +3745,7 @@ function renderWipScreen(){
     </div>
     <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
       <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+        <select id="cxRejectReason"><option value="">— select —</option>${CX_REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
@@ -3792,7 +3865,7 @@ function renderLoadingScreen(){
     ${dropReady?"":'<div class="empty-state" style="padding:10px"><p style="font-size:12px">Waiting on a drop location before this can be confirmed.</p></div>'}
     <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
       <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
+        <select id="cxRejectReason"><option value="">— select —</option>${CX_REJECT_REASONS.map(function(rr){return `<option value="${esc(rr)}">${esc(rr)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
@@ -3834,6 +3907,7 @@ async function vehiclePicked(){
        The live fix stays as the fallback, so a case where Reach was never
        recorded behaves exactly as it does today. Pickup_Location_Lat/Lon below
        is untouched and still records the live position. */
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const reachLat=parseCoord(r.Reach_Location_Lat), reachLon=parseCoord(r.Reach_Location_Lon);
     const bLat = (reachLat!=null) ? reachLat : (pos?pos.lat:Number(r.Latitude));
     const bLon = (reachLon!=null) ? reachLon : (pos?pos.lon:Number(r.Longitude));
@@ -3872,6 +3946,7 @@ async function confirmCxRejectLoading(){
     // precise match to that SAME original intent, not a change of intent.
     // Falls back to the static breakdown C only if E isn't populated (e.g. a
     // ticket that reached before this field existed).
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
     const rtLat = eLat!=null ? eLat : Number(r.Latitude), rtLon = eLon!=null ? eLon : Number(r.Longitude);
     const legs = await calc4PointRoundtrip(rtLat,rtLon,null,null,travelModeFor(r));
@@ -3930,6 +4005,7 @@ async function reachedDrop(){
     // static C/A only when the live/stored point isn't available (e.g. a
     // ticket that reached before Reach_Location_Lat/Lon existed, or GPS
     // denied here), so this never simply breaks on older/incomplete data.
+    await ensureReachGps(r);   // RSID619082 (2026-11-19): the Reach GPS saved earlier in this session
     const eLat=parseCoord(r.Reach_Location_Lat), eLon=parseCoord(r.Reach_Location_Lon);
     const bLat = eLat!=null ? eLat : Number(r.Latitude), bLon = eLon!=null ? eLon : Number(r.Longitude);
     const pos=await requireLocation();
@@ -4225,8 +4301,9 @@ function renderPaymentScreen(){
      bug, not a display one: getRescueTicket cashCollectedForTicket() deducts the
      Remaining Fee from the vendor payout whenever this field reads "Cash", so a
      mislabelled gateway payment underpays the vendor by money they never held. */
-  const PAY_METHOD_OPTIONS=["Cash","UPI","Card","Net Banking","Payment Gateway"];
+  const PAY_METHOD_OPTIONS=["Cash","Payment Gateway"];   // #36 (2026-11-12): the client's list for the field apps
   const storedPayMethod=String(r.Payment_Method_Final||"").trim();
+  if(storedPayMethod && PAY_METHOD_OPTIONS.indexOf(storedPayMethod)<0) PAY_METHOD_OPTIONS.push(storedPayMethod);   // a method saved earlier still shows
   const selectedPayMethod=PAY_METHOD_OPTIONS.indexOf(storedPayMethod)>=0?storedPayMethod:"";
   /* No method is pre-selected (2026-09-25, user request): Cash used to be the
      pre-picked option, so a vendor who never touched the dropdown recorded Cash

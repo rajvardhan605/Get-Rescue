@@ -71,7 +71,7 @@ string generateZohoPaymentLink(string recordId, string amount, string email, str
 				// standalone, with zero dependency on onDemandInvoicing.deluge.
 				zoho_payments_client_id = "1000.7BYOUWK2Q2XMJQWU62E6WHCRZOY9VW";
 				zoho_payments_client_secret = "a714fc6ab6c76d058196ceef8b49cad735422987fd";
-				zoho_payments_refresh_token = "1000.7b9a45adfe6300ed5fb43cf9d29eef7b.65c3a6df18bedb83f887bf1f4fbc44d6";
+				zoho_payments_refresh_token = "1000.d2f6cd9b1791fa37a9186de30fb92110.8722433e62d21b551cdfa178b8113ad5";
 				zoho_payments_account_id = "60078772586";
 				zoho_payments_base_url = "https://payments.zoho.in/api/v1";
 				// return_url (revised 2026-09-22, client feedback on a live

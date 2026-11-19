@@ -364,7 +364,6 @@ string createTicket(string customerName, string mobile, string email, string veh
 				Vehicle_Status="ONROAD"
 				Service_Type=serviceType
 				Time_of_service="NOW"
-				Remarks="Whatsapp."
 				Lead_Source="Whatsapp"
 				Status="NEW"
 				Added_User=zoho.loginuser

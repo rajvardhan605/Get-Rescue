@@ -323,6 +323,9 @@ const CONFIG = {
 // on every device. Do not re-add without checking which request is current.
 const MY_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","WORK IN PROGRESS","REMAINING FEE DUE"];
 const REJECT_REASONS = ["Too Far / Outside Service Area","Already Engaged With Another Job","Vehicle/Equipment Not Suitable","Not Available (Off Duty)","Other"];
+// Client's lists - Task Tracker #33 / #34 (2026-11-12). REJECT_REASONS above stays the invite-reject list.
+const RSP_CANCEL_REASONS = ["Customer vehicle started","Customer change of plans","Taking more time than promised ETA","Customer not answering call"];
+const CX_REJECT_REASONS = ["Customer vehicle started","Customer change of plans","Other Mechanic/Driver has reached","Customer not answering call"];
 // Corrected 2026-09-07 (user-provided LOCATIONS-DISTANCES-DATETIME spec) —
 // previous value (12.967827711025203, 77.611228) was off by ~13-20m from the
 // spec's confirmed office coordinates.
@@ -1692,7 +1695,58 @@ async function loadMyInvites(){
 // list without duplicating this filtering logic — see that function's own
 // comment for why a separate fetch (rather than just reusing state.tickets)
 // is what actually detects a newly-arrived case.
+/* Technicians set to "Both" - 2026-11-11, user choice. Their TOW jobs are listed here too and open on the
+   Driver page, which runs the tow steps. The statuses are the Driver app's own MY_STATUSES. Only "Both":
+   a TOW-only person uses the Driver app as today, and RSR-only or unreadable capability changes nothing. */
+const BOTH_TOW_STATUSES = ["RSP IRA (INVITE RESPONSE AWAITED)","RSP ON THE WAY","LOADING","TO DROP LOCATION","UNLOADING","REMAINING FEE DUE"];
+// The Driver page's link name in Zoho (the part after #Page: in its address). Confirm it there.
+const DRIVER_PAGE_LINK = "Driver_Ticket";
+function techDoesBoth(){
+  const raw = currentTechRecord && currentTechRecord.data ? currentTechRecord.data.service_capability : "";
+  const v = (raw && typeof raw==="object") ? (raw.display_value||raw.value||"") : raw;
+  return String(v||"").trim().toUpperCase()==="BOTH";
+}
+function isTowJob(r){ return String((r && r[CONFIG.serviceTypeField])||"").trim().toUpperCase()==="TOW"; }
 async function fetchMyTickets(){
+  const rsr = await fetchMyRsrTickets();
+  if(!techDoesBoth()) return rsr;
+  let tow = [];
+  try{ tow = await fetchMyTowTicketsForBoth(); }
+  catch(e){ console.warn("[Get-Rescue] TOW jobs for a Both technician could not be loaded - repair jobs shown as usual", e); }
+  return rsr.concat(tow);
+}
+/* Same rules as the repair list (and as the Driver app): a job I rejected and no longer hold is not mine. */
+function stillMyJob(r, inviteMap){
+  const inv = inviteMap[String(r.ID)];
+  if(inviteIsRejected(inv) && !ticketIsMineNow(r)) return false;
+  if(inviteIsRejected(inv) && String(r[CONFIG.stageField]||"").trim().toUpperCase()==="RSP IRA (INVITE RESPONSE AWAITED)") return false;
+  return inv!=null || isMine(r);
+}
+async function fetchMyTowTicketsForBoth(){
+  const inviteMap = state.inviteByTicketId || {};
+  const recs = await apiGetReport(CONFIG.reportName, '(Service_Type == "TOW")', 200);
+  return recs.filter(function(r){ const st=String(r[CONFIG.stageField]||"").trim().toUpperCase(); return BOTH_TOW_STATUSES.indexOf(st)>=0; })
+    .filter(function(r){ return stillMyJob(r, inviteMap); });
+}
+/* Opens the Driver page, where the tow steps run. The job is waiting in its list. */
+async function openDriverPage(rec){
+  let origin = "";
+  try{ const m=String(document.referrer||"").match(/^(https:\/\/[^\/?#]+)/i); if(m) origin=m[1]; }catch(e){}
+  const util = (window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.UTIL) || null;
+  const hash = "#Page:"+DRIVER_PAGE_LINK;
+  const shapes = [];
+  if(origin) shapes.push({ action:"open", url:origin+"/"+hash, window:"same" });
+  shapes.push({ action:"open", url:hash, window:"same" });
+  if(util && typeof util.navigateParentURL==="function"){
+    for(const cfg of shapes){
+      try{ await util.navigateParentURL(cfg); console.log("[GR] openDriverPage: opened", JSON.stringify(cfg)); return true; }
+      catch(e){ console.warn("[GR] openDriverPage: rejected", JSON.stringify(cfg), e); }
+    }
+  }
+  toast("This is a towing job - open the Driver page from the menu to run it ("+caseLabel(rec||{})+").","ok");
+  return false;
+}
+async function fetchMyRsrTickets(){
   let inviteMap={};
   try{ inviteMap = await loadMyInvites(); }catch(e){ console.warn("[Get-Rescue] loadMyInvites failed (falling back to email match only)", e); }
   state.inviteByTicketId = inviteMap;
@@ -1953,6 +2007,9 @@ const STATUS_PILL = {
   "RSP ON THE WAY": {cls:"otw", label:"On The Way"},
   "WORK IN PROGRESS": {cls:"wip", label:"In Progress"},
   "REMAINING FEE DUE": {cls:"pay", label:"Payment Due"},
+  "LOADING": {cls:"wip", label:"Loading"},              // tow statuses - "Both" technicians (2026-11-11)
+  "TO DROP LOCATION": {cls:"wip", label:"To Drop"},
+  "UNLOADING": {cls:"wip", label:"Unloading"},
   "RSP REJECT": {cls:"rej", label:"Rejected"}
 };
 /* One muted line under the list, shown ONLY when a ticket on screen could not
@@ -2001,6 +2058,7 @@ function renderDashboard(){
       <div class="top"><span class="cid">${esc(caseLabel(r))}</span><span class="st ${pill.cls}">${esc(pill.label)}</span></div>
       <h3>${esc(vehicleDisplayFor(r)||"Vehicle")}</h3>
       <div class="meta">${esc(issueNamesFor(r)||"")} · ${esc(readVal(r,CONFIG.nameField)||"")}</div>
+      ${isTowJob(r) ? '<div class="meta" style="margin-top:6px"><b style="color:var(--signal)">TOW</b> · Opens on the Driver page</div>' : ""}
     </div>`;
   }).join("");
   renderVehicleDiagNote();
@@ -2011,6 +2069,7 @@ function renderDashboard(){
 function openTicket(id){
   const rec = state.tickets.find(function(r){ return String(r.ID)===String(id); });
   if(!rec) return;
+  if(isTowJob(rec)){ openDriverPage(rec); return; }   // tow steps live in the Driver app (2026-11-11)
   state.current = Object.assign({}, rec);
   state.photos = {}; state.files = {};
   $("dashboard").classList.add("off"); $("dashboard").style.display="none";
@@ -2388,7 +2447,7 @@ function renderReachScreen(){
     <div class="card" id="cancelPanel" style="display:none;margin-top:12px">
       ${photoFieldHtml("Image_Upload2","Cancel Photo",1,1)}
       <div class="fld"><label>Cancel Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cancelReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+        <select id="cancelReason"><option value="">— select —</option>${RSP_CANCEL_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCancelBtn" type="button">Back</button>
@@ -2560,7 +2619,7 @@ function renderWipScreen(){
     </div>
     <div class="card" id="cxRejectPanel" style="display:none;margin-top:12px">
       <div class="fld"><label>Cx Rejection Reason<span style="color:var(--stop)">*</span></label>
-        <select id="cxRejectReason"><option value="">— select —</option>${REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
+        <select id="cxRejectReason"><option value="">— select —</option>${CX_REJECT_REASONS.map(function(r){return `<option value="${esc(r)}">${esc(r)}</option>`;}).join("")}</select>
       </div>
       <div class="btn-row">
         <button class="btn ghost" id="backFromCxRejectBtn" type="button">Back</button>
@@ -2730,8 +2789,9 @@ function renderPaymentScreen(){
      bug, not a display one: getRescueTicket cashCollectedForTicket() deducts the
      Remaining Fee from the vendor payout whenever this field reads "Cash", so a
      mislabelled gateway payment underpays the vendor by money they never held. */
-  const PAY_METHOD_OPTIONS=["Cash","UPI","Card","Net Banking","Payment Gateway"];
+  const PAY_METHOD_OPTIONS=["Cash","Payment Gateway"];   // #36 (2026-11-12): the client's list for the field apps
   const storedPayMethod=String(r.Payment_Method_Final||"").trim();
+  if(storedPayMethod && PAY_METHOD_OPTIONS.indexOf(storedPayMethod)<0) PAY_METHOD_OPTIONS.push(storedPayMethod);   // a method saved earlier still shows
   const selectedPayMethod=PAY_METHOD_OPTIONS.indexOf(storedPayMethod)>=0?storedPayMethod:"";
   /* No method is pre-selected (2026-09-25, user request): Cash used to be the
      pre-picked option, so a vendor who never touched the dropdown recorded Cash
@@ -2855,7 +2915,6 @@ function customerPageButtonPath(record, mode, extraParams){
 }
 const FEEDBACK_SENT_FIELD = "Feedback_Sent_At";
 /* THE TEMPLATE THAT CARRIES THIS APP'S OWN FEEDBACK PAGE - 2026-10-13.
-
    A WhatsApp link rides a template's URL BUTTON, and only four templates in
    this workspace have one. This is the client's own choice of which to reuse:
    confirm_booking_fee_and_total_fee already points its button at the Customer

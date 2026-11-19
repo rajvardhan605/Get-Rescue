@@ -1,0 +1,349 @@
+Aston Martin DB12
+Aston Martin DBX
+Aston Martin Vantage
+AUDI A3
+Audi A4
+AUDI A5
+Audi A6
+Audi A8 L
+Audi e-tron GT
+Audi Q3
+Audi Q3 Sportback
+Audi Q5
+Audi Q7
+Audi Q8
+Audi RS e-tron GT
+Audi RS Q8
+Bentley Bentayga
+Bentley Continental GT
+Bentley Flying Spur
+BMW 2 Series Gran Coupe
+BMW 3 Series LWB
+BMW 5 Series LWB
+BMW 7 Series
+BMW i4
+BMW i5
+BMW i7
+BMW iX
+BMW iX1
+BMW M2
+BMW M340i
+BMW M4 Competition
+BMW M5
+BMW X1
+BMW X3
+BMW X5
+BMW X7
+Brezza
+BYD Atto 3
+BYD eMAX 7
+BYD Seal
+BYD Sealion 7
+CHEVROLET AVEO
+CHEVROLET AVEO U-VA
+CHEVROLET BEAT
+CHEVROLET CAPTIVA
+CHEVROLET CRUZE
+CHEVROLET ENJOY
+CHEVROLET OPTRA
+CHEVROLET SAIL
+CHEVROLET SPARK
+CHEVROLET TAVERA
+Citroen Basalt
+Citroen C3
+Citroen C3 Aircross / Aircross
+Citroen C5 Aircross
+Citroen eC3
+DATSUN REDI-GO
+Ferrari 296 GTB
+Ferrari 296 GTS
+Ferrari Purosangue
+Ferrari Roma
+Ferrari SF90 Stradale
+FIAT AVVENTURA
+FIAT LINEA
+FIAT NOT IN LIST
+FIAT PUNTO
+FIAT URBAN CROSS
+Force Motors Gurkha 3-Door
+Force Motors Gurkha 5-Door
+FORD ASPIRE
+FORD CLASSIC
+FORD ECOSPORT
+FORD ENDEAVOUR
+FORD FIESTA
+FORD FIGO
+FORD FOCUS
+FORD FREESTYLE
+FORD IKON
+FORD MUSTANG
+HINDUSTAN MOTORS AMBASSADOR
+HONDA ACCORD
+Honda Amaze
+HONDA BRIO
+HONDA BRV
+Honda City
+Honda City e:HEV
+HONDA CIVIC
+HONDA CR-V
+Honda Elevate
+HONDA JAZZ
+HONDA MOBILIO
+HONDA WRV
+HYUNDAI ACCENT
+Hyundai Alcazar
+Hyundai Aura
+Hyundai Creta
+Hyundai Creta Electric
+Hyundai Creta N Line
+HYUNDAI ELANTRA
+HYUNDAI EON
+Hyundai Exter
+HYUNDAI GETZ
+Hyundai Grand i10 Nios
+HYUNDAI I10
+Hyundai i20
+Hyundai i20 N Line
+Hyundai Ioniq 5
+HYUNDAI SANTRO
+HYUNDAI SONATA
+Hyundai Tucson
+Hyundai Venue
+Hyundai Venue N Line
+Hyundai Verna
+HYUNDAI XCENT
+ISUZU D-MAX V-CROSS
+Isuzu Hi-Lander
+Isuzu MU-X
+Isuzu V-Cross
+Jaguar F-Pace
+Jeep Compass
+Jeep Grand Cherokee
+Jeep Meridian
+Jeep Wrangler
+JSW MG Motor Astor
+JSW MG Motor Comet EV
+JSW MG Motor Cyberster
+JSW MG Motor Gloster
+JSW MG Motor Hector
+JSW MG Motor Hector Plus
+JSW MG Motor M9
+JSW MG Motor Majestor
+JSW MG Motor Windsor EV
+JSW MG Motor ZS EV
+Kia Carens
+Kia Carens Clavis
+Kia Carens Clavis EV
+Kia Carnival
+Kia EV6
+Kia Seltos
+Kia Sonet
+Kia Syros
+Lamborghini Huracan
+Lamborghini Revuelto
+Lamborghini Urus SE
+Land Rover Defender
+Land Rover Discovery
+Land Rover Discovery Sport
+Land Rover Range Rover
+Land Rover Range Rover Evoque
+Land Rover Range Rover Sport
+Land Rover Range Rover Velar
+Lexus ES
+Lexus LC 500h
+Lexus LM
+Lexus LX
+Lexus NX
+Lexus RX
+Mahindra BE 6
+Mahindra Bolero
+Mahindra Bolero Neo
+MAHINDRA E2O
+MAHINDRA KUV100 NXT
+Mahindra Marazzo
+MAHINDRA QUANTO
+MAHINDRA REVA
+MAHINDRA SCORPIO
+Mahindra Scorpio Classic
+Mahindra Scorpio N
+Mahindra Thar
+Mahindra Thar Roxx
+MAHINDRA TUV 300
+MAHINDRA VERITO
+Mahindra XEV 9e
+MAHINDRA XUV 300
+Mahindra XUV 3XO
+MAHINDRA XUV 500
+Mahindra XUV400
+Mahindra XUV700
+MAHINDRA XYLO
+MARUTI ESTEEM
+MARUTI SUZUKI 800
+MARUTI SUZUKI A-STAR
+Maruti Suzuki Alto K10
+Maruti Suzuki Baleno
+Maruti Suzuki Brezza
+Maruti Suzuki Celerio
+Maruti Suzuki Ciaz
+Maruti Suzuki Dzire
+Maruti Suzuki e Vitara
+MARUTI SUZUKI EECO
+Maruti Suzuki Ertiga
+Maruti Suzuki Fronx
+Maruti Suzuki Grand Vitara
+MARUTI SUZUKI GYPSY
+Maruti Suzuki Ignis
+MARUTI SUZUKI IGNIS
+Maruti Suzuki Invicto
+Maruti Suzuki Jimny
+MARUTI SUZUKI JIMNY
+MARUTI SUZUKI OMNI
+MARUTI SUZUKI RITZ
+MARUTI SUZUKI S-CROSS
+Maruti Suzuki S-Presso
+MARUTI SUZUKI S-PRESSO
+Maruti Suzuki Swift
+MARUTI SUZUKI SX4
+Maruti Suzuki Wagon R
+MARUTI SUZUKI WAGON R
+Maruti Suzuki XL6
+MARUTI SUZUKI ZEN
+Maserati Ghibli
+Maserati GranTurismo
+Maserati Grecale
+Maserati Levante
+Maserati Quattroporte
+Mercedes-Benz A-Class Limousine
+Mercedes-Benz AMG A 45 S
+Mercedes-Benz AMG G 63
+Mercedes-Benz AMG GLE 53 Coupe
+Mercedes-Benz C-Class
+Mercedes-Benz E-Class LWB
+Mercedes-Benz EQA
+Mercedes-Benz EQB
+Mercedes-Benz EQE SUV
+Mercedes-Benz EQS Sedan
+Mercedes-Benz EQS SUV
+Mercedes-Benz GLA
+Mercedes-Benz GLB
+Mercedes-Benz GLC
+Mercedes-Benz GLE
+Mercedes-Benz GLS
+Mercedes-Benz Maybach GLS
+Mercedes-Benz Maybach S-Class
+Mercedes-Benz S-Class
+MG ASTER
+MG COMET EV
+MG GLOSTER
+MG HECTOR
+MG HECTOR PLUS
+Mini Cooper S
+Mini Cooper SE
+Mini Countryman Electric
+MITSUBISHI LANCER
+MITSUBISHI OUTLANDER
+MITSUBISHI PAJERO
+Nexon
+Nissan Magnite
+NISSAN MICRA
+NISSAN SUNNY
+NISSAN TERRANO
+Nissan X-Trail
+Porsche 718 Boxster
+Porsche 718 Cayman
+Porsche 911
+Porsche Cayenne
+Porsche Cayenne Coupe
+Porsche Macan
+Porsche Panamera
+Porsche Taycan
+RANGE ROVER
+RENAULT CAPTUR
+RENAULT DUSTER
+RENAULT FLUENCE
+Renault Kiger
+RENAULT KOLEOS
+Renault Kwid
+RENAULT KWID EV
+RENAULT LODGY
+RENAULT LOGAN
+RENAULT PULSE
+RENAULT SCALA
+Renault Triber
+Rolls-Royce Cullinan
+Rolls-Royce Ghost
+Rolls-Royce Phantom
+Rolls-Royce Spectre
+SKODA FABIA
+Skoda Kodiaq
+Skoda Kushaq
+Skoda Kylaq
+SKODA LAURA
+SKODA NEW OCTAVIA
+SKODA NEW SUPERB
+SKODA OCTAVIA
+SKODA RAPID
+Skoda Slavia
+SKODA SLAVIA
+Skoda Superb
+SKODA SUPERB
+SKODA YETI
+Tata Motors Altroz
+Tata Motors Curvv
+Tata Motors Curvv EV
+Tata Motors Harrier
+Tata Motors Harrier EV
+TATA MOTORS HEXA
+TATA MOTORS INDICA
+TATA MOTORS INDIGO
+TATA MOTORS MANZA
+TATA MOTORS NANO
+Tata Motors Nexon
+Tata Motors Nexon EV
+Tata Motors Punch
+Tata Motors Punch EV
+Tata Motors Safari
+Tata Motors Sierra
+Tata Motors Sierra EV
+TATA MOTORS SUMO
+Tata Motors Tiago
+Tata Motors Tiago EV
+Tata Motors Tigor
+Tata Motors Tigor EV
+TATA XPRES EV
+Toyota Camry
+TOYOTA COROLLA ALTIS
+TOYOTA ETIOS
+Toyota Fortuner
+Toyota Fortuner Legender
+Toyota Glanza
+Toyota Hilux
+Toyota Innova Crysta
+Toyota Innova Hycross
+Toyota Land Cruiser 300
+TOYOTA PLATINUM ETIOS
+TOYOTA PRIUS
+TOYOTA QUALIS
+Toyota Rumion
+Toyota Urban Cruiser Hyryder
+Toyota Urban Cruiser Taisor
+Toyota Vellfire
+TOYOTA VELLFIRE
+TOYOTA YARIS
+VOLKSWAGEN JETTA
+VOLKSWAGEN PASSAT
+VOLKSWAGEN POLO
+Volkswagen Taigun
+VOLKSWAGEN TCROSS
+Volkswagen Tiguan
+VOLKSWAGEN TIGUAN
+VOLKSWAGEN TROC
+VOLKSWAGEN VENTO
+Volkswagen Virtus
+VOLKSWAGEN VIRTUS
+Volvo C40 Recharge / EC40
+Volvo S90
+Volvo XC40 Recharge / EX40
+Volvo XC60
+Volvo XC90
+OTHER FOUR WHEELER
