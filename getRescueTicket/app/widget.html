@@ -5132,11 +5132,11 @@ const FIELD_ACTIVITY_LOG_FIELDS=[
   // `_ETA_Met_Status` above — safe here since FIELD_ACTIVITY_LOG_FIELDS'
   // own closureFieldGroups() filter (unlike grp()'s STAGES-based one) never
   // excluded computed/navlink field types to begin with.
-  { n:"_BDL_ETA", l:"BDL ETA", t:"computed", compute:expectedArrivalTime,
+  { n:"_BDL_ETA", l:"BDL ETA", t:"computed", compute:bdlEtaDateTime,   // #125 (2026-11-20): date + time, like the other rows
     emptyHint:"Not available yet — needs an Accept time and an ETA." },
   /* Drop ETA shown as a time, like BDL ETA - Task Tracker 82.5 / 94.1 (2026-11-12): picked-up time + these
      minutes. Same field, still click-to-edit in minutes; with no picked-up time the minutes show as before. */
-  { n:"Return_Journey_ETA", l:"Drop ETA", t:"number", closureText:dropEtaTime, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }   // 82.4 #13 / 94.1 #13: below BDL ETA
+  { n:"Return_Journey_ETA", l:"Drop ETA", t:"number", closureText:dropEtaDateTime, when:(s)=>String(s[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW" }   // 82.4 #13 / 94.1 #13: below BDL ETA
 ];
 /* Ports the mock's "TASK CLOSURE STATUS -> CONDITION" table's fee formula:
    TSF=(BF+BALF)-(REFUNDBF+REFUNDBALF). BALF (balance fee) maps to this app's
@@ -11219,6 +11219,23 @@ function dropEtaTime(r){
   if(!at) return "";
   return fmtClockTime(new Date(at.getTime()+mins*60000));
 }
+/* BDL ETA / Drop ETA as DATE + TIME - Task Tracker #125 (2026-11-20, Amith: "BDL ETA and DROP ETA are the
+   only two time fields.. all others are DATE TIME fields"). Closure page Field Activity Log only. Same
+   moments as before (BDL: accept time + ETA / agent override, via expectedArrivalDeadline(); Drop: picked-up
+   time + Drop ETA minutes), printed in the 12-hour shape Zoho returns for the real Date-Time fields
+   ("20-Nov-2026 03:45:00 PM"). The Accept / Reach pages keep their clock-time Expected Arrival. */
+function bdlEtaDateTime(r){
+  const d = expectedArrivalDeadline(r);
+  return d ? fmtDateTime12(d) : "";
+}
+function dropEtaDateTime(r){
+  const mins = Number(r && r.Return_Journey_ETA);
+  if(!mins || isNaN(mins)) return "";
+  const raw = r.Pickup_Time;
+  const at = parseDateTime12(raw) || parseDateTime24(raw) || parseBoxDateTime(raw);
+  if(!at) return "";
+  return fmtDateTime12(new Date(at.getTime()+mins*60000));
+}
 function expectedArrivalTime(r){
   const isTow=String(r[CONFIG.serviceTypeField]||"").toUpperCase()==="TOW";
   const acceptRaw = isTow ? r.Service_Acceptance_For_Tow : r.Service_Acceptance;
@@ -13127,8 +13144,17 @@ async function sendDueSend9Messages(recs){
       continue;
     }
     try{
-      await sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
-      console.log("[Get-Rescue] sendDueSend9Messages: SEND 9 delivered for ticket", r.ID);
+      const sent9 = await sendWhatsAppTemplate(r.Phone_Number1, "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges", []);
+      if(sent9 === false){
+        /* RSID640739 follow-up (2026-11-20): a refused send used to be lost. Hand it to the server
+           sweep (sendDueSend9Server.deluge), which retries "CLAIMED send-failed" marks; dashboards
+           skip every CLAIMED value, so this screen never retries it itself. */
+        console.warn("[Get-Rescue] sendDueSend9Messages: SEND 9 refused for ticket", r.ID, "- handed to the server to retry");
+        try{ await updateTicket(r.ID, { Send_9_Due_At: "CLAIMED send-failed "+(LOGIN_EMAIL||"agent")+" "+Date.now() }); }
+        catch(e2){ console.warn("[Get-Rescue] sendDueSend9Messages: could not mark ticket", r.ID, "for a server retry", e2); }
+      } else {
+        console.log("[Get-Rescue] sendDueSend9Messages: SEND 9 delivered for ticket", r.ID);
+      }
     }catch(e){
       console.warn("[Get-Rescue] sendDueSend9Messages: SEND 9 failed for ticket", r.ID, "- the due flag is already cleared, so it will NOT be retried", e);
     }

@@ -1,0 +1,70 @@
+// SEND 9 SERVER TIMER - 2026-11-20. Zoho Creator's ordinary schedules run hourly at best, too slow
+// for a message due 5 minutes after accept. A schedule on a DATE-TIME FIELD runs at that field's time,
+// and a script that moves the field forward makes it run again (Zoho's own "Tip 15" pattern).
+//
+// SETUP IN ZOHO (one time):
+//  1. New form  Send9_Timer  with one Date-Time field  Next_Run.  Add ONE record, Next_Run = now + 2 min.
+//  2. Functions: create  sendDueSend9Server  (paste sendDueSend9Server.deluge) and
+//     send9TimerWatchdog  (paste PART B below). Both: return type string, no arguments.
+//  3. Schedules -> Create -> "Based on date field": form Send9_Timer, field Next_Run, run AT that time
+//     (0 minutes offset, no repeat). Script = PART A below. Name it "SEND 9 Timer".
+//  4. Schedules -> Create -> custom schedule, every 1 hour. Script:
+//         r = thisapp.send9TimerWatchdog();
+//         info r;
+//     Name it "SEND 9 Timer Watchdog". It restarts the timer if it ever stops, and sweeps once itself.
+
+// ---------- PART A: script of the "SEND 9 Timer" date-field schedule ----------
+// Re-arm FIRST, so a slow or failed sweep can never stop the chain.
+input.Next_Run = zoho.currenttime.addMinutes(2);
+try
+{
+	r = thisapp.sendDueSend9Server();
+	info r;
+}
+catch (timerEx)
+{
+	info "SEND 9 Timer - sweep failed (tried again next run): " + timerEx.toString();
+}
+
+// ---------- PART B: function send9TimerWatchdog (return type string, no arguments) ----------
+string send9TimerWatchdog()
+{
+	nowMs = zoho.currenttime.toLong();
+	found = 0;
+	rearmed = 0;
+	for each tm in Send9_Timer[ID != 0]
+	{
+		found = found + 1;
+		if(tm.Next_Run == null)
+		{
+			tm.Next_Run = zoho.currenttime.addMinutes(2);
+			rearmed = rearmed + 1;
+		}
+		else if(tm.Next_Run.toLong() < nowMs - 600000)
+		{
+			tm.Next_Run = zoho.currenttime.addMinutes(2);
+			rearmed = rearmed + 1;
+		}
+	}
+	if(found == 0)
+	{
+		newTimer = insert into Send9_Timer
+		[
+			Added_User=zoho.loginuser
+			Next_Run=zoho.currenttime.addMinutes(2)
+		];
+		rearmed = 1;
+	}
+	sweep = "";
+	try
+	{
+		sweep = thisapp.sendDueSend9Server();
+	}
+	catch (watchEx)
+	{
+		sweep = "sweep failed: " + watchEx.toString();
+	}
+	out = "SEND 9 watchdog: " + found + " timer record(s), " + rearmed + " restarted. " + sweep;
+	info out;
+	return out;
+}

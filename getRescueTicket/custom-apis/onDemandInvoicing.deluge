@@ -249,6 +249,75 @@ invoiceURL="";
 				connection:"zoho_books_connection"
 			];
 			newContact = createContactResp.get("contact");
+			// SAME NAME, DIFFERENT PHONE - 2026-11-20 ("The customer "invoice test" already exists").
+			// Zoho Books needs a unique contact name. When the phone search above finds nothing but a
+			// contact with this NAME already exists (another customer, or the same one under another
+			// number), the create is refused and no invoice could be made. Now the contact is created as
+			// "<name> - <phone>"; if that one exists too (this same customer's earlier invoice), it is
+			// found by that exact name and reused. Never binds to a contact with only the bare name, so an
+			// invoice is never put on a different customer. The phone search above is unchanged.
+			if(newContact == null)
+			{
+				dupMsg = ifnull(createContactResp.get("message"),"").toString();
+				if(dupMsg.contains("already exists"))
+				{
+					phoneTag = "";
+					if(customerPhoneDigits != null)
+					{
+						phoneTag = customerPhoneDigits.trim();
+					}
+					if(phoneTag == "" && customerPhone != null)
+					{
+						phoneTag = customerPhone.trim();
+					}
+					if(phoneTag == "" && recordId != null)
+					{
+						phoneTag = recordId.trim();
+					}
+					uniqueName = nameForContact.trim() + " - " + phoneTag;
+					info "onDemandInvoicing - contact name [" + nameForContact + "] already exists in Books; trying [" + uniqueName + "]";
+					contactMap.put("contact_name",uniqueName);
+					retryContactResp = invokeurl
+					[
+						url :books_base_url + "/contacts?organization_id=" + organization_id
+						type :POST
+						parameters:contactMap.toString()
+						headers:{"Content-Type":"application/json"}
+						connection:"zoho_books_connection"
+					];
+					newContact = retryContactResp.get("contact");
+					if(newContact == null)
+					{
+						uniqueSearch = uniqueName.replaceAll(" ","%20");
+						uniqueResp = invokeurl
+						[
+							url :books_base_url + "/contacts?organization_id=" + organization_id + "&contact_name=" + uniqueSearch
+							type :GET
+							connection:"zoho_books_connection"
+						];
+						uniqueList = uniqueResp.get("contacts");
+						if(uniqueList != null)
+						{
+							for each uc in uniqueList
+							{
+								if(newContact == null)
+								{
+									ucName = "";
+									if(uc.get("contact_name") != null)
+									{
+										ucName = uc.get("contact_name").toString().trim();
+									}
+									if(ucName.equalsIgnoreCase(uniqueName.trim()))
+									{
+										newContact = uc;
+										info "onDemandInvoicing - reusing Books contact [" + ucName + "] -> " + uc.get("contact_id");
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 			if(newContact == null)
 			{
 				createContactErr = createContactResp.get("message");

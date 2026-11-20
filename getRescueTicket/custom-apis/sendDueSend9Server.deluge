@@ -1,0 +1,298 @@
+string sendDueSend9Server()
+{
+	// SEND 9 FROM THE SERVER - 2026-11-20 (RSID640739: accepted 13:13, SEND 9 due 13:18, never sent).
+	// The field apps write Send_9_Due_At = accept time + 5 minutes ("dd-MMM-yyyy HH:mm:00", IST).
+	// Until today ONLY an open agent dashboard sent it, so with no agent screen open it never went.
+	// This function is run every few minutes by the "Send9_Timer" schedule (see send9Timer.deluge)
+	// and sends it with nobody logged in. The agent dashboard keeps its own 30-second sweep; both
+	// use the same CLAIMED mark, so only one of them sends.
+	//
+	// What it does with each value of Send_9_Due_At:
+	//   blank                         -> not fetched (already sent, or never scheduled)
+	//   a date not yet reached         -> left alone
+	//   a date due less than GRACE ago -> left alone this run (an open dashboard sends within 30 s)
+	//   a date due GRACE..STALE ago    -> claimed, cleared, sent
+	//   a date due more than STALE ago -> cleared WITHOUT sending (too late to be useful; old rows)
+	//   not a date and not CLAIMED     -> left alone, logged (the dashboard ignores it too)
+	//   "CLAIMED ..." younger than STUCK -> left alone (a dashboard or this function is sending it)
+	//   "CLAIMED ..." older than STUCK   -> the sender stopped before sending (the field is cleared
+	//                                       BEFORE a send), so it is sent now - unless older than STALE
+	//   "CLAIMED send-failed ..."      -> a dashboard's send was refused: retried here
+	//   "CLAIMED server-retry N"       -> this function's send was refused: retried until MAX_RETRIES
+	//
+	// DRY_RUN "yes" writes nothing and sends nothing - it only logs what it WOULD do.
+	// TEST_RECORD_ID limits the run to one ticket (its long ID) while testing.
+	DRY_RUN = "no";
+	TEST_RECORD_ID = "";
+	GRACE_MINUTES = 1;
+	STALE_MINUTES = 60;
+	STUCK_MINUTES = 3;
+	MAX_RETRIES = 3;
+	TEMPLATE_9 = "tell_customer_to_contact_the_call_center_before_agreeing_to_any_extra_work_or_extra_charges";
+	sentCount = 0;
+	failCount = 0;
+	clearedCount = 0;
+	waitCount = 0;
+	report = "";
+	logLine = "";
+	nowMs = zoho.currenttime.toLong();
+	info "sendDueSend9Server - start " + zoho.currenttime + " | dryRun=" + DRY_RUN + " | test=" + TEST_RECORD_ID;
+	dueIds = List();
+	try
+	{
+		if(TEST_RECORD_ID != "")
+		{
+			testLong = TEST_RECORD_ID.toLong();
+			for each s9t in Create_Case[ID == testLong]
+			{
+				dueIds.add(s9t.ID);
+			}
+		}
+		else
+		{
+			for each s9 in Create_Case[Send_9_Due_At != null && Send_9_Due_At != ""]
+			{
+				dueIds.add(s9.ID);
+			}
+		}
+	}
+	catch (fetchEx)
+	{
+		info "sendDueSend9Server - could not read tickets: " + fetchEx.toString();
+		return "ERROR reading tickets: " + fetchEx.toString();
+	}
+	for each tid in dueIds
+	{
+		try
+		{
+			for each t9 in Create_Case[ID == tid]
+			{
+				raw = ifnull(t9.Send_9_Due_At,"").toString().trim();
+				action = "";
+				reason = "";
+				retryNo = 0;
+				if(raw == "")
+				{
+					reason = "blank - nothing to do";
+				}
+				else if(raw.startsWith("CLAIMED"))
+				{
+					ageMin = 0;
+					if(t9.Modified_Time != null)
+					{
+						ageMin = (nowMs - t9.Modified_Time.toLong()) / 60000;
+					}
+					if(raw.startsWith("CLAIMED server-retry "))
+					{
+						retryText = raw.remove("CLAIMED server-retry ").trim();
+						try
+						{
+							retryNo = retryText.toLong();
+						}
+						catch (retryEx)
+						{
+							retryNo = MAX_RETRIES;
+						}
+					}
+					else if(raw.startsWith("CLAIMED send-failed"))
+					{
+						retryNo = 1;
+					}
+					if(ageMin < STUCK_MINUTES)
+					{
+						action = "wait";
+						reason = "claimed " + ageMin + " min ago - someone is sending it";
+					}
+					else if(ageMin > STALE_MINUTES)
+					{
+						action = "clear";
+						reason = "claim " + ageMin + " min old - too late, cleared without sending";
+					}
+					else if(retryNo >= MAX_RETRIES)
+					{
+						action = "clear";
+						reason = "send refused " + retryNo + " times - giving up";
+					}
+					else
+					{
+						action = "send";
+						reason = "claim " + ageMin + " min old was never finished (attempt " + (retryNo + 1) + ")";
+					}
+				}
+				else
+				{
+					dueMs = 0;
+					try
+					{
+						dueDt = raw.toDateTime();
+						dueMs = dueDt.toLong();
+					}
+					catch (parseEx)
+					{
+						dueMs = 0;
+					}
+					if(dueMs == 0)
+					{
+						reason = "value [" + raw + "] is not a date - left alone";
+					}
+					else
+					{
+						lateMin = (nowMs - dueMs) / 60000;
+						if(nowMs < dueMs)
+						{
+							action = "wait";
+							reason = "due " + raw + " - not yet";
+						}
+						else if(lateMin < GRACE_MINUTES)
+						{
+							action = "wait";
+							reason = "due " + raw + " just now - leaving it to an open dashboard this run";
+						}
+						else if(lateMin > STALE_MINUTES)
+						{
+							action = "clear";
+							reason = "due " + raw + " (" + lateMin + " min ago) - too late, cleared without sending";
+						}
+						else
+						{
+							action = "send";
+							reason = "due " + raw + " (" + lateMin + " min ago)";
+						}
+					}
+				}
+				logLine = "[" + tid + "] " + action + " - " + reason;
+				if(action == "wait")
+				{
+					waitCount = waitCount + 1;
+				}
+				if(DRY_RUN == "yes")
+				{
+					info "sendDueSend9Server DRY RUN " + logLine;
+					report = report + " " + logLine + ";";
+				}
+				else if(action == "clear")
+				{
+					t9.Send_9_Due_At = "";
+					clearedCount = clearedCount + 1;
+					info "sendDueSend9Server " + logLine;
+					report = report + " " + logLine + ";";
+				}
+				else if(action == "")
+				{
+					info "sendDueSend9Server " + logLine;
+				}
+				else if(action == "send")
+				{
+					// ONE SENDER: write our own mark, read it back, only then clear and send.
+					mark = "CLAIMED server " + nowMs;
+					t9.Send_9_Due_At = mark;
+					readBack = "";
+					for each c9 in Create_Case[ID == tid]
+					{
+						readBack = ifnull(c9.Send_9_Due_At,"").toString().trim();
+					}
+					if(readBack != mark)
+					{
+						info "sendDueSend9Server [" + tid + "] taken by another sender - not sending here";
+					}
+					else
+					{
+						t9.Send_9_Due_At = "";
+						p = ifnull(t9.Phone_Number1,"").toString().trim();
+						if(p == "")
+						{
+							p = ifnull(t9.Phone_Number,"").toString().trim();
+						}
+						digits = p.replaceAll("[^0-9]","");
+						phone9 = "";
+						if(p.startsWith("+"))
+						{
+							phone9 = "+" + digits;
+						}
+						else if(digits != "")
+						{
+							if(digits.length() == 12 && digits.startsWith("91"))
+							{
+								digits = digits.subString(2);
+							}
+							phone9 = "+91" + digits;
+						}
+						if(phone9 == "")
+						{
+							failCount = failCount + 1;
+							info "sendDueSend9Server [" + tid + "] has no customer phone number - not sent";
+							report = report + " [" + tid + "] no phone;";
+						}
+						else
+						{
+							sendOk = false;
+							respText = "";
+							try
+							{
+								respText = thisapp.sendWhatsAppMessage(phone9,TEMPLATE_9,"","","","");
+								sendOk = true;
+							}
+							catch (sendEx)
+							{
+								respText = "exception: " + sendEx.toString();
+							}
+							if(sendOk)
+							{
+								// Same refusal rules as the dashboard's sendWhatsAppTemplate().
+								try
+								{
+									respMap = respText.toMap();
+									if(respMap != null)
+									{
+										if(respMap.containKey("error") || respMap.containKey("errors"))
+										{
+											sendOk = false;
+										}
+										codeText = ifnull(respMap.get("code"),"").toString().toUpperCase();
+										if(codeText == "ERROR")
+										{
+											sendOk = false;
+										}
+									}
+								}
+								catch (respEx)
+								{
+									info "sendDueSend9Server [" + tid + "] reply was not JSON - treated as sent";
+								}
+							}
+							if(sendOk)
+							{
+								sentCount = sentCount + 1;
+								info "sendDueSend9Server " + logLine + " -> SENT to " + phone9 + " | reply: " + respText;
+								report = report + " [" + tid + "] sent;";
+							}
+							else
+							{
+								failCount = failCount + 1;
+								nextTry = retryNo + 1;
+								if(nextTry < MAX_RETRIES)
+								{
+									t9.Send_9_Due_At = "CLAIMED server-retry " + nextTry;
+									info "sendDueSend9Server [" + tid + "] SEND 9 REFUSED (attempt " + nextTry + ") - retried in about " + STUCK_MINUTES + " min | reply: " + respText;
+								}
+								else
+								{
+									info "sendDueSend9Server [" + tid + "] SEND 9 REFUSED " + nextTry + " times - giving up | reply: " + respText;
+								}
+								report = report + " [" + tid + "] refused;";
+							}
+						}
+					}
+				}
+			}
+		}
+		catch (ticketEx)
+		{
+			failCount = failCount + 1;
+			info "sendDueSend9Server [" + tid + "] error: " + ticketEx.toString();
+		}
+	}
+	summary = "SEND 9 server sweep: " + dueIds.size() + " ticket(s) checked, " + sentCount + " sent, " + failCount + " failed, " + clearedCount + " cleared, " + waitCount + " waiting." + report;
+	info summary;
+	return summary;
+}
