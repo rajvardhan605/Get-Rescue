@@ -1,0 +1,39 @@
+<%{
+	/* Photo_View - 2026-11-24. Zoho Creator PAGE (HTML snippet), published publicly.
+	   Purpose: the Airtable photo links open THIS page, which SHOWS the photo in the browser.
+	   (Zoho's public photo link itself always downloads the file instead of showing it.)
+
+	   Link format the Airtable sync builds:  <published page link>?u=<public photo link>
+	   Only photos from the published Ticket_Photos_Public report are shown - any other link is
+	   refused, so this page can never be used to show something else. No customer data is read here.
+
+	   BEFORE SAVING: add a page parameter named u in this page's settings (Parameters). Without it Zoho
+	   refuses input.u ("Variable 'u' is not defined"). */
+	photoLink = ifnull(input.u,"").trim();
+	PREFIX = "https://creatorapp.zohopublic.in/getrescued/get-rescue/report/Ticket_Photos_Public/";
+	safe = false;
+	if(photoLink.startsWith(PREFIX))
+	{
+		safe = true;
+		if(photoLink.contains("\"") || photoLink.contains("<") || photoLink.contains(">") || photoLink.contains("'") || photoLink.contains(" "))
+		{
+			safe = false;
+		}
+	}
+	if(safe)
+	{
+%>
+<div style="margin:0;padding:12px;background:#111;min-height:96vh;display:flex;align-items:center;justify-content:center;box-sizing:border-box">
+	<a href="<%=photoLink%>" title="Download original">
+		<img src="<%=photoLink%>" alt="Ticket photo" style="max-width:100%;max-height:92vh;display:block;border-radius:4px">
+	</a>
+</div>
+<%
+	}
+	else
+	{
+%>
+<div style="font-family:Arial,sans-serif;padding:24px;color:#333">Photo link is not valid.</div>
+<%
+	}
+}%>

@@ -1,0 +1,123 @@
+string notifyVendorNewTicket(string ticketId, string vendorIds)
+{
+	/* notifyVendorNewTicket - 2026-11-24, client request: when an agent assigns a
+	   ticket to a vendor, the vendor gets a Zoho push notification on the phone
+	   (Task Tracker #9: the alert must reach the vendor even when the app is
+	   closed, and only vendors marked ONLINE).
+
+	   Called by the agent app (getRescueTicket) AFTER an invite is created or
+	   re-sent. It is best-effort: the widget never waits on it and a failure here
+	   never touches the ticket or the invite. Nothing is written anywhere.
+
+	   ticketId  = Create_Case record ID
+	   vendorIds = one or more Vendors record IDs, comma-separated
+
+	   Who gets it: the vendor's login email (Vendors.Email - the same match the
+	   vendor app and getMyInviteOutcomes use). A vendor whose Availability_Status
+	   is "Offline" is skipped when ONLINE_ONLY = "yes" (client rule #9); a blank
+	   status is treated as online, so missing data never silently drops a push.
+
+	   NOT YET PROVEN: Zoho documents pushNotification for Creator account users;
+	   whether customer-portal users (our vendors) receive it must be confirmed on
+	   one real vendor phone. The reply lists the Zoho response per vendor. */
+	ONLINE_ONLY = "yes";
+	REPORT_LINK = "Agent_Ticket_Report";
+	result = Map();
+	sent = List();
+	skipped = List();
+	failed = List();
+	try
+	{
+		tid = ifnull(ticketId,"").trim();
+		if(tid == "")
+		{
+			result.put("ok",false);
+			result.put("message","ticketId missing");
+			return result.toString();
+		}
+		caseLabel = "";
+		serviceLabel = "";
+		for each c in Create_Case[ID == tid.toLong()]
+		{
+			caseLabel = ifnull(c.Case_ID,"");
+			serviceLabel = ifnull(c.Service_Type,"");
+		}
+		if(caseLabel == "")
+		{
+			caseLabel = "RSID" + tid.right(6);
+		}
+		title = "New ticket " + caseLabel;
+		message = "You have a new service request";
+		if(serviceLabel != "")
+		{
+			message = "New " + serviceLabel + " request " + caseLabel + ". Open your Get Rescued app to accept or reject.";
+		}
+		else
+		{
+			message = "New request " + caseLabel + ". Open your Get Rescued app to accept or reject.";
+		}
+		idList = ifnull(vendorIds,"").toList(",");
+		for each rawId in idList
+		{
+			vid = rawId.trim();
+			if(vid != "")
+			{
+				found = false;
+				for each v in vendors[ID == vid.toLong()]
+				{
+					found = true;
+					email = ifnull(v.Email,"").trim();
+					status = ifnull(v.Availability_Status,"").trim();
+					name = ifnull(v.Vendor_Name,"");
+					skipReason = "";
+					if(email == "")
+					{
+						skipReason = "no login email on the vendor record";
+					}
+					if(skipReason == "")
+					{
+						if(ONLINE_ONLY == "yes")
+						{
+							if(status.equalsIgnoreCase("Offline"))
+							{
+								skipReason = "marked Offline";
+							}
+						}
+					}
+					if(skipReason != "")
+					{
+						skipped.add(name + " (" + vid + "): " + skipReason);
+					}
+					else
+					{
+						try
+						{
+							resp = zoho.pushNotification(email,title,message,REPORT_LINK,tid.toLong());
+							info "push to " + email + " -> " + resp;
+							sent.add(name + " (" + email + "): " + resp);
+						}
+						catch (pe)
+						{
+							failed.add(name + " (" + email + "): " + pe);
+						}
+					}
+				}
+				if(found == false)
+				{
+					skipped.add(vid + ": no vendor record with this ID");
+				}
+			}
+		}
+		result.put("ok",true);
+	}
+	catch (e)
+	{
+		result.put("ok",false);
+		result.put("message",e.toString());
+	}
+	result.put("sent",sent);
+	result.put("skipped",skipped);
+	result.put("failed",failed);
+	info result;
+	return result.toString();
+}

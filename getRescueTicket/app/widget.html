@@ -4496,16 +4496,19 @@ const CLOSURE_FIELDS=[
         // the real rule — only the wording changed.
         if(!customerInvoiceApplies(r)){
           toast("No Rescue Charge on this ticket — nothing to invoice the customer for","err");
-        } else if(!isOnDemandClient(r) && String(r.Closure_Status||"").trim()!=="Completed"){
-          toast("Set Closure Status to Completed first","err");   // #88: company tickets are invoiced on a completed job only
         } else if(!closureCountsAsFeeBearing(String(r.Closure_Status||"").trim())){
-          toast("Set Closure Status to Completed, Cancelled or Cancelled - Billable first","err");
+          toast("Set Closure Status to Completed, Cancelled - Billable or Cancelled - Not Billable first","err");   // 2026-11-24: same rule for company tickets
         } else {
           toast("Nothing to invoice yet — no booking/remaining fee is confirmed paid, and Extra Payable is blank","err");
         }
         console.log("[Get-Rescue] Generate Invoice refused — isOnDemandClient:", isOnDemandClient(r), "| Closure_Status:", r.Closure_Status, "| computeClosureTSF:", finalTsf, "| Extra_Payable:", r.Extra_Payable, "| Client (raw):", r.Client, "| Client (resolved):", clientDisplayName(r));
         return;
       }
+      /* GSTIN checked first - 2026-11-25 (RSID701299): Zoho Books refuses a wrong GSTIN, which used to
+         surface only as "check console". */
+      const gstErrBtn = closureGstProblem(r);
+      if(gstErrBtn){ toast(gstErrBtn,"err"); return; }
+      ONDEMAND_LAST_ERROR = "";
       state._generatingOnDemandInvoice = true;
       toast("Generating invoice…","ok");
       // amountOverride = elig.amount (computeClosureTSF()'s own confirmed-
@@ -4553,6 +4556,7 @@ const CLOSURE_FIELDS=[
               if(fresh && fresh.Zoho_Books_Invoice_ID) state.record.Zoho_Books_Invoice_ID = fresh.Zoho_Books_Invoice_ID;
               if(fresh && fresh.Zoho_Books_Invoice_URL) state.record.Zoho_Books_Invoice_URL = fresh.Zoho_Books_Invoice_URL;
               if(fresh && fresh[INVOICE_NUMBER_FIELD]) state.record[INVOICE_NUMBER_FIELD] = fresh[INVOICE_NUMBER_FIELD];   // 2026-10-26
+              if(fresh && fresh[INVOICE_DATE_FIELD]) state.record[INVOICE_DATE_FIELD] = fresh[INVOICE_DATE_FIELD];   // 2026-11-25
               /* Invoice_PDF was missing from this list — 2026-10-05. The Custom API
                  attaches the PDF to the record directly, so the widget only learns
                  about it by re-reading the record. Without this the Download Invoice
@@ -4563,7 +4567,7 @@ const CLOSURE_FIELDS=[
             }).catch(function(){ rerenderCurrentView(); });
           }
         } else {
-          toast("Invoice generation failed — check console for details","err");
+          toast("Invoice generation failed: "+invoiceFailureText(),"err");   // 2026-11-25: the real reason, not "check console"
         }
       });
     } },
@@ -4585,6 +4589,12 @@ const CLOSURE_FIELDS=[
   { n:"__InvoiceNumberDisplay", l:"Invoice Number", t:"computed", full:true,
     when:(s)=>customerInvoiceApplies(s) || !!String((s && s[INVOICE_NUMBER_FIELD]) || "").trim(),   // #88
     compute:(r)=>String((r && r[INVOICE_NUMBER_FIELD]) || "").trim(),
+    emptyHint:"Not generated yet — filled automatically when the invoice is generated." },
+  /* Invoice Date - 2026-11-25 (user): HIDDEN for now (SHOW_INVOICE_DATE_ROW = false); same rules as the
+     Invoice Number row above once it is switched on. */
+  { n:"__InvoiceDateDisplay", l:"Invoice Date", t:"computed", full:true,
+    when:(s)=>SHOW_INVOICE_DATE_ROW && (customerInvoiceApplies(s) || !!String((s && s[INVOICE_DATE_FIELD]) || "").trim()),
+    compute:(r)=>String((r && r[INVOICE_DATE_FIELD]) || "").trim(),
     emptyHint:"Not generated yet — filled automatically when the invoice is generated." },
   // Invoice Link (2026-09-11, Task Tracker PDF item 27 — "DISPLAY at end of
   // page") — placed last in CLOSURE_FIELDS, matching that instruction
@@ -5790,13 +5800,14 @@ async function syncInvites(recordId, vendorNames){
     });
   }catch(e){ console.warn("[Get-Rescue] could not check existing Invites for record", recordId, e); }
   const fn=resolve("addRecords"); if(!fn) return;
+  const pushVendorIds=[];   // vendor push 2026-11-24: only vendors whose invite is new or re-opened here
   for(const name of names){
     const vendorId=String(vendorIdByName(name));
     if(existingVendorIds.indexOf(vendorId)>=0){
       /* Already invited - still never a second row. But if that row carries a
          REJECT from an earlier round, the vendor's app is hiding this ticket and
          re-assigning them has no effect at all until the row is cleared. */
-      await reviveRejectedInvite(existingInviteByVendor[vendorId], name, recordId);
+      if(await reviveRejectedInvite(existingInviteByVendor[vendorId], name, recordId)===true) pushVendorIds.push(vendorId);
       continue;
     }
     try{
@@ -5826,8 +5837,32 @@ async function syncInvites(recordId, vendorNames){
       // and this line proves the write was fine — which is the split that has
       // taken several rounds to establish from the table alone.
       console.log("[Get-Rescue] created Invites record for vendor", name, "— sent:", JSON.stringify(invitePayload), "| Zoho replied:", JSON.stringify(inviteResp));
+      pushVendorIds.push(vendorId);
     }catch(e){ console.warn("[Get-Rescue] could not create Invites record for", name, e); }
   }
+  notifyVendorsNewTicket(recordId, pushVendorIds);   // vendor push 2026-11-24 - not awaited, never fails the save
+}
+/* VENDOR PUSH NOTIFICATION - 2026-11-24, client request: when the agent assigns
+   a ticket, the invited vendor gets a Zoho push notification (Task Tracker #9).
+   Called only for vendors whose invite was created or re-opened just now (and
+   from the Re-invite button), so re-saving the Assign page does not buzz a
+   vendor who was already invited. The Custom API notifyVendorNewTicket picks
+   the vendor's login email and skips vendors marked Offline.
+   Fire-and-forget: never awaited, every error swallowed and logged. The
+   invite, the ticket status, the in-app buzzer and WhatsApp are unchanged.
+   VENDOR_PUSH_ENABLED = false switches it off with one word. */
+const VENDOR_PUSH_ENABLED = true;
+function notifyVendorsNewTicket(recordId, vendorIds){
+  try{
+    const ids=(vendorIds||[]).map(function(v){ return String(v||"").trim(); }).filter(function(v){ return v && v!=="undefined" && v!=="null"; });
+    if(!VENDOR_PUSH_ENABLED || !recordId || !ids.length) return;
+    const fn=resolve("invokeCustomApi");
+    if(!fn){ console.warn("[Get-Rescue] vendor push: invokeCustomApi not available - no push sent (the invite itself is saved)."); return; }
+    Promise.resolve(fn({ api_name:"notifyVendorNewTicket", workspace_name:"getrescued", http_method:"POST", content_type:"application/json",
+      payload:{ ticketId:String(recordId), vendorIds:ids.join(",") } }))
+      .then(function(res){ console.log("[Get-Rescue] vendor push for ticket", recordId, "vendors", ids.join(","), "->", res); })
+      .catch(function(e){ console.warn("[Get-Rescue] vendor push failed (non-blocking - the invite is saved, the vendor app still shows the ticket)", e); });
+  }catch(e){ console.warn("[Get-Rescue] vendor push skipped (non-blocking)", e); }
 }
 // Google Maps Distance Matrix (2026-08-17, user request: "also use google
 // api for the calculation") — supersedes the straight-line-only Haversine
@@ -7305,11 +7340,10 @@ function customerInvoiceApplies(r){
 function onDemandInvoiceEligibility(r, finalTsf){
   const status = String(r.Closure_Status||"").trim();
   const isOnDemand = isOnDemandClient(r);
-  if(isOnDemand){
-    if(!closureCountsAsFeeBearing(status)) return null;
-  } else {
-    if(status!=="Completed") return null;
-  }
+  /* 2026-11-24, client (Amith, RSID697222): company tickets are invoiced for
+     Cancelled - Billable / Cancelled - Not Billable too, not only Completed -
+     same fee-bearing set ON DEMAND already used. Completed is unchanged. */
+  if(!closureCountsAsFeeBearing(status)) return null;
   // Extra_Payable folded in 2026-09-14 (explicit user decision, "Add to
   // invoice amount only") — this field has been agent-editable on the Agent
   // Closure page since 2026-08-17 and is saved on every close (see
@@ -7339,7 +7373,11 @@ function onDemandInvoiceEligibility(r, finalTsf){
   /* Invoiced on Rescue Charge in every case - 2026-10-22. Contracted: the
      ticket's own Rescue_Charge. ON DEMAND: its closure Rescue Charge (above),
      which equals the collected-plus-extras figure this always used. */
-  const amount = isOnDemand ? onDemandRescueChargeAtClosure(r, finalTsf) : (Number(r.Rescue_Charge)||0);
+  /* A cancelled company ticket is invoiced for what the customer actually paid
+     (finalTsf: paid Booking + paid Remaining - Refund), not the quoted Rescue
+     Charge - 2026-11-24, client: "for the total paid amount". */
+  const amount = isOnDemand ? onDemandRescueChargeAtClosure(r, finalTsf)
+    : (status==="Completed" ? (Number(r.Rescue_Charge)||0) : (Number(finalTsf)||0));
   if(!(amount>0)) return null;
   return { isOnDemand, amount, extraPayable };
 }
@@ -12410,6 +12448,18 @@ function taxInvoiceServiceDate(record){
    Zoho link names are case-sensitive - if the form shows it differently, change
    it here only. */
 const INVOICE_NUMBER_FIELD = "Invoice_number";
+/* Invoice date - 2026-11-25 (user): stored on every new invoice; the Closure row stays HIDDEN until the
+   client asks to show it - then set SHOW_INVOICE_DATE_ROW = true (nothing else to change). */
+const INVOICE_DATE_FIELD = "Invoice_Date";
+const SHOW_INVOICE_DATE_ROW = false;
+/* Books sends yyyy-MM-dd; a Zoho Date field is written as dd-MMM-yyyy (fmtDate). Anything else -> "" (not stored). */
+function invoiceDateForZoho(v){
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v||"").trim());
+  if(!m) return "";
+  const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+  if(isNaN(d.getTime()) || d.getDate()!==Number(m[3])) return "";
+  return fmtDate(d);
+}
 async function onDemandInvoicing(record, amountOverride, invoiceIdField, referenceSuffix, applyTax, paymentUrlField){
   const fn=resolve("invokeCustomApi");
   if(!fn){
@@ -12577,6 +12627,7 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
       || (data.details && (data.details.url || data.details.invoice_url || data.details.output)))) || "";
     if(!url){
       console.warn("[Get-Rescue] onDemandInvoicing: response had no recognizable payment-link field — code:", data && data.code, "message:", data && data.message, "| full response:", res, "| unwrapped:", data);
+      ONDEMAND_LAST_ERROR = String((data && data.message) || "Zoho Books returned no invoice");   // 2026-11-25: shown on screen (RSID701299)
     }
     // Real bug fixed 2026-08-27 (found during a full verification pass
     // against the "Ondemand Workflow for Invoicing" PDF's own last step,
@@ -12677,6 +12728,13 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
     const invoiceNumber = String((data && (data.invoice_number || (data.details && data.details.invoice_number))) || "").trim();
     const storeNumber = !!(invoiceId && invoiceNumber && (invoiceIdField || "Zoho_Books_Invoice_ID")==="Zoho_Books_Invoice_ID");
     if(storeNumber && record) record[INVOICE_NUMBER_FIELD] = invoiceNumber;
+    /* INVOICE DATE - 2026-11-25, user request (new Create_Case Date field Invoice_Date). Books' own invoice
+       date (yyyy-MM-dd from onDemandInvoicing.deluge), stored the same way as the number: main invoice only,
+       its OWN best-effort write after the id, so a problem here can never block the id that guards against
+       a duplicate invoice. Shown on the Closure page only when SHOW_INVOICE_DATE_ROW is turned on. */
+    const invoiceDate = invoiceDateForZoho(data && (data.invoice_date || (data.details && data.details.invoice_date)));
+    const storeDate = !!(storeNumber || (invoiceId && (invoiceIdField || "Zoho_Books_Invoice_ID")==="Zoho_Books_Invoice_ID")) && !!invoiceDate;
+    if(storeDate && record) record[INVOICE_DATE_FIELD] = invoiceDate;
     if(record && record.ID){
       const targetField = invoiceIdField || "Zoho_Books_Invoice_ID";
       const writeNumber = function(){
@@ -12688,6 +12746,15 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
           console.warn("[Get-Rescue] onDemandInvoicing: could not save "+INVOICE_NUMBER_FIELD+" ("+invoiceNumber+") on the ticket (non-blocking - the invoice and its id are fine; check the field's link name on Create_Case):", e);
         });
       };
+      const writeDate = function(){   // 2026-11-25 - see INVOICE DATE above
+        if(!storeDate) return Promise.resolve();
+        const dateFields = {}; dateFields[INVOICE_DATE_FIELD] = invoiceDate;
+        return apiUpdate(record.ID, dateFields).then(function(){
+          console.log("[Get-Rescue] onDemandInvoicing: saved "+INVOICE_DATE_FIELD+" =", invoiceDate, "on ticket", record.ID);
+        }).catch(function(e){
+          console.warn("[Get-Rescue] onDemandInvoicing: could not save "+INVOICE_DATE_FIELD+" ("+invoiceDate+") on the ticket (non-blocking - the invoice and its id are fine; check the field on Create_Case):", e);
+        });
+      };
       const writeUrl = function(){
         if(!(paymentUrl && paymentUrlField)) return;
         const urlFields = {}; urlFields[paymentUrlField] = paymentUrl;
@@ -12697,7 +12764,7 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
       };
       if(invoiceId){
         const idFields = {}; idFields[targetField] = String(invoiceId);
-        apiUpdate(record.ID, idFields).then(writeNumber).then(writeUrl).catch(function(e){
+        apiUpdate(record.ID, idFields).then(writeNumber).then(writeDate).then(writeUrl).catch(function(e){
           console.warn("[Get-Rescue] onDemandInvoicing: failed to write "+JSON.stringify(idFields)+" back onto the ticket (non-blocking, invoice itself was still created) — WARNING: without this id saved, a later \"Generate Invoice\" click on this ticket could create a DUPLICATE invoice:", e);
           writeUrl();
         });
@@ -12708,8 +12775,17 @@ async function onDemandInvoicing(record, amountOverride, invoiceIdField, referen
     return url;
   }catch(e){
     console.warn("[Get-Rescue] onDemandInvoicing: invokeCustomApi failed", e);
+    ONDEMAND_LAST_ERROR = String((e && (e.message || e.responseText)) || e || "the invoice service could not be reached");   // 2026-11-25
     return "";
   }
+}
+/* The reason the last invoice attempt failed - 2026-11-25 (client, RSID701299: "Invoice generation
+   failed, check console for details" told the agent nothing). Set by onDemandInvoicing() on every
+   failure, cleared before each attempt, and shown in the toast instead of "check console". */
+let ONDEMAND_LAST_ERROR = "";
+function invoiceFailureText(){
+  const m = String(ONDEMAND_LAST_ERROR||"").trim();
+  return m ? m.slice(0, 220) : "no reason was returned - see the browser console";
 }
 // generateZohoPaymentLink() (2026-09-10, explicit user request: "create new
 // custom api for that and now dont use onDemandInvoicing function we will
@@ -14251,8 +14327,15 @@ function renderWizard(){
      agent's way off the page; it is safe now because buildPayload() drops the
      vendor's fields and saveStep() treats the step as blocked, so Save means
      "save what is mine and close". */
-  $("saveBtn").style.display = state.closureReadOnly ? "none" : "";
+  /* Super admin - 2026-11-23: on a CLOSED ticket's Closure step only, the super
+     admin gets the Save button back as "Save Changes" (saveClosedTicketEdits). */
+  const superEdit = superAdminClosureEdit();
+  $("saveBtn").style.display = (state.closureReadOnly && !superEdit) ? "none" : "";
+  if(superEdit) $("saveBtn").textContent = "Save Changes";
   $("wizClosureReadOnlyBanner").style.display = state.closureReadOnly ? "" : "none";
+  $("wizClosureReadOnlyBanner").textContent = superEdit
+    ? "🔓 This ticket is closed. Super admin: you can correct the closure fields and press Save Changes. Status stays CLOSED; no invoice or message is sent again."
+    : "🔒 This ticket is already closed — view only.";
   // Real bug fixed (2026-08-07) — seedAcceptanceVendorFields() now runs from
   // right here instead of once in openTicket(), specifically so flipping the
   // new Acceptance_Mode radio (see its own STAGES comment, and RERENDER's
@@ -14389,7 +14472,7 @@ function renderWizard(){
   // renderFields()'s own per-field cloning for step.viewOnly: STAGES objects
   // are shared/reused across renders and must not carry a one-time lock
   // forward into a later, editable open of the same ticket.
-  renderFields((state.closureReadOnly || vendorDrivenStep) ? Object.assign({}, step, {viewOnly:true}) : step);   // items 47/48 - same clone, same reasoning
+  renderFields(((state.closureReadOnly && !superEdit) || vendorDrivenStep) ? Object.assign({}, step, {viewOnly:true}) : step);   // items 47/48 - same clone, same reasoning; super admin 2026-11-23
   // Vendor Invite Status panel — real bug fixed 2026-09-11 (user-reported
   // live: "Vendor information (rejections/timeouts) fails to display on the
   // Assignment page after a case is accepted by another vendor") — this used
@@ -16301,7 +16384,7 @@ async function removeClosurePhoto(f){
    field shows no dead button. */
 function appendPhotoRemoveControl(body, f){
   if(!f || f.t!=="file") return;
-  if(state.closureReadOnly || f.readonly===true) return;
+  if((state.closureReadOnly && !superAdminClosureEdit()) || f.readonly===true) return;   // super admin 2026-11-23
   if(typeof f.readonly==="function" && f.readonly(state.record)) return;
   const c=closurePhotoCounts(f);
   if(!c.picked && !c.saved) return;
@@ -16332,14 +16415,19 @@ function openFieldEditor(fieldName){
   // the same ticket. Applied AFTER the always-editable override above, so a
   // fully-CLOSED ticket still locks these 3 fields same as everything else.
   editingField = state.closureReadOnly ? Object.assign({},base,{readonly:true}) : base;
+  /* Super admin - 2026-11-23: a closed ticket opens editable, and the conditional
+     locks (vendor-run job, fee already paid) are lifted. Fields that are always
+     read-only (readonly:true: timestamps, calculated figures) stay locked. */
+  const superEdit = superAdminClosureEdit();
+  if(superEdit) editingField = Object.assign({},base,{readonly: base.readonly===true});
   $("fieldModalTitle").textContent=f.l||f.n;
   const body=$("fieldModalBody"); body.innerHTML="";
   body.appendChild(buildField(editingField));
   // Photo delete — client item 21, 2026-10-05. No-ops for every non-file
   // field and for a file field that has nothing in it.
   appendPhotoRemoveControl(body, editingField);
-  $("fieldModalSave").style.display = state.closureReadOnly ? "none" : "";
-  $("fieldModalCancel").textContent = state.closureReadOnly ? "Close" : "Cancel";
+  $("fieldModalSave").style.display = (state.closureReadOnly && !superEdit) ? "none" : "";
+  $("fieldModalCancel").textContent = (state.closureReadOnly && !superEdit) ? "Close" : "Cancel";
   $("fieldModal").classList.add("on");
   hydrateFilePreviewsIn("#fieldModalBody");
 }
@@ -17443,6 +17531,11 @@ async function saveClosure(){
       return;
     }
   }
+  /* RSID701299 - 2026-11-25: a wrong GSTIN is refused, and a ticket that qualifies for an invoice is
+     invoiced BEFORE anything is saved - if Zoho Books refuses, the case stays open. See invoiceBeforeClosing(). */
+  const closureGstErr = closureGstProblem(r);
+  if(closureGstErr){ toast(closureGstErr,"err"); return; }
+  if(!(await invoiceBeforeClosing(r, finalTSF))) return;
   // Real bug fixed (2026-08-07): this used to only disable closureSaveBtn —
   // harmless while that was the actual button being clicked, but now that
   // saveClosure() is also triggered from the wizard's own shared #saveBtn
@@ -17564,6 +17657,130 @@ async function saveClosure(){
     backToDash();
   }catch(e){ toast(friendlySaveError(e, "Could not close"),"err"); }
   finally{ $("closureSaveBtn").disabled=false; $("saveBtn").disabled=false; }
+}
+/* SUPER ADMIN EDIT OF A CLOSED TICKET - 2026-11-23 (client request: "make all
+   fields in the closure page of all cases editable at super admin level, super
+   admin = login email accounts@getrescued.in").
+   - Only on the Closure step of a ticket whose Status is CLOSED. Every other step
+     stays view-only, and every other login sees exactly what it saw before.
+   - Save Changes writes ONLY the closure fields that differ from the ticket as Zoho
+     holds it now. Status stays CLOSED, Agent_Closure_Time is untouched, and nothing
+     is recalculated or sent: no distances, no Total Service Fee, no invoice, no
+     WhatsApp, no Google feedback. The invoice already in Zoho Books is NOT changed.
+   - The Not Converted rule still applies. Fields in the click-to-edit summary save
+     one at a time through the existing pop-up (saveFieldEditor), unchanged. */
+const SUPER_ADMIN_EMAILS=["accounts@getrescued.in"];
+function isSuperAdmin(){
+  const e=String(LOGIN_EMAIL||"").trim().toLowerCase();
+  return !!e && SUPER_ADMIN_EMAILS.indexOf(e)!==-1;
+}
+function superAdminClosureEdit(){
+  if(!state.closureReadOnly || !isSuperAdmin()) return false;
+  const step=state.path[state.stepIndex];
+  return !!(step && step.key==="agentClosure");
+}
+const SUPER_ADMIN_CLOSURE_FIELDS=["Refund_Due","Refund_Reason","Refund_Amount","Closure_Status","Closure_Reason","Remarks",
+  "B2B_GST_Invoice_Required","GST_Number","GST_Name","GST_Address","Extra_Payable","Google_Feedback_Requested"];
+function closureEditComparable(name, v){
+  if(name==="Google_Feedback_Requested") return (v===true||v==="Yes"||(Array.isArray(v)&&v.indexOf("Yes")!==-1)) ? "Yes" : "";
+  if(v==null) return "";
+  if(Array.isArray(v)) return v.join(",");
+  return String(v).replace(/\r\n/g,"\n").trim();
+}
+/* What Save Changes would write: the changed closure fields only. */
+/* Zoho's value as the page SHOWED it: a blank radio/checkbox is drawn with its
+   default (Refund Due "No", Request Google Feedback ticked), so that default is
+   not a change the super admin made and must not be written. */
+function closureEditShownValue(n, v){
+  const blank = (v===undefined || v===null || v==="");
+  const f = CLOSURE_FIELDS.find(function(x){ return x.n===n; });
+  if(blank && f && f.default!=null) return f.t==="check" ? (f.default===true ? "Yes" : "") : fieldDefault(f, state.record);
+  return v;
+}
+function closedTicketEditPayload(r, fresh){
+  const payload={};
+  SUPER_ADMIN_CLOSURE_FIELDS.forEach(function(n){
+    if(closureEditComparable(n, r[n])===closureEditComparable(n, closureEditShownValue(n, fresh[n]))) return;
+    payload[n] = n==="Google_Feedback_Requested" ? (closureEditComparable(n, r[n]) ? ["Yes"] : []) : (r[n]==null ? "" : r[n]);
+  });
+  if("Extra_Payable" in payload) Object.assign(payload, closureExtrasForApproval(r));   // #22 - same as Close Case
+  return payload;
+}
+async function saveClosedTicketEdits(){
+  const chk=collectStep(true);
+  if(!chk.ok){ toast("Please fill: "+chk.missing,"err"); return; }
+  const r=state.record;
+  if(r.Closure_Status==="Not Converted" && (bookingFeeConfirmedPaid(r) || (remainingFeeConfirmedPaid(r) && Number(r.Remaining_Fee)>0))){
+    toast("Cannot set \"Not Converted\" — a fee has already been paid on this ticket (Booking Fee and/or Remaining Fee). Pick Completed, Cancelled, or Cancelled - Billable instead.","err");
+    return;
+  }
+  const editGstErr = closureGstProblem(r);   // 2026-11-25 (RSID701299)
+  if(editGstErr){ toast(editGstErr,"err"); return; }
+  $("closureSaveBtn").disabled=true; $("saveBtn").disabled=true;
+  try{
+    const fresh=await apiGetById(state.recordId);
+    if(!fresh){ toast("Could not re-read the ticket from Zoho — nothing was saved. Try again.","err"); return; }
+    if(String(fresh.Status||"").trim().toUpperCase()!=="CLOSED"){ toast("This ticket is no longer CLOSED in Zoho — nothing was saved. Reopen it from the dashboard.","err"); return; }
+    const edits=closedTicketEditPayload(r, fresh);
+    if(!Object.keys(edits).length){ toast("Nothing changed — nothing to save.","ok"); return; }
+    await saveWithCoordFallback(edits, (p)=>updateTicketTolerant(state.recordId,p));
+    logTaskEdits(state.recordId, edits).catch(function(e){ console.warn("[Get-Rescue] logTaskEdits rejected (non-blocking)", e); });
+    toast("Changes saved ("+Object.keys(edits).join(", ")+"). Ticket stays CLOSED.","ok");
+    backToDash();
+  }catch(e){ toast(friendlySaveError(e, "Could not save"),"err"); }
+  finally{ $("closureSaveBtn").disabled=false; $("saveBtn").disabled=false; }
+}
+/* GSTIN CHECK + INVOICE BEFORE CLOSING - 2026-11-25 (client, RSID701299):
+   1. "I entered a wrong GST number and closed the case as Cancelled - Not Billable. It closed without an
+      invoice. If the case qualifies for an invoice, it must not close until the invoice is generated."
+      The invoice used to be created AFTER the ticket was saved CLOSED (maybeGenerateBooksInvoiceOnClosure,
+      fire-and-forget), so a Zoho Books refusal left a closed ticket with no invoice. Now, when the ticket
+      qualifies (onDemandInvoiceEligibility - the same rule as before) and has no invoice yet, the invoice
+      is created FIRST; if Books refuses, nothing is saved, the ticket stays open and the agent sees why.
+      The later auto-invoice then skips (r._booksInvoiceGenerated), so there is never a second invoice.
+   2. A GSTIN is checked (format + check digit) on Close Case, Save Changes and Generate Invoice, because
+      Zoho Books refuses a wrong one when it creates the customer. Blank stays allowed where it was. */
+const GSTIN_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+function gstinProblem(value){
+  const g = String(value||"").trim().toUpperCase();
+  if(!g) return "";
+  if(!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(g))
+    return "GST Number \""+g+"\" is not a valid GSTIN - it must be 15 characters: 2-digit state code, 10-character PAN, then 3 characters (e.g. 27AAPFU0939F1ZV).";
+  let sum = 0;
+  for(let i=0;i<14;i++){
+    const p = GSTIN_CHARS.indexOf(g[i]) * (i%2===0 ? 1 : 2);
+    sum += Math.floor(p/36) + (p%36);
+  }
+  const check = GSTIN_CHARS[(36 - (sum%36)) % 36];
+  if(g[14] !== check) return "GST Number \""+g+"\" is not a valid GSTIN (its last character should be "+check+") - please re-check it.";
+  return "";
+}
+function closureGstProblem(r){
+  if(!r || r.B2B_GST_Invoice_Required!=="Yes") return "";
+  return gstinProblem(r.GST_Number);
+}
+async function invoiceBeforeClosing(r, finalTsf){
+  const elig = onDemandInvoiceEligibility(r, finalTsf);
+  if(!elig) return true;                                          // nothing to invoice - closes as before
+  if(r.Zoho_Books_Invoice_ID || r._booksInvoiceGenerated) return true;   // already invoiced - never a second one
+  if(state._generatingOnDemandInvoice){
+    toast("An invoice is already being generated for this ticket - wait a moment, then press Close Case again.","err");
+    return false;
+  }
+  ONDEMAND_LAST_ERROR = "";
+  state._generatingOnDemandInvoice = true;
+  toast("Creating the invoice before closing…","ok");
+  let url = "";
+  try{ url = await onDemandInvoicing(r, elig.amount, "Zoho_Books_Invoice_ID", "", true, "Zoho_Books_Invoice_URL"); }
+  catch(e){ ONDEMAND_LAST_ERROR = String((e && e.message) || e); }
+  finally{ state._generatingOnDemandInvoice = false; }
+  if(!url){
+    toast("Case NOT closed - the invoice could not be created: "+invoiceFailureText()+". Correct it (for example the GST number) and press Close Case again.","err");
+    return false;
+  }
+  r._booksInvoiceGenerated = true;
+  r.Zoho_Books_Invoice_URL = url;
+  return true;
 }
 // Releases the ticket lock (2026-08-11, see its own header comment) — this
 // really is the single funnel every "leave the wizard" path already routes
@@ -18331,6 +18548,7 @@ async function reinviteVendor(inviteId, btn){
     await loadInviteStatuses(state.recordId);
     const host=$("assignInviteStatus"); if(host) host.innerHTML=assignInviteStatusHtml();
     logTaskAction(state.recordId, "Vendor re-invited", "", editLogText(oldInv && oldInv.Vendor)).catch(function(e){ console.warn("[Get-Rescue] edit log (non-blocking)", e); });   // #63
+    notifyVendorsNewTicket(state.recordId, [unwrapLookup(oldInv && oldInv.Vendor)]);   // vendor push 2026-11-24
     toast("Invite sent again — the vendor has "+Math.round(INVITE_TIMEOUT_MS/60000)+" minutes","ok");
   }catch(e){
     console.warn("[Get-Rescue] reinviteVendor failed for invite", inviteId, e);
@@ -18384,6 +18602,8 @@ $("prevBtn").onclick=prevStep;
 // state.closureReadOnly, as a backstop (see its own comment).
 $("saveBtn").onclick=()=>{
   const step=state.path[state.stepIndex];
+  /* Super admin on an already-CLOSED ticket - 2026-11-23: Save Changes (edits only), never a second Close Case. */
+  if(step && step.key==="agentClosure" && superAdminClosureEdit() && String(state.record.Status||"").trim().toUpperCase()==="CLOSED"){ saveClosedTicketEdits(); return; }
   if(step && step.key==="agentClosure") saveClosure(); else saveStep(true);
 };
 $("cancelBtn").onclick=cancelWizard;

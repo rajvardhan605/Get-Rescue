@@ -44,6 +44,10 @@ string onDemandInvoicing(string recordId, string referenceNumber, string custome
 	// sent explicitly here to exactly match the one example proven to work,
 	// rather than relying on an unconfirmed assumption either way.
 	gst_exemption_code = "TAX";
+	// HSN / SAC code printed on the invoice line (2026-11-22). Put the service's SAC here, e.g. "998729" -
+	// take it from the client's sample TAX INVOICE or their accountant. Left "" = nothing sent, invoices
+	// exactly as before (the Booking Fee line then keeps the catalog item's own HSN).
+	sac_code = "996749";
 invoiceURL="";
 	// Real bug fixed (user-reported live: invokeCustomApi failed with the
 	// generic {"code":9430,"message":"There is an error while executing
@@ -371,7 +375,20 @@ invoiceURL="";
 		}
 		info "onDemandInvoicing — resolved taxExempt=" + taxExempt + " (referenceNumberResolved=" + referenceNumberResolved + ")";
 		lineItem = Map();
-		lineItem.put("description",descriptionText);
+		// Invoice line without the service type (2026-11-22, client): "TOW - FLAT BED TOWING" -> "FLAT BED TOWING".
+		// Only this line changes; the payment-link description below keeps descriptionText as before.
+		// A label that is only "TOW" / "RSR" (no issue picked) is left as it is, so the line is never blank.
+		lineDescription = descriptionText;
+		descUpper = descriptionText.toUpperCase();
+		if(descUpper.startsWith("TOW - ") || descUpper.startsWith("RSR - "))
+		{
+			lineDescription = descriptionText.subString(6).trim();
+		}
+		if(lineDescription == "")
+		{
+			lineDescription = descriptionText;
+		}
+		lineItem.put("description",lineDescription);
 		lineItem.put("quantity","1");
 		// Real per-ticket amount — deliberately NEVER hardcoded, even in the
 		// taxExempt branch below (2026-09-08, explicit user request: "use
@@ -401,6 +418,11 @@ invoiceURL="";
 		else
 		{
 			lineItem.put("tax_id",gst18_tax_id);
+		}
+		// HSN / SAC on the line (2026-11-22) - only when sac_code above is filled in.
+		if(sac_code != "")
+		{
+			lineItem.put("hsn_or_sac",sac_code);
 		}
 
 		lineItems = List();
@@ -671,6 +693,8 @@ invoiceURL="";
 		}
 		invoice_id = invoiceRec.get("invoice_id");
 		invoice_number = invoiceRec.get("invoice_number");
+		// INVOICE DATE - 2026-11-25 (user): Books own invoice date (yyyy-MM-dd), returned so the app can store it on Invoice_Date.
+		invoice_date = ifnull(invoiceRec.get("date"),"").toString();
 		if(invoice_id == null)
 		{
 			return "{\"code\": \"ERROR\", \"message\": \"Invoice ID is NULL\", \"url\": \"\"}";
@@ -1422,7 +1446,7 @@ invoiceURL="";
 		// signal to check this Custom API's own execution log (most likely
 		// causes, in order: the 4 new parameters not registered in the Custom
 		// API setup screen, or payment_mode "other" being rejected).
-		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"invoice_pdf_saved\": \"" + invoicePdfSaved + "\", \"invoice_pdf_type\": \"" + pdfKind + "\", \"invoice_emailed\": \"" + invoiceEmailed + "\", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
+		successResponse = "{\"code\": \"SUCCESS\", \"message\": \"Invoice created successfully\", \"invoice_id\": \"" + invoice_id + "\", \"invoice_number\": \"" + invoice_number + "\", \"invoice_date\": \"" + invoice_date + "\", \"total_amount\": " + totalAmount + ", \"service_charges\": " + serviceChargesAmt + ", \"cgst\": " + cgst + ", \"sgst\": " + sgst + ", \"round_off\": " + roundOffAmt + ", \"payments_recorded\": " + paymentsRecorded + ", \"invoice_pdf_saved\": \"" + invoicePdfSaved + "\", \"invoice_pdf_type\": \"" + pdfKind + "\", \"invoice_emailed\": \"" + invoiceEmailed + "\", \"url\": \"" + bestUrl + "\", \"public_invoice_url\": \"" + public_invoice_url + "\", \"payment_url\": \"" + payment_url + "\"}";
 		invoiceURL= successResponse;
 	}
 	catch (mainEx)
