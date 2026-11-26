@@ -2,8 +2,8 @@ string sendWhatsAppMessage(string phone, string templateName, string param1, str
 {
 	headers = Map();
 	headers.put("Content-Type","application/json");
-	headers.put("x-api-key","wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
-	headers.put("Authorization","Bearer wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+	headers.put("x-api-key","wp_live_BDGZlzAXFogWBk5ajIighSBRLpINBCeP3OxOu9");
+	headers.put("Authorization","Bearer wp_live_BDGZlzAXFogWBk5ajIighSBRLpINBCeP3OxOu9");
 	urlButtonTemplates = List();
 	urlButtonTemplates.add("confirm_booking_fee_and_total_fee");
 	urlButtonTemplates.add("balance_payment_link");
@@ -128,5 +128,39 @@ string sendWhatsAppMessage(string phone, string templateName, string param1, str
 		headers:headers
 	];
 	info "sendWhatsAppMessage <- response: " + response.toString();
+	// 2026-11-25: WhatsPortal's firewall sometimes answers with a "Bot Verification"
+	// (reCAPTCHA) web page instead of the API reply - the message is NOT sent. That page
+	// used to be passed back as-is and every caller counted it as sent. Now: retry once,
+	// and if it is still blocked return a real ERROR so the agent app shows "not sent"
+	// and the SEND 9 sweeps retry. A normal JSON reply is returned exactly as before.
+	respLower = response.toString().toLowerCase();
+	blocked = false;
+	if(respLower.contains("bot verification") || respLower.contains("lsrecap") || respLower.contains("<html"))
+	{
+		blocked = true;
+	}
+	if(blocked)
+	{
+		info "sendWhatsAppMessage - WhatsPortal returned its Bot Verification page for template [" + templateName + "] - retrying once";
+		response = invokeurl
+		[
+			url :"https://api.whatsportal.io/v1/messages"
+			type :POST
+			parameters:jsonBody
+			headers:headers
+		];
+		info "sendWhatsAppMessage <- retry response: " + response.toString();
+		respLower = response.toString().toLowerCase();
+		blocked = false;
+		if(respLower.contains("bot verification") || respLower.contains("lsrecap") || respLower.contains("<html"))
+		{
+			blocked = true;
+		}
+	}
+	if(blocked)
+	{
+		info "sendWhatsAppMessage - STILL BLOCKED after retry - template [" + templateName + "] to " + phone + " was NOT sent";
+		return "{\"code\": \"ERROR\", \"status\": \"BLOCKED\", \"message\": \"WhatsPortal blocked the request (Bot Verification page) - WhatsApp message NOT sent\"}";
+	}
 	return response.toString();
 }

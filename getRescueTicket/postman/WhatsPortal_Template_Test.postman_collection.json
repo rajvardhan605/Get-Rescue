@@ -1,0 +1,82 @@
+{
+  "info": {
+    "name": "WhatsPortal Template Test (Get-Rescue)",
+    "description": "Sends the 3 WhatsApp templates from Amith's test case straight to WhatsPortal, with the same URL, headers and body format as sendWhatsAppMessage.deluge.\n\nBEFORE RUNNING: open the collection's Variables tab and fill in\n  apiKey     = the WhatsPortal key (wp_live_...)\n  testPhone  = your own WhatsApp number, e.g. +919876543210\n\nEach request shows WhatsPortal's reply in the Body and the Test Results tab.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.whatsportal.io/v1/messages" },
+    { "key": "apiKey", "value": "" },
+    { "key": "testPhone", "value": "+91XXXXXXXXXX" }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const code = pm.response.code;",
+          "let body = {};",
+          "try { body = pm.response.json(); } catch (e) { body = { raw: pm.response.text() }; }",
+          "console.log(pm.info.requestName, '->', code, JSON.stringify(body));",
+          "pm.test('HTTP ' + code + ' - ' + (code < 300 ? 'ACCEPTED by WhatsPortal' : 'REJECTED: ' + JSON.stringify(body)), function () {",
+          "  pm.expect(code).to.be.below(300);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Confirmation (send_confirmtaion_message) - 2 variables",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "{{apiKey}}" },
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
+        ],
+        "url": "{{baseUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"template\",\n  \"to\": \"{{testPhone}}\",\n  \"template\": {\n    \"name\": \"send_confirmtaion_message\",\n    \"language\": \"en_US\",\n    \"parameters\": [\"Battery Jumpstart\", \"Car\"]\n  }\n}"
+        },
+        "description": "Template name is misspelt ON PURPOSE ('confirmtaion') - that is how it was approved. Variables: {{1}} service, {{2}} vehicle."
+      }
+    },
+    {
+      "name": "2. Cancellation policy (inform_customer_request_confirmed_no_cancellation_after_5_mins) - no variables",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "{{apiKey}}" },
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
+        ],
+        "url": "{{baseUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"template\",\n  \"to\": \"{{testPhone}}\",\n  \"template\": {\n    \"name\": \"inform_customer_request_confirmed_no_cancellation_after_5_mins\",\n    \"language\": \"en_US\"\n  }\n}"
+        },
+        "description": "This one reached Amith - use it as the 'known good' check."
+      }
+    },
+    {
+      "name": "3. Rescuer details (share_rescue_service_details_and_eta) - 3 variables",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-api-key", "value": "{{apiKey}}" },
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
+        ],
+        "url": "{{baseUrl}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"template\",\n  \"to\": \"{{testPhone}}\",\n  \"template\": {\n    \"name\": \"share_rescue_service_details_and_eta\",\n    \"language\": \"en_US\",\n    \"parameters\": [\"Test Rescuer\", \"9999999999\", \"14:30\"]\n  }\n}"
+        },
+        "description": "Variables: {{1}} rescuer name, {{2}} rescuer phone, {{3}} ETA."
+      }
+    }
+  ]
+}

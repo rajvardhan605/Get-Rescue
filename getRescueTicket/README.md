@@ -707,8 +707,8 @@ string sendWhatsAppMessage(string phone, string templateName, string param1, str
 {
 	headers = Map();
 	headers.put("Content-Type","application/json");
-	headers.put("x-api-key","wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
-	headers.put("Authorization","Bearer wp_live_UFs9sZS6Ab2ix99uKY1IhzkQ31dJ3bzm14h2Wi");
+	headers.put("x-api-key","wp_live_BDGZlzAXFogWBk5ajIighSBRLpINBCeP3OxOu9");
+	headers.put("Authorization","Bearer wp_live_BDGZlzAXFogWBk5ajIighSBRLpINBCeP3OxOu9");
 
 	params_list = List();
 	params_list.add(param1);

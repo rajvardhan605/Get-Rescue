@@ -7984,6 +7984,60 @@ function computeVendorFeeForTicket(record, vendorRaw){
   }
   return computed;
 }
+/* Vendor fee stored at AGENT CLOSURE - 2026-11-25, client (Amith): "VENDOR_CASH_COLLECTED,
+   VENDOR_KM_FEE, VENDOR_GROSS_FEE, VENDOR_NET_FEE, VENDOR_BALANCE_BEFORE_TDS will be
+   available at agent closure itself". These were only ever written at Operations
+   approval, so the nightly Airtable send (which runs after closure) always found them
+   blank. Same calculation the approval screen uses (computeVendorFeeForTicket, with the
+   closure Extra Payable as Extras, like closureExtrasForApproval). Written ONLY while the
+   case is not yet approved - an approved or paid figure is never touched, and approval
+   still recalculates and overwrites as before. No vendor / no rate card -> nothing is
+   written, never a guess. Never throws: a fee problem must not stop the case closing. */
+function closureVendorFeeFields(r){
+  try{
+    if(!r) return {};
+    const settlement = String(r.Settlement_Status||"").trim();
+    if(!(settlement==="" || settlement===SETTLEMENT_STATUS_PENDING)) return {};
+    const vendorRaw = vendorRawForTicket(r);
+    if(!vendorRaw) return {};
+    const rec = Object.assign({}, r, closureExtrasForApproval(r));
+    const fee = computeVendorFeeForTicket(rec, vendorRaw);
+    if(!fee) return {};
+    return {
+      Vendor_KM_Fee: fee.kmFee,
+      Vendor_Gross_Fee: fee.grossFee,
+      Vendor_Net_Fee: fee.netFee,
+      Vendor_Balance_Before_TDS: fee.balanceBeforeTds,
+      Cash_Collected: cashCollectedForTicket(rec)
+    };
+  }catch(e){
+    console.warn("[Get-Rescue] closureVendorFeeFields: vendor fee not stored at closure (non-blocking)", e);
+    return {};
+  }
+}
+/* Its own save, AFTER the case is already CLOSED. Vendor_KM_Fee / Vendor_Gross_Fee /
+   Cash_Collected are whole-number fields in Zoho, so a figure with paise can be
+   refused - inside the closure payload that would have failed the whole close. Here a
+   refusal only loses the fee (approval still calculates it) and the reason is shown on
+   screen. Returns true when saved, false when skipped or refused. */
+async function saveClosureVendorFees(recordId, r){
+  const fees = closureVendorFeeFields(r);
+  if(!Object.keys(fees).length){
+    console.log("[Get-Rescue] closure vendor fee: nothing to store (no vendor / no rate card / already approved)");
+    return false;
+  }
+  try{
+    await updateTicket(recordId, fees);
+    Object.assign(r, fees);
+    console.log("[Get-Rescue] closure vendor fee stored:", fees);
+    return true;
+  }catch(e){
+    const why = (e && (e.message || String(e))) || "unknown reason";
+    console.warn("[Get-Rescue] closure vendor fee NOT stored (case is closed):", why, fees);
+    toast("Case closed, but the vendor fee was not saved: " + why, "err");
+    return false;
+  }
+}
 
 /* =====================================================================
    VENDOR ACCOUNTING — Level 1 screen (Operations Approval), 2026-09-04
@@ -17592,6 +17646,7 @@ async function saveClosure(){
     if(!distanceNotComputedYet(r.Mechanic_To_Breakdown)) payload.Mechanic_To_Breakdown=r.Mechanic_To_Breakdown;
     Object.assign(payload, closureExtrasForApproval(r));   // #22 - the closure Extra is the approval Extras
     await saveWithCoordFallback(payload, (p)=>updateTicketTolerant(state.recordId,p));
+    await saveClosureVendorFees(state.recordId, r);   // 2026-11-25 - own write AFTER the close, can never block it
     /* Audit the edit - 2026-10-17. After the save, never before: this is a
        record of what WAS saved, and it must not be able to fail the save. */
     logTaskEdits(state.recordId, payload).catch(function(e){ console.warn("[Get-Rescue] logTaskEdits rejected (non-blocking)", e); });

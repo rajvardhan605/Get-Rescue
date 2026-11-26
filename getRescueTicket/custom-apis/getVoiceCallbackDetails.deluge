@@ -3,9 +3,11 @@ string getVoiceCallbackDetails(string customerId, string phoneNumber, string cal
 	try
 	{
 		OZONETEL_API_URL = "https://in1-ccaas-api.ozonetel.com/ca_apis/AgentManualDial";
-		OZONETEL_CAMPAIGN = "zoho_08045614580";
+		//OZONETEL_CAMPAIGN = "zoho_08045614580";
+		OZONETEL_CAMPAIGN = "Inbound_918047485013";
 		OZONETEL_ACCOUNT = "rescue_vehicle";
-		OZONETEL_AGENT_ID = "Sagar";
+		//OZONETEL_AGENT_ID = "Sagar";
+		OZONETEL_AGENT_ID = "Amith";
 		OZONETEL_API_KEY = "KKb437079c7866db0ac92b8a90420a0602";
 		info "========== VOICE CALLBACK REQUEST ==========";
 
